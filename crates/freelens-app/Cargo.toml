@@ -1,0 +1,16 @@
+[package]
+name = "freelens-app"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+freelens-ipc = { path = "../freelens-ipc" }
+serde.workspace = true
+tauri = { version = "2", features = [] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
