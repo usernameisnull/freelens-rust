@@ -3,12 +3,18 @@ import {
   HealthCheckRequest,
   HealthCheckResponse,
   IPC_VERSION,
+  KubeconfigListRequest,
+  KubeconfigListResponse,
+  KubernetesVersionRequest,
+  KubernetesVersionResponse,
   SystemInfoResponse,
 } from "./contracts";
 
 export interface Transport {
   healthCheck(request: HealthCheckRequest): Promise<HealthCheckResponse>;
   systemInfo(): Promise<SystemInfoResponse>;
+  kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse>;
+  kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse>;
 }
 
 class TauriTransport implements Transport {
@@ -18,6 +24,14 @@ class TauriTransport implements Transport {
 
   systemInfo(): Promise<SystemInfoResponse> {
     return invoke("system_info");
+  }
+
+  kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
+    return invoke("kubeconfig_list", { request });
+  }
+
+  kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse> {
+    return invoke("kubernetes_version", { request });
   }
 }
 
@@ -38,6 +52,38 @@ class MockTransport implements Transport {
       arch: "development",
       appDataDir: "Available in the Tauri desktop shell",
       logDir: "Available in the Tauri desktop shell",
+    };
+  }
+
+  async kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      currentContext: "mock-dev",
+      contexts: [
+        {
+          name: "mock-dev",
+          cluster: "mock-dev-cluster",
+          user: "mock-dev-user",
+          isCurrent: true,
+        },
+        {
+          name: "mock-prod",
+          cluster: "mock-prod-cluster",
+          user: "mock-prod-user",
+          isCurrent: false,
+        },
+      ],
+    };
+  }
+
+  async kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      major: "1",
+      minor: "mock",
+      gitVersion: "v1.mock.0",
     };
   }
 }

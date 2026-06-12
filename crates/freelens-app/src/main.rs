@@ -2,7 +2,8 @@
 
 use freelens_ipc::{
     HealthCheckRequest, HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError,
-    SystemInfoResponse,
+    KubeconfigListRequest, KubeconfigListResponse, KubernetesVersionRequest,
+    KubernetesVersionResponse, SystemInfoResponse,
 };
 use tauri::{Manager, path::BaseDirectory};
 
@@ -50,6 +51,83 @@ fn path_error(error: tauri::Error) -> IpcError {
     }
 }
 
+#[tauri::command]
+fn kubeconfig_list(request: KubeconfigListRequest) -> Result<KubeconfigListResponse, IpcError> {
+    if request.meta.version != IPC_VERSION {
+        return Err(IpcError {
+            code: "unsupported_ipc_version".into(),
+            message: format!(
+                "IPC version {} is not supported; expected {}",
+                request.meta.version, IPC_VERSION
+            ),
+        });
+    }
+
+    let summary = freelens_kubeconfig::list_contexts(None).map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })?;
+
+    Ok(KubeconfigListResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        current_context: summary.current_context,
+        contexts: summary
+            .contexts
+            .into_iter()
+            .map(|ctx| freelens_ipc::KubeconfigContext {
+                name: ctx.name,
+                cluster: ctx.cluster,
+                user: ctx.user,
+                is_current: ctx.is_current,
+            })
+            .collect(),
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_version(
+    request: KubernetesVersionRequest,
+) -> Result<KubernetesVersionResponse, IpcError> {
+    if request.meta.version != IPC_VERSION {
+        return Err(IpcError {
+            code: "unsupported_ipc_version".into(),
+            message: format!(
+                "IPC version {} is not supported; expected {}",
+                request.meta.version, IPC_VERSION
+            ),
+        });
+    }
+
+    let options = kube::config::KubeConfigOptions {
+        context: request.context,
+        ..Default::default()
+    };
+    let config = kube::Config::from_kubeconfig(&options)
+        .await
+        .map_err(|error| IpcError {
+            code: "kubernetes_config_failed".into(),
+            message: error.to_string(),
+        })?;
+    let client = kube::Client::try_from(config).map_err(|error| IpcError {
+        code: "kubernetes_client_failed".into(),
+        message: error.to_string(),
+    })?;
+
+    let version = client.apiserver_version().await.map_err(|error| IpcError {
+        code: "kubernetes_version_failed".into(),
+        message: error.to_string(),
+    })?;
+
+    Ok(KubernetesVersionResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        major: version.major,
+        minor: version.minor,
+        git_version: version.git_version,
+    })
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -68,7 +146,12 @@ fn main() {
                 .expect("main window must exist");
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![health_check, system_info])
+        .invoke_handler(tauri::generate_handler![
+            health_check,
+            system_info,
+            kubeconfig_list,
+            kubernetes_version
+        ])
         .run(tauri::generate_context!())
         .expect("failed to run Freelens prototype");
 }

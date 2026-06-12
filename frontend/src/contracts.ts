@@ -22,3 +22,40 @@ export interface SystemInfoResponse {
   logDir: string;
 }
 
+export interface KubeconfigListRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+}
+
+export interface KubeconfigContext {
+  name: string;
+  cluster: string;
+  user: string | null;
+  isCurrent: boolean;
+}
+
+export interface KubeconfigListResponse {
+  version: number;
+  requestId: string;
+  currentContext: string | null;
+  contexts: KubeconfigContext[];
+}
+
+export interface KubernetesVersionRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  context: string | null;
+}
+
+export interface KubernetesVersionResponse {
+  version: number;
+  requestId: string;
+  major: string;
+  minor: string;
+  gitVersion: string;
+}
+

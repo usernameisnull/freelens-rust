@@ -2,6 +2,7 @@
 members = [
   "crates/freelens-app",
   "crates/freelens-ipc",
+  "crates/freelens-kubeconfig",
 ]
 resolver = "2"
 
