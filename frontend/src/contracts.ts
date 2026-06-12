@@ -59,3 +59,23 @@ export interface KubernetesVersionResponse {
   gitVersion: string;
 }
 
+export interface KubernetesListNamespacesRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  context: string;
+}
+
+export interface NamespaceItem {
+  name: string;
+  status: string | null;
+}
+
+export interface KubernetesListNamespacesResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  namespaces: NamespaceItem[];
+}
+

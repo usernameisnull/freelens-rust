@@ -2,10 +2,11 @@
 
 use freelens_ipc::{
     HealthCheckRequest, HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError,
-    KubeconfigListRequest, KubeconfigListResponse, KubernetesVersionRequest,
-    KubernetesVersionResponse, SystemInfoResponse,
+    KubeconfigListRequest, KubeconfigListResponse, KubernetesListNamespacesRequest,
+    KubernetesListNamespacesResponse, KubernetesVersionRequest, KubernetesVersionResponse,
+    NamespaceItem, SystemInfoResponse,
 };
-use tauri::{Manager, path::BaseDirectory};
+use tauri::{Manager, State, path::BaseDirectory};
 
 #[tauri::command]
 fn health_check(request: HealthCheckRequest) -> Result<HealthCheckResponse, IpcError> {
@@ -88,6 +89,7 @@ fn kubeconfig_list(request: KubeconfigListRequest) -> Result<KubeconfigListRespo
 #[tauri::command]
 async fn kubernetes_version(
     request: KubernetesVersionRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
 ) -> Result<KubernetesVersionResponse, IpcError> {
     if request.meta.version != IPC_VERSION {
         return Err(IpcError {
@@ -99,20 +101,13 @@ async fn kubernetes_version(
         });
     }
 
-    let options = kube::config::KubeConfigOptions {
-        context: request.context,
-        ..Default::default()
-    };
-    let config = kube::Config::from_kubeconfig(&options)
+    let client = cache
+        .client(request.context)
         .await
         .map_err(|error| IpcError {
-            code: "kubernetes_config_failed".into(),
+            code: error.code().into(),
             message: error.to_string(),
         })?;
-    let client = kube::Client::try_from(config).map_err(|error| IpcError {
-        code: "kubernetes_client_failed".into(),
-        message: error.to_string(),
-    })?;
 
     let version = client.apiserver_version().await.map_err(|error| IpcError {
         code: "kubernetes_version_failed".into(),
@@ -125,6 +120,50 @@ async fn kubernetes_version(
         major: version.major,
         minor: version.minor,
         git_version: version.git_version,
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_list_namespaces(
+    request: KubernetesListNamespacesRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesListNamespacesResponse, IpcError> {
+    if request.meta.version != IPC_VERSION {
+        return Err(IpcError {
+            code: "unsupported_ipc_version".into(),
+            message: format!(
+                "IPC version {} is not supported; expected {}",
+                request.meta.version, IPC_VERSION
+            ),
+        });
+    }
+
+    let client = cache
+        .client(Some(request.context.clone()))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+
+    let namespaces = freelens_kube::list_namespaces(client)
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+
+    Ok(KubernetesListNamespacesResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        context: request.context,
+        namespaces: namespaces
+            .into_iter()
+            .map(|ns| NamespaceItem {
+                name: ns.name,
+                status: ns.status,
+            })
+            .collect(),
     })
 }
 
@@ -146,11 +185,13 @@ fn main() {
                 .expect("main window must exist");
             Ok(())
         })
+        .manage(freelens_kube::ClientCache::new())
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
             kubeconfig_list,
-            kubernetes_version
+            kubernetes_version,
+            kubernetes_list_namespaces
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Freelens prototype");

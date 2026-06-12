@@ -5,6 +5,8 @@ import {
   IPC_VERSION,
   KubeconfigListRequest,
   KubeconfigListResponse,
+  KubernetesListNamespacesRequest,
+  KubernetesListNamespacesResponse,
   KubernetesVersionRequest,
   KubernetesVersionResponse,
   SystemInfoResponse,
@@ -15,6 +17,9 @@ export interface Transport {
   systemInfo(): Promise<SystemInfoResponse>;
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse>;
   kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse>;
+  kubernetesListNamespaces(
+    request: KubernetesListNamespacesRequest
+  ): Promise<KubernetesListNamespacesResponse>;
 }
 
 class TauriTransport implements Transport {
@@ -32,6 +37,12 @@ class TauriTransport implements Transport {
 
   kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse> {
     return invoke("kubernetes_version", { request });
+  }
+
+  kubernetesListNamespaces(
+    request: KubernetesListNamespacesRequest
+  ): Promise<KubernetesListNamespacesResponse> {
+    return invoke("kubernetes_list_namespaces", { request });
   }
 }
 
@@ -84,6 +95,21 @@ class MockTransport implements Transport {
       major: "1",
       minor: "mock",
       gitVersion: "v1.mock.0",
+    };
+  }
+
+  async kubernetesListNamespaces(
+    request: KubernetesListNamespacesRequest
+  ): Promise<KubernetesListNamespacesResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      context: request.context,
+      namespaces: [
+        { name: "default", status: "Active" },
+        { name: "kube-system", status: "Active" },
+        { name: "mock-namespace", status: "Active" },
+      ],
     };
   }
 }

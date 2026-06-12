@@ -152,6 +152,34 @@ dd {
   border-bottom: none;
 }
 
+.context-label {
+  display: block;
+  margin-bottom: 8px;
+  color: #71808e;
+  font-size: 0.8rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.context-select {
+  width: 100%;
+  margin-bottom: 22px;
+  padding: 10px 12px;
+  border: 1px solid #2a3540;
+  border-radius: 8px;
+  background: #10161d;
+  color: #e8edf2;
+  font: inherit;
+}
+
+.button-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+
 .check-button {
   padding: 10px 18px;
   border: 1px solid #58d1b5;
@@ -170,6 +198,51 @@ dd {
 .check-button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.check-button.secondary {
+  border-color: #71808e;
+  color: #9eabb8;
+}
+
+.check-button.secondary:hover:not(:disabled) {
+  background: rgba(113, 128, 142, 0.12);
+}
+
+.namespace-list {
+  margin-top: 18px;
+}
+
+.namespace-list h3 {
+  margin: 0 0 12px;
+  color: #9eabb8;
+  font-size: 0.78rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.namespace-list ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.namespace-list li {
+  display: flex;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #2a3540;
+}
+
+.namespace-list li:last-child {
+  border-bottom: none;
+}
+
+.namespace-status {
+  color: #71808e;
+  font-size: 0.85rem;
 }
 
 .version-error {

@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   HealthCheckResponse,
   IPC_VERSION,
   KubeconfigContext,
   KubeconfigListResponse,
   KubernetesVersionResponse,
+  NamespaceItem,
   SystemInfoResponse,
 } from "./contracts";
 import { createTransport } from "./transport";
@@ -17,6 +18,15 @@ export function App() {
   const [system, setSystem] = useState<SystemInfoResponse>();
   const [kubeconfig, setKubeconfig] = useState<KubeconfigListResponse>();
   const [kubeconfigError, setKubeconfigError] = useState<string>();
+  const [selectedContext, setSelectedContext] = useState<string>("");
+  const selectedContextRef = useRef(selectedContext);
+  const setSelectedContextAndRef = (value: string) => {
+    selectedContextRef.current = value;
+    setSelectedContext(value);
+  };
+  const [namespaces, setNamespaces] = useState<NamespaceItem[]>();
+  const [namespacesError, setNamespacesError] = useState<string>();
+  const [namespacesLoading, setNamespacesLoading] = useState(false);
   const [version, setVersion] = useState<KubernetesVersionResponse>();
   const [versionError, setVersionError] = useState<string>();
   const [versionLoading, setVersionLoading] = useState(false);
@@ -45,38 +55,54 @@ export function App() {
       })
       .then((kubeconfigResponse) => {
         setKubeconfig(kubeconfigResponse);
+        const fallback = kubeconfigResponse.contexts[0]?.name ?? "";
+        setSelectedContextAndRef(kubeconfigResponse.currentContext ?? fallback);
       })
       .catch((reason: unknown) => {
         setKubeconfigError(reason instanceof Error ? reason.message : String(reason));
       });
   }, []);
 
-  const checkVersion = () => {
-    setVersionLoading(true);
-    setVersionError(undefined);
-    transport
-      .kubernetesVersion({
-        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-        context: kubeconfig?.currentContext ?? null,
-      })
-      .then((response) => {
-        setVersion(response);
-        setVersionLoading(false);
+  const withSelectedContext = <T,>(
+    call: (context: string) => Promise<T>,
+    onSuccess: (result: T) => void,
+    setLoading: (loading: boolean) => void,
+    onError?: (error: string | undefined) => void
+  ) => {
+    const context = selectedContext || kubeconfig?.currentContext;
+    if (!context) {
+      onError?.("No context selected");
+      return;
+    }
+    setLoading(true);
+    onError?.(undefined);
+    call(context)
+      .then((result) => {
+        if (context === selectedContextRef.current) {
+          onSuccess(result);
+        }
       })
       .catch((reason: unknown) => {
-        setVersionError(reason instanceof Error ? reason.message : String(reason));
-        setVersionLoading(false);
+        if (context === selectedContextRef.current) {
+          onError?.(reason instanceof Error ? reason.message : String(reason));
+        }
+      })
+      .finally(() => {
+        if (context === selectedContextRef.current) {
+          setLoading(false);
+        }
       });
   };
 
   return (
     <main className="shell">
       <header>
-        <p className="eyebrow">Migration milestone 2</p>
+        <p className="eyebrow">Migration milestone 3</p>
         <h1>Freelens Rust Prototype</h1>
         <p className="summary">
           React renderer connected to a versioned Rust service contract through
-          a replaceable transport. Kubeconfig discovery runs in the Rust backend.
+          a replaceable transport. Select a kubeconfig context and list cluster
+          namespaces from the Rust backend.
         </p>
       </header>
 
@@ -115,50 +141,123 @@ export function App() {
 
           <section className="card contexts">
             <h2>Kubeconfig contexts</h2>
-            <p className="summary">
-              Current context: <strong>{kubeconfig?.currentContext ?? "..."}</strong>
-            </p>
             {kubeconfigError ? (
               <p className="version-error">{kubeconfigError}</p>
             ) : kubeconfig ? (
-              <table className="context-table">
-                <thead>
-                  <tr>
-                    <th>Current</th>
-                    <th>Context</th>
-                    <th>Cluster</th>
-                    <th>User</th>
-                  </tr>
-                </thead>
-                <tbody>
+              <>
+                <label className="context-label" htmlFor="context-select">
+                  Active context
+                </label>
+                <select
+                  id="context-select"
+                  className="context-select"
+                  value={selectedContext}
+                  onChange={(event) => {
+                    setSelectedContextAndRef(event.target.value);
+                    setNamespaces(undefined);
+                    setNamespacesError(undefined);
+                    setNamespacesLoading(false);
+                    setVersion(undefined);
+                    setVersionError(undefined);
+                    setVersionLoading(false);
+                  }}
+                >
                   {kubeconfig.contexts.map((ctx: KubeconfigContext) => (
-                    <tr key={ctx.name} className={ctx.isCurrent ? "current" : ""}>
-                      <td>{ctx.isCurrent ? "●" : ""}</td>
-                      <td>{ctx.name}</td>
-                      <td>{ctx.cluster}</td>
-                      <td>{ctx.user ?? "—"}</td>
-                    </tr>
+                    <option key={ctx.name} value={ctx.name}>
+                      {ctx.name} ({ctx.cluster})
+                    </option>
                   ))}
-                </tbody>
-              </table>
+                </select>
+                <table className="context-table">
+                  <thead>
+                    <tr>
+                      <th>Current</th>
+                      <th>Context</th>
+                      <th>Cluster</th>
+                      <th>User</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {kubeconfig.contexts.map((ctx: KubeconfigContext) => (
+                      <tr key={ctx.name} className={ctx.isCurrent ? "current" : ""}>
+                        <td>{ctx.isCurrent ? "●" : ""}</td>
+                        <td>{ctx.name}</td>
+                        <td>{ctx.cluster}</td>
+                        <td>{ctx.user ?? "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             ) : (
               <p>Loading contexts…</p>
             )}
           </section>
 
           <section className="card contexts">
-            <h2>Cluster health</h2>
+            <h2>Cluster explorer</h2>
             <p className="summary">
-              Connect to the current context and query the Kubernetes API server
-              <code>/version</code> endpoint.
+              Connect to{" "}
+              <strong>{selectedContext || kubeconfig?.currentContext || "..."}</strong>{" "}
+              and query the cluster.
             </p>
-            <button
-              className="check-button"
-              onClick={checkVersion}
-              disabled={versionLoading || !kubeconfig}
-            >
-              {versionLoading ? "Checking…" : "Check /version"}
-            </button>
+            <div className="button-row">
+              <button
+                className="check-button"
+                onClick={() =>
+                  withSelectedContext(
+                    (context) =>
+                      transport.kubernetesListNamespaces({
+                        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+                        context,
+                      }),
+                    (response) => setNamespaces(response.namespaces),
+                    setNamespacesLoading,
+                    setNamespacesError
+                  )
+                }
+                disabled={namespacesLoading || !kubeconfig}
+              >
+                {namespacesLoading ? "Loading…" : "List namespaces"}
+              </button>
+              <button
+                className="check-button secondary"
+                onClick={() =>
+                  withSelectedContext(
+                    (context) =>
+                      transport.kubernetesVersion({
+                        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+                        context,
+                      }),
+                    (response) => setVersion(response),
+                    setVersionLoading,
+                    setVersionError
+                  )
+                }
+                disabled={versionLoading || !kubeconfig}
+              >
+                {versionLoading ? "Checking…" : "Check /version"}
+              </button>
+            </div>
+
+            {namespacesError ? (
+              <p className="version-error">{namespacesError}</p>
+            ) : namespaces ? (
+              <div className="namespace-list">
+                <h3>Namespaces</h3>
+                <ul>
+                  {namespaces.map((ns: NamespaceItem) => (
+                    <li key={ns.name}>
+                      <span className="namespace-name">{ns.name}</span>
+                      {ns.status ? (
+                        <span className="namespace-status">{ns.status}</span>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {versionError ? (
               <p className="version-error">{versionError}</p>
             ) : version ? (

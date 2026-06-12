@@ -1,0 +1,12 @@
+[package]
+name = "freelens-kube"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+kube = { version = "0.98", features = ["client", "config", "rustls-tls"] }
+k8s-openapi = { version = "0.24", features = ["latest"] }
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

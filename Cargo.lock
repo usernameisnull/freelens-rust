@@ -845,6 +845,7 @@ name = "freelens-app"
 version = "0.1.0"
 dependencies = [
  "freelens-ipc",
+ "freelens-kube",
  "freelens-kubeconfig",
  "k8s-openapi",
  "kube",
@@ -861,6 +862,17 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "freelens-kube"
+version = "0.1.0"
+dependencies = [
+ "k8s-openapi",
+ "kube",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]

@@ -92,6 +92,29 @@ pub struct KubernetesVersionResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesListNamespacesRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NamespaceItem {
+    pub name: String,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesListNamespacesResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub namespaces: Vec<NamespaceItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IpcError {
     pub code: String,
     pub message: String,
@@ -148,5 +171,24 @@ mod tests {
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["context"], "prod");
         assert_eq!(json["meta"]["requestId"], "r3");
+    }
+
+    #[test]
+    fn list_namespaces_response_serializes_camel_case() {
+        let response = KubernetesListNamespacesResponse {
+            version: IPC_VERSION,
+            request_id: "r4".into(),
+            context: "dev".into(),
+            namespaces: vec![NamespaceItem {
+                name: "default".into(),
+                status: Some("Active".into()),
+            }],
+        };
+
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["context"], "dev");
+        assert_eq!(json["requestId"], "r4");
+        assert_eq!(json["namespaces"][0]["name"], "default");
+        assert_eq!(json["namespaces"][0]["status"], "Active");
     }
 }

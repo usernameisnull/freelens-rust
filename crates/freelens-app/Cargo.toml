@@ -9,6 +9,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 freelens-ipc = { path = "../freelens-ipc" }
+freelens-kube = { path = "../freelens-kube" }
 freelens-kubeconfig = { path = "../freelens-kubeconfig" }
 kube = { version = "0.98", features = ["client", "config", "rustls-tls"] }
 k8s-openapi = { version = "0.24", features = ["latest"] }
