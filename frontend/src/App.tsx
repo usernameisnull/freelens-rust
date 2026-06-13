@@ -1,21 +1,49 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  HealthCheckResponse,
   IPC_VERSION,
   KubeconfigContext,
   KubeconfigListResponse,
-  KubernetesVersionResponse,
+  KubernetesGetResourceYamlResponse,
+  KubernetesListNamespacesResponse,
+  KubernetesListResourcesResponse,
   NamespaceItem,
-  SystemInfoResponse,
+  ResourceItem,
+  ResourceKindItem,
 } from "./contracts";
 import { createTransport } from "./transport";
 import "./styles.css";
 
 const transport = createTransport();
 
+function errorMessage(reason: unknown): string {
+  if (reason instanceof Error) return reason.message;
+  if (typeof reason === "string") return reason;
+  if (reason && typeof reason === "object") {
+    const value = reason as { code?: unknown; message?: unknown };
+    if (typeof value.message === "string") {
+      return typeof value.code === "string" ? `${value.code}: ${value.message}` : value.message;
+    }
+    try {
+      return JSON.stringify(reason);
+    } catch {
+      return "Unknown backend error";
+    }
+  }
+  return String(reason);
+}
+
+const RESOURCE_GROUPS = [
+  {
+    label: "Workloads",
+    kinds: ["Pod", "Deployment"],
+  },
+  {
+    label: "Network",
+    kinds: ["Service"],
+  },
+];
+
 export function App() {
-  const [health, setHealth] = useState<HealthCheckResponse>();
-  const [system, setSystem] = useState<SystemInfoResponse>();
   const [kubeconfig, setKubeconfig] = useState<KubeconfigListResponse>();
   const [kubeconfigError, setKubeconfigError] = useState<string>();
   const [selectedContext, setSelectedContext] = useState<string>("");
@@ -24,255 +52,464 @@ export function App() {
     selectedContextRef.current = value;
     setSelectedContext(value);
   };
-  const [namespaces, setNamespaces] = useState<NamespaceItem[]>();
-  const [namespacesError, setNamespacesError] = useState<string>();
-  const [namespacesLoading, setNamespacesLoading] = useState(false);
-  const [version, setVersion] = useState<KubernetesVersionResponse>();
-  const [versionError, setVersionError] = useState<string>();
-  const [versionLoading, setVersionLoading] = useState(false);
-  const [error, setError] = useState<string>();
+
+  const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
+  const [selectedNamespace, setSelectedNamespace] = useState<string>("");
+  const [selectedKind, setSelectedKind] = useState<string>("Pod");
+
+  const [resources, setResources] = useState<ResourceItem[]>([]);
+  const [resourcesLoading, setResourcesLoading] = useState(false);
+  const [resourcesError, setResourcesError] = useState<string>();
+  const [continueToken, setContinueToken] = useState<string | null>(null);
+  const resourceRequestRef = useRef(0);
+
+  const [detail, setDetail] = useState<KubernetesGetResourceYamlResponse>();
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string>();
+  const detailRequestRef = useRef(0);
+
+  const [logOperationId, setLogOperationId] = useState<string>();
+  const logOperationIdRef = useRef<string | undefined>(undefined);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [logResource, setLogResource] = useState<{ namespace: string; name: string }>();
+  const [logContainers, setLogContainers] = useState<string[]>([]);
+  const [selectedLogContainer, setSelectedLogContainer] = useState("");
+  const [logPreparing, setLogPreparing] = useState(false);
+  const [logError, setLogError] = useState<string>();
+  const logPrepareRequestRef = useRef(0);
+  const logEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const requestId = crypto.randomUUID();
-
-    Promise.all([
-      transport.healthCheck({
-        meta: { version: IPC_VERSION, requestId },
-      }),
-      transport.systemInfo(),
-    ])
-      .then(([healthResponse, systemResponse]) => {
-        setHealth(healthResponse);
-        setSystem(systemResponse);
-      })
-      .catch((reason: unknown) => {
-        setError(reason instanceof Error ? reason.message : String(reason));
-      });
-
     transport
       .kubeconfigList({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
       })
-      .then((kubeconfigResponse) => {
-        setKubeconfig(kubeconfigResponse);
-        const fallback = kubeconfigResponse.contexts[0]?.name ?? "";
-        setSelectedContextAndRef(kubeconfigResponse.currentContext ?? fallback);
+      .then((response) => {
+        setKubeconfig(response);
+        const fallback = response.contexts[0]?.name ?? "";
+        setSelectedContextAndRef(response.currentContext ?? fallback);
       })
       .catch((reason: unknown) => {
-        setKubeconfigError(reason instanceof Error ? reason.message : String(reason));
+        setKubeconfigError(errorMessage(reason));
       });
+
+    let unlistenLog: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
+
+    transport.onLogEvent((event) => {
+      if (event.operationId === logOperationIdRef.current) {
+        setLogs((prev) => [...prev, event.line]);
+      }
+    }).then((unlisten) => {
+      unlistenLog = unlisten;
+    });
+
+    transport.onLogDone((event) => {
+      if (event.operationId === logOperationIdRef.current) {
+        logOperationIdRef.current = undefined;
+        setLogOperationId(undefined);
+      }
+    }).then((unlisten) => {
+      unlistenDone = unlisten;
+    });
+
+    return () => {
+      const operationId = logOperationIdRef.current;
+      if (operationId) {
+        void transport.kubernetesStopPodLogs({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          operationId,
+        });
+      }
+      unlistenLog?.();
+      unlistenDone?.();
+    };
   }, []);
 
-  const withSelectedContext = <T,>(
-    call: (context: string) => Promise<T>,
-    onSuccess: (result: T) => void,
-    setLoading: (loading: boolean) => void,
-    onError?: (error: string | undefined) => void
-  ) => {
-    const context = selectedContext || kubeconfig?.currentContext;
-    if (!context) {
-      onError?.("No context selected");
-      return;
-    }
-    setLoading(true);
-    onError?.(undefined);
-    call(context)
-      .then((result) => {
-        if (context === selectedContextRef.current) {
-          onSuccess(result);
+  useEffect(() => {
+    if (!selectedContext) return;
+    transport
+      .kubernetesListNamespaces({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+      })
+      .then((response: KubernetesListNamespacesResponse) => {
+        setNamespaces(response.namespaces);
+      })
+      .catch(() => setNamespaces([]));
+  }, [selectedContext]);
+
+  useEffect(() => {
+    if (!selectedContext || !selectedKind) return;
+    loadResources();
+  }, [selectedContext, selectedKind, selectedNamespace]);
+
+  useEffect(() => {
+    logEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [logs]);
+
+  const loadResources = (token: string | null = null) => {
+    if (!selectedContext || !selectedKind) return;
+    const requestNumber = ++resourceRequestRef.current;
+    const context = selectedContext;
+    const kind = selectedKind;
+    const namespace = selectedNamespace;
+    setResourcesLoading(true);
+    setResourcesError(undefined);
+    transport
+      .kubernetesListResources({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context,
+        kind,
+        namespace: namespace || null,
+        limit: 50,
+        continueToken: token,
+      })
+      .then((response: KubernetesListResourcesResponse) => {
+        if (requestNumber !== resourceRequestRef.current) return;
+        if (token) {
+          setResources((prev) => [...prev, ...response.items]);
+        } else {
+          setResources(response.items);
         }
+        setContinueToken(response.continueToken);
       })
       .catch((reason: unknown) => {
-        if (context === selectedContextRef.current) {
-          onError?.(reason instanceof Error ? reason.message : String(reason));
+        if (requestNumber === resourceRequestRef.current) {
+          setResourcesError(errorMessage(reason));
         }
       })
       .finally(() => {
-        if (context === selectedContextRef.current) {
-          setLoading(false);
+        if (requestNumber === resourceRequestRef.current) {
+          setResourcesLoading(false);
         }
       });
   };
 
+  const openDetail = (item: ResourceItem) => {
+    if (!selectedContext) return;
+    const requestNumber = ++detailRequestRef.current;
+    setDetail(undefined);
+    setDetailLoading(true);
+    setDetailError(undefined);
+    transport
+      .kubernetesGetResourceYaml({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        kind: item.kind,
+        namespace: item.namespace,
+        name: item.name,
+      })
+      .then((response) => {
+        if (requestNumber === detailRequestRef.current) setDetail(response);
+      })
+      .catch((reason: unknown) => {
+        if (requestNumber === detailRequestRef.current) {
+          setDetailError(errorMessage(reason));
+        }
+      })
+      .finally(() => {
+        if (requestNumber === detailRequestRef.current) setDetailLoading(false);
+      });
+  };
+
+  const beginLogStream = (container: string) => {
+    if (!selectedContext || !logResource || !container) return;
+    const operationId = crypto.randomUUID();
+    logOperationIdRef.current = operationId;
+    setLogOperationId(operationId);
+    setLogs([]);
+    setLogError(undefined);
+    transport
+      .kubernetesStreamPodLogs({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId,
+        context: selectedContext,
+        namespace: logResource.namespace,
+        pod: logResource.name,
+        container,
+        follow: true,
+        tailLines: null,
+      })
+      .then((response) => {
+        if (operationId === logOperationIdRef.current) {
+          setLogs((current) => [...response.initialLines, ...current]);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (operationId === logOperationIdRef.current) {
+          setLogError(errorMessage(reason));
+          logOperationIdRef.current = undefined;
+          setLogOperationId(undefined);
+        }
+      });
+  };
+
+  const startLogs = (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    const requestNumber = ++logPrepareRequestRef.current;
+    void stopLogs();
+    const resource = { namespace: item.namespace, name: item.name };
+    setLogResource(resource);
+    setLogContainers([]);
+    setSelectedLogContainer("");
+    setLogs([]);
+    setLogError(undefined);
+    setLogPreparing(true);
+    transport
+      .kubernetesGetPodContainers({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        namespace: item.namespace,
+        pod: item.name,
+      })
+      .then((response) => {
+        if (requestNumber !== logPrepareRequestRef.current) return;
+        setLogContainers(response.containers);
+        setSelectedLogContainer(response.defaultContainer ?? response.containers[0] ?? "");
+        if (response.containers.length === 0) {
+          setLogError("Pod has no loggable containers");
+        }
+      })
+      .catch((reason: unknown) => {
+        if (requestNumber === logPrepareRequestRef.current) {
+          setLogError(errorMessage(reason));
+        }
+      })
+      .finally(() => {
+        if (requestNumber === logPrepareRequestRef.current) setLogPreparing(false);
+      });
+  };
+
+  const stopLogs = () => {
+    const operationId = logOperationIdRef.current;
+    if (!operationId) return Promise.resolve();
+    logOperationIdRef.current = undefined;
+    setLogOperationId(undefined);
+    return transport
+      .kubernetesStopPodLogs({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId,
+      })
+      .catch((reason: unknown) => {
+        setLogError(errorMessage(reason));
+      });
+  };
+
+  const closeLogs = () => {
+    logPrepareRequestRef.current += 1;
+    void stopLogs();
+    setLogResource(undefined);
+    setLogContainers([]);
+    setSelectedLogContainer("");
+    setLogs([]);
+    setLogError(undefined);
+    setLogPreparing(false);
+  };
+
+  const closeDetail = () => {
+    detailRequestRef.current += 1;
+    setDetail(undefined);
+    setDetailLoading(false);
+    setDetailError(undefined);
+  };
+
   return (
-    <main className="shell">
-      <header>
-        <p className="eyebrow">Migration milestone 3</p>
-        <h1>Freelens Rust Prototype</h1>
-        <p className="summary">
-          React renderer connected to a versioned Rust service contract through
-          a replaceable transport. Select a kubeconfig context and list cluster
-          namespaces from the Rust backend.
-        </p>
-      </header>
+    <div className="app-shell">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <h1>Freelens</h1>
+          {kubeconfig ? (
+            <select
+              value={selectedContext}
+              onChange={(event) => {
+                setSelectedContextAndRef(event.target.value);
+                setNamespaces([]);
+                setSelectedNamespace("");
+                setResources([]);
+                setDetail(undefined);
+                setLogs([]);
+                resourceRequestRef.current += 1;
+                closeLogs();
+              }}
+            >
+              {kubeconfig.contexts.map((ctx: KubeconfigContext) => (
+                <option key={ctx.name} value={ctx.name}>
+                  {ctx.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p>{kubeconfigError ?? "Loading contexts…"}</p>
+          )}
+        </div>
 
-      {error ? (
-        <section className="card error">
-          <h2>Backend unavailable</h2>
-          <p>{error}</p>
-        </section>
-      ) : (
-        <>
-          <section className="grid">
-            <article className="card">
-              <span className={`status ${health?.status ?? "pending"}`} />
-              <h2>Service health</h2>
-              <strong>{health?.status ?? "checking"}</strong>
-              <dl>
-                <dt>Service</dt>
-                <dd>{health?.service ?? "..."}</dd>
-                <dt>IPC version</dt>
-                <dd>{health?.version ?? "..."}</dd>
-              </dl>
-            </article>
-
-            <article className="card">
-              <h2>Runtime</h2>
-              <dl>
-                <dt>Platform</dt>
-                <dd>{system ? `${system.os} / ${system.arch}` : "..."}</dd>
-                <dt>Application data</dt>
-                <dd>{system?.appDataDir ?? "..."}</dd>
-                <dt>Logs</dt>
-                <dd>{system?.logDir ?? "..."}</dd>
-              </dl>
-            </article>
-          </section>
-
-          <section className="card contexts">
-            <h2>Kubeconfig contexts</h2>
-            {kubeconfigError ? (
-              <p className="version-error">{kubeconfigError}</p>
-            ) : kubeconfig ? (
-              <>
-                <label className="context-label" htmlFor="context-select">
-                  Active context
-                </label>
-                <select
-                  id="context-select"
-                  className="context-select"
-                  value={selectedContext}
-                  onChange={(event) => {
-                    setSelectedContextAndRef(event.target.value);
-                    setNamespaces(undefined);
-                    setNamespacesError(undefined);
-                    setNamespacesLoading(false);
-                    setVersion(undefined);
-                    setVersionError(undefined);
-                    setVersionLoading(false);
-                  }}
-                >
-                  {kubeconfig.contexts.map((ctx: KubeconfigContext) => (
-                    <option key={ctx.name} value={ctx.name}>
-                      {ctx.name} ({ctx.cluster})
-                    </option>
-                  ))}
-                </select>
-                <table className="context-table">
-                  <thead>
-                    <tr>
-                      <th>Current</th>
-                      <th>Context</th>
-                      <th>Cluster</th>
-                      <th>User</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {kubeconfig.contexts.map((ctx: KubeconfigContext) => (
-                      <tr key={ctx.name} className={ctx.isCurrent ? "current" : ""}>
-                        <td>{ctx.isCurrent ? "●" : ""}</td>
-                        <td>{ctx.name}</td>
-                        <td>{ctx.cluster}</td>
-                        <td>{ctx.user ?? "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </>
-            ) : (
-              <p>Loading contexts…</p>
-            )}
-          </section>
-
-          <section className="card contexts">
-            <h2>Cluster explorer</h2>
-            <p className="summary">
-              Connect to{" "}
-              <strong>{selectedContext || kubeconfig?.currentContext || "..."}</strong>{" "}
-              and query the cluster.
-            </p>
-            <div className="button-row">
-              <button
-                className="check-button"
-                onClick={() =>
-                  withSelectedContext(
-                    (context) =>
-                      transport.kubernetesListNamespaces({
-                        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-                        context,
-                      }),
-                    (response) => setNamespaces(response.namespaces),
-                    setNamespacesLoading,
-                    setNamespacesError
-                  )
-                }
-                disabled={namespacesLoading || !kubeconfig}
-              >
-                {namespacesLoading ? "Loading…" : "List namespaces"}
-              </button>
-              <button
-                className="check-button secondary"
-                onClick={() =>
-                  withSelectedContext(
-                    (context) =>
-                      transport.kubernetesVersion({
-                        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-                        context,
-                      }),
-                    (response) => setVersion(response),
-                    setVersionLoading,
-                    setVersionError
-                  )
-                }
-                disabled={versionLoading || !kubeconfig}
-              >
-                {versionLoading ? "Checking…" : "Check /version"}
-              </button>
+        <nav className="sidebar-nav">
+          {RESOURCE_GROUPS.map((group) => (
+            <div key={group.label} className="nav-group">
+              <h3>{group.label}</h3>
+              <ul>
+                {group.kinds.map((kind) => (
+                  <li key={kind}>
+                    <button
+                      className={selectedKind === kind ? "active" : ""}
+                      onClick={() => {
+                        setSelectedKind(kind);
+                        resourceRequestRef.current += 1;
+                        setDetail(undefined);
+                      }}
+                    >
+                      {kind}s
+                    </button>
+                  </li>
+                ))}
+              </ul>
             </div>
+          ))}
+        </nav>
+      </aside>
 
-            {namespacesError ? (
-              <p className="version-error">{namespacesError}</p>
-            ) : namespaces ? (
-              <div className="namespace-list">
-                <h3>Namespaces</h3>
-                <ul>
-                  {namespaces.map((ns: NamespaceItem) => (
-                    <li key={ns.name}>
-                      <span className="namespace-name">{ns.name}</span>
-                      {ns.status ? (
-                        <span className="namespace-status">{ns.status}</span>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
+      <main className="main">
+        <header className="topbar">
+          <h2>{selectedKind}s</h2>
+          <div className="topbar-controls">
+            <select
+              value={selectedNamespace}
+              onChange={(event) => {
+                resourceRequestRef.current += 1;
+                setSelectedNamespace(event.target.value);
+              }}
+            >
+              <option value="">All namespaces</option>
+              {namespaces.map((ns: NamespaceItem) => (
+                <option key={ns.name} value={ns.name}>
+                  {ns.name}
+                </option>
+              ))}
+            </select>
+            <button onClick={() => loadResources()} disabled={resourcesLoading}>
+              Refresh
+            </button>
+          </div>
+        </header>
 
-            {versionError ? (
-              <p className="version-error">{versionError}</p>
-            ) : version ? (
-              <dl>
-                <dt>Git version</dt>
-                <dd>{version.gitVersion}</dd>
-                <dt>Major</dt>
-                <dd>{version.major}</dd>
-                <dt>Minor</dt>
-                <dd>{version.minor}</dd>
-              </dl>
-            ) : null}
+        {resourcesError ? (
+          <p className="error-message">{resourcesError}</p>
+        ) : (
+          <section className="resource-list">
+            <table>
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Namespace</th>
+                  <th>Created</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {resources.map((item: ResourceItem) => (
+                  <tr key={`${item.namespace ?? ""}/${item.name}`}>
+                    <td>{item.name}</td>
+                    <td>{item.namespace ?? "—"}</td>
+                    <td>{item.created ? new Date(item.created).toLocaleString() : "—"}</td>
+                    <td className="actions">
+                      <button onClick={() => openDetail(item)}>YAML</button>
+                      {item.kind === "Pod" && item.namespace && (
+                        <button onClick={() => startLogs(item)}>Logs</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {continueToken && (
+              <button
+                className="load-more"
+                onClick={() => loadResources(continueToken)}
+                disabled={resourcesLoading}
+              >
+                Load more
+              </button>
+            )}
+            {resourcesLoading && resources.length === 0 && <p>Loading…</p>}
           </section>
-        </>
+        )}
+      </main>
+
+      {(detail || detailLoading || detailError) && (
+        <div className="detail-panel-overlay" onClick={closeDetail}>
+          <div className="detail-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <h3>
+                {detail ? `${detail.kind}: ${detail.name}` : detailLoading ? "Loading…" : "Error"}
+              </h3>
+              <button onClick={closeDetail}>Close</button>
+            </header>
+            {detailError ? (
+              <p className="error-message">{detailError}</p>
+            ) : detailLoading ? (
+              <p>Loading YAML…</p>
+            ) : (
+              <pre>{detail?.yaml}</pre>
+            )}
+          </div>
+        </div>
       )}
-    </main>
+
+      {logResource && (
+        <div className="detail-panel-overlay" onClick={closeLogs}>
+          <div className="detail-panel log-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <h3>Logs: {logResource.namespace}/{logResource.name}</h3>
+              <div>
+                {logOperationId ? (
+                  <button onClick={() => void stopLogs()}>Stop</button>
+                ) : (
+                  <button onClick={() => logResource && setLogs([])}>Clear</button>
+                )}
+                <button onClick={closeLogs}>Close</button>
+              </div>
+            </header>
+            <div className="log-controls">
+              {logPreparing ? (
+                <span>Loading containers…</span>
+              ) : (
+                <>
+                  <select
+                    value={selectedLogContainer}
+                    onChange={(event) => setSelectedLogContainer(event.target.value)}
+                    disabled={logContainers.length === 0 || Boolean(logOperationId)}
+                  >
+                    {logContainers.map((container) => (
+                      <option key={container} value={container}>
+                        {container}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => beginLogStream(selectedLogContainer)}
+                    disabled={!selectedLogContainer || Boolean(logOperationId)}
+                  >
+                    {logOperationId ? "Streaming" : "Start logs"}
+                  </button>
+                </>
+              )}
+            </div>
+            {logError && <p className="error-message">{logError}</p>}
+            <div className="log-content">
+              {logOperationId && logs.length === 0 && (
+                <div className="log-empty">Waiting for log output…</div>
+              )}
+              {logs.map((line, index) => (
+                <div key={index} className="log-line">
+                  {line}
+                </div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

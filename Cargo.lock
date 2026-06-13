@@ -850,8 +850,10 @@ dependencies = [
  "k8s-openapi",
  "kube",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]
@@ -868,10 +870,13 @@ dependencies = [
 name = "freelens-kube"
 version = "0.1.0"
 dependencies = [
+ "futures",
  "k8s-openapi",
  "kube",
  "serde",
+ "serde_yaml_ng",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -894,6 +899,7 @@ checksum = "8b147ee9d1f6d097cef9ce628cd2ee62288d963e16fb287bd9286455b241382d"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-executor",
  "futures-io",
  "futures-sink",
  "futures-task",

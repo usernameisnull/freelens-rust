@@ -79,3 +79,134 @@ export interface KubernetesListNamespacesResponse {
   namespaces: NamespaceItem[];
 }
 
+export interface KubernetesDiscoverResourcesRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  context: string;
+}
+
+export interface ResourceKindItem {
+  group: string;
+  version: string;
+  kind: string;
+  plural: string;
+  scope: string;
+  namespaced: boolean;
+}
+
+export interface KubernetesDiscoverResourcesResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  kinds: ResourceKindItem[];
+}
+
+export interface KubernetesListResourcesRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  context: string;
+  kind: string;
+  namespace: string | null;
+  limit: number | null;
+  continueToken: string | null;
+}
+
+export interface ResourceItem {
+  kind: string;
+  apiVersion: string;
+  name: string;
+  namespace: string | null;
+  uid: string | null;
+  created: string | null;
+}
+
+export interface KubernetesListResourcesResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  kind: string;
+  items: ResourceItem[];
+  continueToken: string | null;
+}
+
+export interface KubernetesGetResourceYamlRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  context: string;
+  kind: string;
+  namespace: string | null;
+  name: string;
+}
+
+export interface KubernetesGetResourceYamlResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  kind: string;
+  name: string;
+  yaml: string;
+}
+
+export interface KubernetesGetPodContainersRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  context: string;
+  namespace: string;
+  pod: string;
+}
+
+export interface KubernetesGetPodContainersResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  namespace: string;
+  pod: string;
+  containers: string[];
+  defaultContainer: string | null;
+}
+
+export interface KubernetesStreamPodLogsRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  operationId: string;
+  context: string;
+  namespace: string;
+  pod: string;
+  container: string | null;
+  follow: boolean;
+  tailLines: number | null;
+}
+
+export interface KubernetesStreamPodLogsResponse {
+  version: number;
+  requestId: string;
+  operationId: string;
+  initialLines: string[];
+}
+
+export interface KubernetesStopPodLogsRequest {
+  meta: {
+    version: number;
+    requestId: string;
+  };
+  operationId: string;
+}
+
+export interface LogEvent {
+  operationId: string;
+  line: string;
+}
+
+export interface LogDoneEvent {
+  operationId: string;
+}

@@ -115,6 +115,137 @@ pub struct KubernetesListNamespacesResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesDiscoverResourcesRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceKindItem {
+    pub group: String,
+    pub version: String,
+    pub kind: String,
+    pub plural: String,
+    pub scope: String,
+    pub namespaced: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesDiscoverResourcesResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub kinds: Vec<ResourceKindItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesListResourcesRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: Option<String>,
+    pub limit: Option<u32>,
+    pub continue_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceItem {
+    pub kind: String,
+    pub api_version: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub uid: Option<String>,
+    pub created: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesListResourcesResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub kind: String,
+    pub items: Vec<ResourceItem>,
+    pub continue_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesGetResourceYamlRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: Option<String>,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesGetResourceYamlResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub kind: String,
+    pub name: String,
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesGetPodContainersRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesGetPodContainersResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+    pub containers: Vec<String>,
+    pub default_container: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStreamPodLogsRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+    pub container: Option<String>,
+    pub follow: bool,
+    pub tail_lines: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStreamPodLogsResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub operation_id: String,
+    pub initial_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStopPodLogsRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IpcError {
     pub code: String,
     pub message: String,
@@ -190,5 +321,23 @@ mod tests {
         assert_eq!(json["requestId"], "r4");
         assert_eq!(json["namespaces"][0]["name"], "default");
         assert_eq!(json["namespaces"][0]["status"], "Active");
+    }
+
+    #[test]
+    fn pod_containers_response_serializes_camel_case() {
+        let response = KubernetesGetPodContainersResponse {
+            version: IPC_VERSION,
+            request_id: "r5".into(),
+            context: "dev".into(),
+            namespace: "default".into(),
+            pod: "web".into(),
+            containers: vec!["app".into(), "sidecar".into()],
+            default_container: Some("app".into()),
+        };
+
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["requestId"], "r5");
+        assert_eq!(json["containers"][1], "sidecar");
+        assert_eq!(json["defaultContainer"], "app");
     }
 }
