@@ -11,9 +11,10 @@ use freelens_ipc::{
     KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
     KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
     KubernetesListResourcesRequest, KubernetesListResourcesResponse,
-    KubernetesScaleDeploymentRequest, KubernetesStopPodLogsRequest, KubernetesStreamPodLogsRequest,
-    KubernetesStreamPodLogsResponse, KubernetesVersionRequest, KubernetesVersionResponse,
-    NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    KubernetesScaleDeploymentRequest, KubernetesStartResourceWatchRequest,
+    KubernetesStopPodLogsRequest, KubernetesStopResourceWatchRequest,
+    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse, KubernetesVersionRequest,
+    KubernetesVersionResponse, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -578,6 +579,25 @@ struct LogStreamManager {
     streams: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
 }
 
+#[derive(Default, Clone)]
+struct ResourceWatchManager {
+    watches: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+}
+
+impl ResourceWatchManager {
+    fn insert(&self, id: String, handle: tokio::task::AbortHandle) {
+        if let Some(previous) = self.watches.lock().unwrap().insert(id, handle) {
+            previous.abort();
+        }
+    }
+
+    fn stop(&self, id: &str) {
+        if let Some(handle) = self.watches.lock().unwrap().remove(id) {
+            handle.abort();
+        }
+    }
+}
+
 impl LogStreamManager {
     fn insert(&self, id: String, handle: tokio::task::AbortHandle) {
         self.streams.lock().unwrap().insert(id, handle);
@@ -588,6 +608,61 @@ impl LogStreamManager {
             handle.abort();
         }
     }
+}
+
+#[tauri::command]
+async fn kubernetes_start_resource_watch(
+    request: KubernetesStartResourceWatchRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+    watches: State<'_, ResourceWatchManager>,
+    app: AppHandle,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let (mut rx, abort) =
+        freelens_kube::watch_resources(client, &request.kind, request.namespace.as_deref())
+            .await
+            .map_err(|error| IpcError {
+                code: error.code().into(),
+                message: error.to_string(),
+            })?;
+    let operation_id = request.operation_id;
+    watches.insert(operation_id.clone(), abort);
+    let manager = watches.inner().clone();
+    tokio::spawn(async move {
+        while let Some(notification) = rx.recv().await {
+            let payload = match notification {
+                freelens_kube::ResourceWatchNotification::Changed => serde_json::json!({
+                    "operationId": operation_id,
+                    "type": "changed",
+                }),
+                freelens_kube::ResourceWatchNotification::Error(message) => serde_json::json!({
+                    "operationId": operation_id,
+                    "type": "error",
+                    "message": message,
+                }),
+            };
+            let _ = app.emit("kubernetes:resource-watch", payload);
+        }
+        manager.stop(&operation_id);
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn kubernetes_stop_resource_watch(
+    request: KubernetesStopResourceWatchRequest,
+    watches: State<'_, ResourceWatchManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    watches.stop(&request.operation_id);
+    Ok(())
 }
 
 #[tauri::command]
@@ -696,6 +771,7 @@ fn main() {
         })
         .manage(freelens_kube::ClientCache::new())
         .manage(LogStreamManager::default())
+        .manage(ResourceWatchManager::default())
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
@@ -710,6 +786,8 @@ fn main() {
             kubernetes_delete_resource,
             kubernetes_scale_deployment,
             kubernetes_exec_pod,
+            kubernetes_start_resource_watch,
+            kubernetes_stop_resource_watch,
             kubernetes_get_pod_containers,
             kubernetes_stream_pod_logs,
             kubernetes_stop_pod_logs

@@ -117,6 +117,31 @@ input {
   font-weight: 600;
 }
 
+.title-with-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.watch-status {
+  padding: 3px 7px;
+  border: 1px solid #394754;
+  border-radius: 999px;
+  color: #9eabb8;
+  font-size: 0.72rem;
+  text-transform: capitalize;
+}
+
+.watch-status.live {
+  border-color: rgba(88, 209, 181, 0.45);
+  color: #58d1b5;
+}
+
+.watch-status.retrying {
+  border-color: rgba(255, 188, 92, 0.5);
+  color: #ffbc5c;
+}
+
 .topbar-controls {
   display: flex;
   gap: 12px;

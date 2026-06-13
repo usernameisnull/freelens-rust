@@ -97,6 +97,9 @@ export function App() {
   const [sortKey, setSortKey] = useState("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [refreshSeconds, setRefreshSeconds] = useState(0);
+  const [watchStatus, setWatchStatus] = useState<"connecting" | "live" | "retrying" | "off">("off");
+  const resourceWatchOperationRef = useRef<string | undefined>(undefined);
+  const resourceWatchRefreshRef = useRef<number | undefined>(undefined);
 
   const [detail, setDetail] = useState<KubernetesGetResourceDetailResponse>();
   const [detailTab, setDetailTab] = useState<"overview" | "yaml">("overview");
@@ -142,6 +145,7 @@ export function App() {
 
     let unlistenLog: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
+    let unlistenResourceWatch: (() => void) | undefined;
 
     transport.onLogEvent((event) => {
       if (event.operationId === logOperationIdRef.current) {
@@ -160,6 +164,19 @@ export function App() {
       unlistenDone = unlisten;
     });
 
+    transport.onResourceWatchEvent((event) => {
+      if (event.operationId !== resourceWatchOperationRef.current) return;
+      if (event.type === "error") {
+        setWatchStatus("retrying");
+        return;
+      }
+      setWatchStatus("live");
+      if (resourceWatchRefreshRef.current) window.clearTimeout(resourceWatchRefreshRef.current);
+      resourceWatchRefreshRef.current = window.setTimeout(() => loadResources(), 250);
+    }).then((unlisten) => {
+      unlistenResourceWatch = unlisten;
+    });
+
     return () => {
       const operationId = logOperationIdRef.current;
       if (operationId) {
@@ -170,6 +187,8 @@ export function App() {
       }
       unlistenLog?.();
       unlistenDone?.();
+      unlistenResourceWatch?.();
+      if (resourceWatchRefreshRef.current) window.clearTimeout(resourceWatchRefreshRef.current);
     };
   }, []);
 
@@ -189,6 +208,41 @@ export function App() {
   useEffect(() => {
     if (!selectedContext || !selectedKind) return;
     loadResources();
+  }, [selectedContext, selectedKind, selectedNamespace]);
+
+  useEffect(() => {
+    if (!selectedContext || !selectedKind) return;
+    const operationId = crypto.randomUUID();
+    const previous = resourceWatchOperationRef.current;
+    resourceWatchOperationRef.current = operationId;
+    setWatchStatus("connecting");
+    if (previous) {
+      void transport.kubernetesStopResourceWatch({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId: previous,
+      });
+    }
+    transport.kubernetesStartResourceWatch({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      operationId,
+      context: selectedContext,
+      kind: selectedKind,
+      namespace: selectedNamespace || null,
+    }).then(() => {
+      if (resourceWatchOperationRef.current === operationId) setWatchStatus("live");
+    }).catch(() => {
+      if (resourceWatchOperationRef.current === operationId) setWatchStatus("retrying");
+    });
+    return () => {
+      if (resourceWatchOperationRef.current === operationId) {
+        resourceWatchOperationRef.current = undefined;
+        setWatchStatus("off");
+      }
+      void transport.kubernetesStopResourceWatch({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId,
+      });
+    };
   }, [selectedContext, selectedKind, selectedNamespace]);
 
   useEffect(() => {
@@ -582,7 +636,10 @@ export function App() {
 
       <main className="main">
         <header className="topbar">
-          <h2>{selectedKind}s</h2>
+          <div className="title-with-status">
+            <h2>{selectedKind}s</h2>
+            <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>
+          </div>
           <div className="topbar-controls">
             <input
               type="search"

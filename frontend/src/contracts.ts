@@ -134,6 +134,25 @@ export interface KubernetesListResourcesResponse {
   continueToken: string | null;
 }
 
+export interface KubernetesStartResourceWatchRequest {
+  meta: { version: number; requestId: string };
+  operationId: string;
+  context: string;
+  kind: string;
+  namespace: string | null;
+}
+
+export interface KubernetesStopResourceWatchRequest {
+  meta: { version: number; requestId: string };
+  operationId: string;
+}
+
+export interface ResourceWatchEvent {
+  operationId: string;
+  type: "changed" | "error";
+  message?: string;
+}
+
 export interface KubernetesGetResourceYamlRequest {
   meta: {
     version: number;

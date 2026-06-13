@@ -24,13 +24,16 @@ import {
   KubernetesListResourcesRequest,
   KubernetesListResourcesResponse,
   KubernetesScaleDeploymentRequest,
+  KubernetesStartResourceWatchRequest,
   KubernetesStopPodLogsRequest,
+  KubernetesStopResourceWatchRequest,
   KubernetesStreamPodLogsRequest,
   KubernetesStreamPodLogsResponse,
   KubernetesVersionRequest,
   KubernetesVersionResponse,
   LogDoneEvent,
   LogEvent,
+  ResourceWatchEvent,
   SystemInfoResponse,
 } from "./contracts";
 
@@ -48,6 +51,9 @@ export interface Transport {
   kubernetesListResources(
     request: KubernetesListResourcesRequest
   ): Promise<KubernetesListResourcesResponse>;
+  kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void>;
+  kubernetesStopResourceWatch(request: KubernetesStopResourceWatchRequest): Promise<void>;
+  onResourceWatchEvent(callback: (event: ResourceWatchEvent) => void): Promise<UnlistenFn>;
   kubernetesGetResourceYaml(
     request: KubernetesGetResourceYamlRequest
   ): Promise<KubernetesGetResourceYamlResponse>;
@@ -104,6 +110,18 @@ class TauriTransport implements Transport {
     request: KubernetesListResourcesRequest
   ): Promise<KubernetesListResourcesResponse> {
     return invoke("kubernetes_list_resources", { request });
+  }
+
+  kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void> {
+    return invoke("kubernetes_start_resource_watch", { request });
+  }
+
+  kubernetesStopResourceWatch(request: KubernetesStopResourceWatchRequest): Promise<void> {
+    return invoke("kubernetes_stop_resource_watch", { request });
+  }
+
+  onResourceWatchEvent(callback: (event: ResourceWatchEvent) => void): Promise<UnlistenFn> {
+    return listen<ResourceWatchEvent>("kubernetes:resource-watch", (event) => callback(event.payload));
   }
 
   kubernetesGetResourceYaml(
@@ -274,6 +292,14 @@ class MockTransport implements Transport {
       }),
       continueToken: null,
     };
+  }
+
+  async kubernetesStartResourceWatch(): Promise<void> {}
+
+  async kubernetesStopResourceWatch(): Promise<void> {}
+
+  async onResourceWatchEvent(): Promise<UnlistenFn> {
+    return () => {};
   }
 
   async kubernetesGetResourceYaml(

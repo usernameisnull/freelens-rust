@@ -177,6 +177,23 @@ pub struct KubernetesListResourcesResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesStartResourceWatchRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+    pub context: String,
+    pub kind: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStopResourceWatchRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesGetResourceYamlRequest {
     pub meta: RequestMeta,
     pub context: String,

@@ -4,6 +4,7 @@ use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
 use kube::ResourceExt;
 use kube::api::{
     Api, AttachParams, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
+    WatchEvent, WatchParams,
 };
 use kube::config::KubeConfigOptions;
 use kube::core::GroupVersionKind;
@@ -177,6 +178,12 @@ pub struct ExecResult {
     pub stderr: String,
     pub success: bool,
     pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceWatchNotification {
+    Changed,
+    Error(String),
 }
 
 fn field(label: &str, value: impl ToString) -> DetailField {
@@ -706,6 +713,79 @@ async fn dynamic_api(
             kind: format!("{}: {}", kind, error),
         })?;
     Ok(Api::namespaced_with(client, namespace, &ar))
+}
+
+/// Watch a supported resource collection and reconnect after transient failures.
+pub async fn watch_resources(
+    client: kube::Client,
+    kind: &str,
+    namespace: Option<&str>,
+) -> Result<
+    (
+        tokio::sync::mpsc::Receiver<ResourceWatchNotification>,
+        tokio::task::AbortHandle,
+    ),
+    KubernetesError,
+> {
+    let gvk = gvk_for_kind(kind)
+        .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
+    let (ar, _) = kube::discovery::pinned_kind(&client, &gvk)
+        .await
+        .map_err(|error| KubernetesError::UnsupportedResourceKind {
+            kind: format!("{}: {}", kind, error),
+        })?;
+    let api: Api<DynamicObject> = match namespace {
+        Some(namespace) => Api::namespaced_with(client, namespace, &ar),
+        None => Api::all_with(client, &ar),
+    };
+    let (tx, rx) = tokio::sync::mpsc::channel(32);
+    let task = tokio::spawn(async move {
+        loop {
+            let params = WatchParams::default().timeout(30);
+            match api.watch(&params, "0").await {
+                Ok(stream) => {
+                    futures::pin_mut!(stream);
+                    while let Some(event) = stream.next().await {
+                        match event {
+                            Ok(
+                                WatchEvent::Added(_)
+                                | WatchEvent::Modified(_)
+                                | WatchEvent::Deleted(_),
+                            ) => {
+                                if tx.send(ResourceWatchNotification::Changed).await.is_err() {
+                                    return;
+                                }
+                            }
+                            Ok(WatchEvent::Error(error)) => {
+                                let _ = tx
+                                    .send(ResourceWatchNotification::Error(error.message))
+                                    .await;
+                                break;
+                            }
+                            Ok(WatchEvent::Bookmark(_)) => {}
+                            Err(error) => {
+                                let _ = tx
+                                    .send(ResourceWatchNotification::Error(error.to_string()))
+                                    .await;
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    if tx
+                        .send(ResourceWatchNotification::Error(error.to_string()))
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        }
+    });
+    Ok((rx, task.abort_handle()))
 }
 
 /// Apply edited YAML to the same resource using server-side apply.
