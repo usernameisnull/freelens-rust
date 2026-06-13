@@ -122,6 +122,7 @@ export interface ResourceItem {
   namespace: string | null;
   uid: string | null;
   created: string | null;
+  columns: Record<string, string>;
 }
 
 export interface KubernetesListResourcesResponse {

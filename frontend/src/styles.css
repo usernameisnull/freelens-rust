@@ -131,6 +131,15 @@ input {
   color: #e8edf2;
 }
 
+.topbar-controls input {
+  min-width: 190px;
+  padding: 6px 8px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #e8edf2;
+}
+
 .topbar-controls button {
   padding: 6px 14px;
   border: 1px solid #26313a;
@@ -174,6 +183,17 @@ input {
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+.sort-button {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
 }
 
 .resource-list tbody tr:hover {

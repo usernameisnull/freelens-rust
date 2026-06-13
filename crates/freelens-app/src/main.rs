@@ -278,6 +278,7 @@ async fn kubernetes_list_resources(
                 namespace: item.namespace,
                 uid: item.uid,
                 created: item.created,
+                columns: item.columns,
             })
             .collect(),
         continue_token: list.continue_token,

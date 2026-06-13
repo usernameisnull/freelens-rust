@@ -226,14 +226,22 @@ class MockTransport implements Transport {
       requestId: request.meta.requestId,
       context: request.context,
       kind: request.kind,
-      items: base.map((item, index) => ({
-        kind: request.kind,
-        apiVersion: request.kind === "Deployment" ? "apps/v1" : "v1",
-        name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
-        namespace: request.namespace,
-        uid: `uid-${index}`,
-        created: new Date().toISOString(),
-      })),
+      items: base.map((item, index) => {
+        const columns: Record<string, string> = request.kind === "Pod"
+          ? { status: "Running", ready: "1/1", restarts: "0", node: "worker-1" }
+          : request.kind === "Deployment"
+            ? { ready: "3/3", upToDate: "3", available: "3" }
+            : { type: "ClusterIP", clusterIP: "10.96.0.10", ports: "80/TCP" };
+        return {
+          kind: request.kind,
+          apiVersion: request.kind === "Deployment" ? "apps/v1" : "v1",
+          name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
+          namespace: request.namespace,
+          uid: `uid-${index}`,
+          created: new Date().toISOString(),
+          columns,
+        };
+      }),
       continueToken: null,
     };
   }

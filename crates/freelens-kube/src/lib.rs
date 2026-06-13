@@ -7,7 +7,7 @@ use kube::config::KubeConfigOptions;
 use kube::core::GroupVersionKind;
 use kube::discovery::{Discovery, verbs};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use thiserror::Error;
 
@@ -83,6 +83,7 @@ pub struct ResourceSummary {
     pub namespace: Option<String>,
     pub uid: Option<String>,
     pub created: Option<String>,
+    pub columns: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +179,100 @@ fn container_state(status: &k8s_openapi::api::core::v1::ContainerStatus) -> Stri
     } else {
         "Unknown".into()
     }
+}
+
+fn json_i64(value: &serde_json::Value, path: &[&str]) -> i64 {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(serde_json::Value::as_i64)
+        .unwrap_or(0)
+}
+
+fn json_string(value: &serde_json::Value, path: &[&str]) -> String {
+    path.iter()
+        .try_fold(value, |current, key| current.get(*key))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("-")
+        .to_string()
+}
+
+fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, String> {
+    let mut columns = BTreeMap::new();
+    match kind {
+        "Pod" => {
+            let statuses = data
+                .pointer("/status/containerStatuses")
+                .and_then(serde_json::Value::as_array);
+            let total = statuses.map_or(0, Vec::len);
+            let ready = statuses.map_or(0, |items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.get("ready").and_then(serde_json::Value::as_bool) == Some(true)
+                    })
+                    .count()
+            });
+            let restarts: i64 = statuses.map_or(0, |items| {
+                items
+                    .iter()
+                    .map(|item| json_i64(item, &["restartCount"]))
+                    .sum()
+            });
+            columns.insert("status".into(), json_string(data, &["status", "phase"]));
+            columns.insert("ready".into(), format!("{ready}/{total}"));
+            columns.insert("restarts".into(), restarts.to_string());
+            columns.insert("node".into(), json_string(data, &["spec", "nodeName"]));
+        }
+        "Deployment" => {
+            let desired = data
+                .pointer("/spec/replicas")
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(1);
+            let ready = json_i64(data, &["status", "readyReplicas"]);
+            columns.insert("ready".into(), format!("{ready}/{desired}"));
+            columns.insert(
+                "upToDate".into(),
+                json_i64(data, &["status", "updatedReplicas"]).to_string(),
+            );
+            columns.insert(
+                "available".into(),
+                json_i64(data, &["status", "availableReplicas"]).to_string(),
+            );
+        }
+        "Service" => {
+            columns.insert("type".into(), json_string(data, &["spec", "type"]));
+            columns.insert(
+                "clusterIP".into(),
+                json_string(data, &["spec", "clusterIP"]),
+            );
+            let ports = data
+                .pointer("/spec/ports")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .map(|port| {
+                            let number = port
+                                .get("port")
+                                .and_then(serde_json::Value::as_i64)
+                                .map(|value| value.to_string())
+                                .unwrap_or_else(|| "-".into());
+                            let protocol = port
+                                .get("protocol")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or("TCP");
+                            format!("{number}/{protocol}")
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".into());
+            columns.insert("ports".into(), ports);
+        }
+        _ => {}
+    }
+    columns
 }
 
 fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
@@ -293,21 +388,26 @@ pub async fn list_resources(
     let continue_token = list.metadata.continue_.clone().filter(|s| !s.is_empty());
     let items = list
         .into_iter()
-        .map(|obj| ResourceSummary {
-            kind: obj
+        .map(|obj| {
+            let item_kind = obj
                 .types
                 .as_ref()
                 .map(|t| t.kind.clone())
-                .unwrap_or_else(|| kind.into()),
-            api_version: obj
-                .types
-                .as_ref()
-                .map(|t| t.api_version.clone())
-                .unwrap_or_default(),
-            name: obj.name_any(),
-            namespace: obj.namespace(),
-            uid: obj.uid(),
-            created: obj.creation_timestamp().map(|t| t.0.to_rfc3339()),
+                .unwrap_or_else(|| kind.into());
+            let columns = resource_columns(&item_kind, &obj.data);
+            ResourceSummary {
+                kind: item_kind,
+                api_version: obj
+                    .types
+                    .as_ref()
+                    .map(|t| t.api_version.clone())
+                    .unwrap_or_default(),
+                name: obj.name_any(),
+                namespace: obj.namespace(),
+                uid: obj.uid(),
+                created: obj.creation_timestamp().map(|t| t.0.to_rfc3339()),
+                columns,
+            }
         })
         .collect();
 
@@ -771,9 +871,11 @@ mod tests {
             namespace: Some("default".into()),
             uid: Some("uid-1".into()),
             created: Some("2024-01-01T00:00:00Z".into()),
+            columns: BTreeMap::from([("status".into(), "Running".into())]),
         };
         let json = k8s_openapi::serde_json::to_value(summary).unwrap();
         assert_eq!(json["apiVersion"], "v1");
+        assert_eq!(json["columns"]["status"], "Running");
         assert_eq!(json["namespace"], "default");
     }
 }

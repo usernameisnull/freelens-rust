@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 pub const IPC_VERSION: u16 = 1;
 
@@ -160,6 +161,7 @@ pub struct ResourceItem {
     pub namespace: Option<String>,
     pub uid: Option<String>,
     pub created: Option<String>,
+    pub columns: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   IPC_VERSION,
   KubeconfigContext,
@@ -43,6 +43,37 @@ const RESOURCE_GROUPS = [
   },
 ];
 
+const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = {
+  Pod: [
+    { key: "status", label: "Status" },
+    { key: "ready", label: "Ready" },
+    { key: "restarts", label: "Restarts" },
+    { key: "node", label: "Node" },
+  ],
+  Deployment: [
+    { key: "ready", label: "Ready" },
+    { key: "upToDate", label: "Up-to-date" },
+    { key: "available", label: "Available" },
+  ],
+  Service: [
+    { key: "type", label: "Type" },
+    { key: "clusterIP", label: "Cluster IP" },
+    { key: "ports", label: "Ports" },
+  ],
+};
+
+function formatAge(created: string | null): string {
+  if (!created) return "-";
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(created).getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 365 ? `${days}d` : `${Math.floor(days / 365)}y`;
+}
+
 export function App() {
   const [kubeconfig, setKubeconfig] = useState<KubeconfigListResponse>();
   const [kubeconfigError, setKubeconfigError] = useState<string>();
@@ -62,6 +93,10 @@ export function App() {
   const [resourcesError, setResourcesError] = useState<string>();
   const [continueToken, setContinueToken] = useState<string | null>(null);
   const resourceRequestRef = useRef(0);
+  const [resourceSearch, setResourceSearch] = useState("");
+  const [sortKey, setSortKey] = useState("name");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [refreshSeconds, setRefreshSeconds] = useState(0);
 
   const [detail, setDetail] = useState<KubernetesGetResourceDetailResponse>();
   const [detailTab, setDetailTab] = useState<"overview" | "yaml">("overview");
@@ -144,6 +179,12 @@ export function App() {
     if (!selectedContext || !selectedKind) return;
     loadResources();
   }, [selectedContext, selectedKind, selectedNamespace]);
+
+  useEffect(() => {
+    if (!refreshSeconds || !selectedContext || !selectedKind) return;
+    const interval = window.setInterval(() => loadResources(), refreshSeconds * 1000);
+    return () => window.clearInterval(interval);
+  }, [refreshSeconds, selectedContext, selectedKind, selectedNamespace]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -316,6 +357,38 @@ export function App() {
     setDetailError(undefined);
   };
 
+  const visibleResources = useMemo(() => {
+    const query = resourceSearch.trim().toLowerCase();
+    const filtered = query
+      ? resources.filter((item) =>
+          [item.name, item.namespace ?? "", ...Object.values(item.columns)]
+            .some((value) => value.toLowerCase().includes(query))
+        )
+      : resources;
+    const valueFor = (item: ResourceItem) => {
+      if (sortKey === "name") return item.name;
+      if (sortKey === "namespace") return item.namespace ?? "";
+      if (sortKey === "age") return item.created ?? "";
+      return item.columns[sortKey] ?? "";
+    };
+    return [...filtered].sort((left, right) => {
+      const result = valueFor(left).localeCompare(valueFor(right), undefined, { numeric: true });
+      return sortDirection === "asc" ? result : -result;
+    });
+  }, [resources, resourceSearch, sortKey, sortDirection]);
+
+  const changeSort = (key: string) => {
+    if (sortKey === key) {
+      setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    } else {
+      setSortKey(key);
+      setSortDirection("asc");
+    }
+  };
+
+  const sortLabel = (key: string, label: string) =>
+    `${label}${sortKey === key ? (sortDirection === "asc" ? " ^" : " v") : ""}`;
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -375,6 +448,12 @@ export function App() {
         <header className="topbar">
           <h2>{selectedKind}s</h2>
           <div className="topbar-controls">
+            <input
+              type="search"
+              placeholder="Search resources"
+              value={resourceSearch}
+              onChange={(event) => setResourceSearch(event.target.value)}
+            />
             <select
               value={selectedNamespace}
               onChange={(event) => {
@@ -389,6 +468,12 @@ export function App() {
                 </option>
               ))}
             </select>
+            <select value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}>
+              <option value={0}>Auto refresh: Off</option>
+              <option value={5}>Every 5s</option>
+              <option value={15}>Every 15s</option>
+              <option value={30}>Every 30s</option>
+            </select>
             <button onClick={() => loadResources()} disabled={resourcesLoading}>
               Refresh
             </button>
@@ -402,18 +487,22 @@ export function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Name</th>
-                  <th>Namespace</th>
-                  <th>Created</th>
+                  <th><button className="sort-button" onClick={() => changeSort("name")}>{sortLabel("name", "Name")}</button></th>
+                  <th><button className="sort-button" onClick={() => changeSort("namespace")}>{sortLabel("namespace", "Namespace")}</button></th>
+                  {(RESOURCE_COLUMNS[selectedKind] ?? []).map((column) => (
+                    <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                  ))}
+                  <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
                   <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {resources.map((item: ResourceItem) => (
+                {visibleResources.map((item: ResourceItem) => (
                   <tr key={`${item.namespace ?? ""}/${item.name}`}>
                     <td>{item.name}</td>
-                    <td>{item.namespace ?? "—"}</td>
-                    <td>{item.created ? new Date(item.created).toLocaleString() : "—"}</td>
+                    <td>{item.namespace ?? "-"}</td>
+                    {(RESOURCE_COLUMNS[selectedKind] ?? []).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+                    <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
                     <td className="actions">
                       <button onClick={() => openDetail(item)}>Details</button>
                       {item.kind === "Pod" && item.namespace && (
@@ -454,6 +543,7 @@ export function App() {
                     namespace: detail.namespace,
                     uid: null,
                     created: null,
+                    columns: {},
                   })}>Refresh</button>
                 )}
                 <button onClick={closeDetail}>Close</button>
