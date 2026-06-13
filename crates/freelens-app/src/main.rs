@@ -3,19 +3,32 @@
 use freelens_ipc::{
     ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem, HealthCheckRequest,
     HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError, KubeconfigListRequest,
-    KubeconfigListResponse, KubernetesDiscoverResourcesRequest,
-    KubernetesDiscoverResourcesResponse, KubernetesGetPodContainersRequest,
-    KubernetesGetPodContainersResponse, KubernetesGetResourceDetailRequest,
-    KubernetesGetResourceDetailResponse, KubernetesGetResourceYamlRequest,
-    KubernetesGetResourceYamlResponse, KubernetesListNamespacesRequest,
-    KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
-    KubernetesListResourcesResponse, KubernetesStopPodLogsRequest, KubernetesStreamPodLogsRequest,
+    KubeconfigListResponse, KubernetesApplyResourceRequest, KubernetesApplyResourceResponse,
+    KubernetesDeleteResourceRequest, KubernetesDiscoverResourcesRequest,
+    KubernetesDiscoverResourcesResponse, KubernetesExecPodRequest, KubernetesExecPodResponse,
+    KubernetesGetPodContainersRequest, KubernetesGetPodContainersResponse,
+    KubernetesGetResourceDetailRequest, KubernetesGetResourceDetailResponse,
+    KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
+    KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
+    KubernetesListResourcesRequest, KubernetesListResourcesResponse,
+    KubernetesScaleDeploymentRequest, KubernetesStopPodLogsRequest, KubernetesStreamPodLogsRequest,
     KubernetesStreamPodLogsResponse, KubernetesVersionRequest, KubernetesVersionResponse,
     NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, path::BaseDirectory};
+
+fn validate_ipc_version(version: u16) -> Result<(), IpcError> {
+    if version == IPC_VERSION {
+        Ok(())
+    } else {
+        Err(IpcError {
+            code: "unsupported_ipc_version".into(),
+            message: format!("IPC version {version} is not supported; expected {IPC_VERSION}"),
+        })
+    }
+}
 
 #[tauri::command]
 fn health_check(request: HealthCheckRequest) -> Result<HealthCheckResponse, IpcError> {
@@ -412,6 +425,115 @@ async fn kubernetes_get_resource_detail(
 }
 
 #[tauri::command]
+async fn kubernetes_apply_resource(
+    request: KubernetesApplyResourceRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesApplyResourceResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let yaml = freelens_kube::apply_resource_yaml(
+        client,
+        &request.kind,
+        &request.namespace,
+        &request.name,
+        &request.yaml,
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })?;
+    Ok(KubernetesApplyResourceResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        yaml,
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_delete_resource(
+    request: KubernetesDeleteResourceRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    freelens_kube::delete_resource(client, &request.kind, &request.namespace, &request.name)
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })
+}
+
+#[tauri::command]
+async fn kubernetes_scale_deployment(
+    request: KubernetesScaleDeploymentRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    freelens_kube::scale_deployment(client, &request.namespace, &request.name, request.replicas)
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })
+}
+
+#[tauri::command]
+async fn kubernetes_exec_pod(
+    request: KubernetesExecPodRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesExecPodResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let result = freelens_kube::exec_pod_command(
+        client,
+        &request.namespace,
+        &request.pod,
+        &request.container,
+        &request.command,
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })?;
+    Ok(KubernetesExecPodResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        success: result.success,
+        status: result.status,
+    })
+}
+
+#[tauri::command]
 async fn kubernetes_get_pod_containers(
     request: KubernetesGetPodContainersRequest,
     cache: State<'_, freelens_kube::ClientCache>,
@@ -584,6 +706,10 @@ fn main() {
             kubernetes_list_resources,
             kubernetes_get_resource_yaml,
             kubernetes_get_resource_detail,
+            kubernetes_apply_resource,
+            kubernetes_delete_resource,
+            kubernetes_scale_deployment,
+            kubernetes_exec_pod,
             kubernetes_get_pod_containers,
             kubernetes_stream_pod_logs,
             kubernetes_stop_pod_logs

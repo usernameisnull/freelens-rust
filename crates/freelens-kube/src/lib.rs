@@ -2,7 +2,9 @@ use futures::{AsyncBufReadExt, StreamExt};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
 use kube::ResourceExt;
-use kube::api::{Api, DynamicObject, ListParams, LogParams};
+use kube::api::{
+    Api, AttachParams, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
+};
 use kube::config::KubeConfigOptions;
 use kube::core::GroupVersionKind;
 use kube::discovery::{Discovery, verbs};
@@ -30,6 +32,14 @@ pub enum KubernetesError {
     GetResourceFailed(String),
     #[error("failed to stream pod logs: {0}")]
     StreamLogsFailed(String),
+    #[error("failed to apply resource: {0}")]
+    ApplyResourceFailed(String),
+    #[error("failed to delete resource: {0}")]
+    DeleteResourceFailed(String),
+    #[error("failed to scale deployment: {0}")]
+    ScaleDeploymentFailed(String),
+    #[error("failed to execute pod command: {0}")]
+    ExecPodFailed(String),
 }
 
 impl KubernetesError {
@@ -45,6 +55,10 @@ impl KubernetesError {
             KubernetesError::ListResourcesFailed(..) => "kubernetes_list_resources_failed",
             KubernetesError::GetResourceFailed(..) => "kubernetes_get_resource_failed",
             KubernetesError::StreamLogsFailed(..) => "kubernetes_stream_logs_failed",
+            KubernetesError::ApplyResourceFailed(..) => "kubernetes_apply_resource_failed",
+            KubernetesError::DeleteResourceFailed(..) => "kubernetes_delete_resource_failed",
+            KubernetesError::ScaleDeploymentFailed(..) => "kubernetes_scale_deployment_failed",
+            KubernetesError::ExecPodFailed(..) => "kubernetes_exec_pod_failed",
         }
     }
 }
@@ -154,6 +168,15 @@ pub struct ResourceDetail {
     pub containers: Vec<ContainerDetail>,
     pub events: Vec<EventDetail>,
     pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecResult {
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+    pub status: Option<String>,
 }
 
 fn field(label: &str, value: impl ToString) -> DetailField {
@@ -670,6 +693,159 @@ pub async fn get_resource_detail(
     })
 }
 
+async fn dynamic_api(
+    client: kube::Client,
+    kind: &str,
+    namespace: &str,
+) -> Result<Api<DynamicObject>, KubernetesError> {
+    let gvk = gvk_for_kind(kind)
+        .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
+    let (ar, _) = kube::discovery::pinned_kind(&client, &gvk)
+        .await
+        .map_err(|error| KubernetesError::UnsupportedResourceKind {
+            kind: format!("{}: {}", kind, error),
+        })?;
+    Ok(Api::namespaced_with(client, namespace, &ar))
+}
+
+/// Apply edited YAML to the same resource using server-side apply.
+pub async fn apply_resource_yaml(
+    client: kube::Client,
+    expected_kind: &str,
+    expected_namespace: &str,
+    expected_name: &str,
+    yaml: &str,
+) -> Result<String, KubernetesError> {
+    let object: DynamicObject = serde_yaml_ng::from_str(yaml)
+        .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
+    let actual_kind = object
+        .types
+        .as_ref()
+        .map(|types| types.kind.as_str())
+        .unwrap_or_default();
+    let actual_name = object.name_any();
+    let actual_namespace = object
+        .namespace()
+        .unwrap_or_else(|| expected_namespace.into());
+    if actual_kind != expected_kind
+        || actual_name != expected_name
+        || actual_namespace != expected_namespace
+    {
+        return Err(KubernetesError::ApplyResourceFailed(format!(
+            "YAML identity {actual_kind} {actual_namespace}/{actual_name} does not match {expected_kind} {expected_namespace}/{expected_name}"
+        )));
+    }
+    let api = dynamic_api(client, expected_kind, expected_namespace).await?;
+    let applied = api
+        .patch(
+            expected_name,
+            &PatchParams::apply("freelens-rust"),
+            &Patch::Apply(&object),
+        )
+        .await
+        .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
+    serde_yaml_ng::to_string(&applied)
+        .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))
+}
+
+/// Delete a supported namespaced resource.
+pub async fn delete_resource(
+    client: kube::Client,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<(), KubernetesError> {
+    dynamic_api(client, kind, namespace)
+        .await?
+        .delete(name, &DeleteParams::default())
+        .await
+        .map_err(|error| KubernetesError::DeleteResourceFailed(error.to_string()))?;
+    Ok(())
+}
+
+/// Update the desired replica count of a Deployment.
+pub async fn scale_deployment(
+    client: kube::Client,
+    namespace: &str,
+    name: &str,
+    replicas: i32,
+) -> Result<(), KubernetesError> {
+    if replicas < 0 {
+        return Err(KubernetesError::ScaleDeploymentFailed(
+            "replicas cannot be negative".into(),
+        ));
+    }
+    let api: Api<Deployment> = Api::namespaced(client, namespace);
+    api.patch(
+        name,
+        &PatchParams::default(),
+        &Patch::Merge(serde_json::json!({ "spec": { "replicas": replicas } })),
+    )
+    .await
+    .map_err(|error| KubernetesError::ScaleDeploymentFailed(error.to_string()))?;
+    Ok(())
+}
+
+/// Execute a shell command in a Pod container and collect its output.
+pub async fn exec_pod_command(
+    client: kube::Client,
+    namespace: &str,
+    pod: &str,
+    container: &str,
+    command: &str,
+) -> Result<ExecResult, KubernetesError> {
+    use tokio::io::AsyncReadExt;
+
+    if command.trim().is_empty() {
+        return Err(KubernetesError::ExecPodFailed(
+            "command cannot be empty".into(),
+        ));
+    }
+    let api: Api<Pod> = Api::namespaced(client, namespace);
+    let params = AttachParams::default()
+        .container(container)
+        .stdin(false)
+        .stdout(true)
+        .stderr(true);
+    let mut process = api
+        .exec(pod, ["sh", "-c", command], &params)
+        .await
+        .map_err(|error| KubernetesError::ExecPodFailed(error.to_string()))?;
+    let mut stdout_reader = process
+        .stdout()
+        .ok_or_else(|| KubernetesError::ExecPodFailed("stdout is unavailable".into()))?;
+    let mut stderr_reader = process
+        .stderr()
+        .ok_or_else(|| KubernetesError::ExecPodFailed("stderr is unavailable".into()))?;
+    let status_future = process.take_status();
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    let (stdout_result, stderr_result, status, joined) = tokio::join!(
+        stdout_reader.read_to_string(&mut stdout),
+        stderr_reader.read_to_string(&mut stderr),
+        async {
+            match status_future {
+                Some(status) => status.await,
+                None => None,
+            }
+        },
+        process.join(),
+    );
+    stdout_result.map_err(|error| KubernetesError::ExecPodFailed(error.to_string()))?;
+    stderr_result.map_err(|error| KubernetesError::ExecPodFailed(error.to_string()))?;
+    joined.map_err(|error| KubernetesError::ExecPodFailed(error.to_string()))?;
+    let status_text = status.as_ref().and_then(|value| value.status.clone());
+    let success = status_text
+        .as_deref()
+        .is_none_or(|value| value == "Success");
+    Ok(ExecResult {
+        stdout,
+        stderr,
+        success,
+        status: status_text,
+    })
+}
+
 /// Return the loggable containers declared by a Pod.
 pub async fn get_pod_containers(
     client: kube::Client,
@@ -848,6 +1024,22 @@ mod tests {
         assert_eq!(
             KubernetesError::StreamLogsFailed("x".into()).code(),
             "kubernetes_stream_logs_failed"
+        );
+        assert_eq!(
+            KubernetesError::ApplyResourceFailed("x".into()).code(),
+            "kubernetes_apply_resource_failed"
+        );
+        assert_eq!(
+            KubernetesError::DeleteResourceFailed("x".into()).code(),
+            "kubernetes_delete_resource_failed"
+        );
+        assert_eq!(
+            KubernetesError::ScaleDeploymentFailed("x".into()).code(),
+            "kubernetes_scale_deployment_failed"
+        );
+        assert_eq!(
+            KubernetesError::ExecPodFailed("x".into()).code(),
+            "kubernetes_exec_pod_failed"
         );
     }
 

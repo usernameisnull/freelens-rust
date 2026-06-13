@@ -102,6 +102,10 @@ export function App() {
   const [detailTab, setDetailTab] = useState<"overview" | "yaml">("overview");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
+  const [yamlDraft, setYamlDraft] = useState("");
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const [actionMessage, setActionMessage] = useState<string>();
   const detailRequestRef = useRef(0);
 
   const [logOperationId, setLogOperationId] = useState<string>();
@@ -114,6 +118,13 @@ export function App() {
   const [logError, setLogError] = useState<string>();
   const logPrepareRequestRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const [execResource, setExecResource] = useState<ResourceItem>();
+  const [execContainers, setExecContainers] = useState<string[]>([]);
+  const [execContainer, setExecContainer] = useState("");
+  const [execCommand, setExecCommand] = useState("pwd");
+  const [execOutput, setExecOutput] = useState("");
+  const [execLoading, setExecLoading] = useState(false);
+  const [execError, setExecError] = useState<string>();
 
   useEffect(() => {
     transport
@@ -244,7 +255,10 @@ export function App() {
         name: item.name,
       })
       .then((response) => {
-        if (requestNumber === detailRequestRef.current) setDetail(response);
+        if (requestNumber === detailRequestRef.current) {
+          setDetail(response);
+          setYamlDraft(response.yaml);
+        }
       })
       .catch((reason: unknown) => {
         if (requestNumber === detailRequestRef.current) {
@@ -355,6 +369,127 @@ export function App() {
     setDetail(undefined);
     setDetailLoading(false);
     setDetailError(undefined);
+    setActionError(undefined);
+    setActionMessage(undefined);
+  };
+
+  const applyYaml = async () => {
+    if (!detail || !detail.namespace || !selectedContext) return;
+    setActionLoading(true);
+    setActionError(undefined);
+    setActionMessage(undefined);
+    try {
+      const response = await transport.kubernetesApplyResource({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        kind: detail.kind,
+        namespace: detail.namespace,
+        name: detail.name,
+        yaml: yamlDraft,
+      });
+      setYamlDraft(response.yaml);
+      setDetail((current) => current ? { ...current, yaml: response.yaml } : current);
+      setActionMessage("Resource applied successfully");
+      loadResources();
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const deleteResource = async (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    if (!window.confirm(`Delete ${item.kind} ${item.namespace}/${item.name}?`)) return;
+    setActionError(undefined);
+    setActionMessage(undefined);
+    try {
+      await transport.kubernetesDeleteResource({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        kind: item.kind,
+        namespace: item.namespace,
+        name: item.name,
+      });
+      if (detail?.kind === item.kind && detail.name === item.name && detail.namespace === item.namespace) {
+        closeDetail();
+      }
+      setActionMessage(`${item.kind} deletion requested`);
+      loadResources();
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    }
+  };
+
+  const scaleDeployment = async (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    const current = item.columns.ready?.split("/")[1] ?? "1";
+    const value = window.prompt(`Desired replicas for ${item.name}`, current);
+    if (value === null) return;
+    const replicas = Number(value);
+    if (!Number.isInteger(replicas) || replicas < 0) {
+      setActionError("Replicas must be a non-negative integer");
+      return;
+    }
+    setActionError(undefined);
+    try {
+      await transport.kubernetesScaleDeployment({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        namespace: item.namespace,
+        name: item.name,
+        replicas,
+      });
+      setActionMessage(`Deployment scaled to ${replicas}`);
+      loadResources();
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    }
+  };
+
+  const openExec = async (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    setExecResource(item);
+    setExecContainers([]);
+    setExecContainer("");
+    setExecOutput("");
+    setExecError(undefined);
+    setExecLoading(true);
+    try {
+      const response = await transport.kubernetesGetPodContainers({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        namespace: item.namespace,
+        pod: item.name,
+      });
+      setExecContainers(response.containers);
+      setExecContainer(response.defaultContainer ?? response.containers[0] ?? "");
+    } catch (reason) {
+      setExecError(errorMessage(reason));
+    } finally {
+      setExecLoading(false);
+    }
+  };
+
+  const runExec = async () => {
+    if (!selectedContext || !execResource?.namespace || !execContainer || !execCommand.trim()) return;
+    setExecLoading(true);
+    setExecError(undefined);
+    try {
+      const response = await transport.kubernetesExecPod({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        namespace: execResource.namespace,
+        pod: execResource.name,
+        container: execContainer,
+        command: execCommand,
+      });
+      setExecOutput((current) => `${current}$ ${execCommand}\n${response.stdout}${response.stderr}${response.success ? "" : `[${response.status ?? "Failed"}]\n`}`);
+    } catch (reason) {
+      setExecError(errorMessage(reason));
+    } finally {
+      setExecLoading(false);
+    }
   };
 
   const visibleResources = useMemo(() => {
@@ -403,6 +538,7 @@ export function App() {
                 setSelectedNamespace("");
                 setResources([]);
                 setDetail(undefined);
+                setExecResource(undefined);
                 setLogs([]);
                 resourceRequestRef.current += 1;
                 closeLogs();
@@ -484,6 +620,8 @@ export function App() {
           <p className="error-message">{resourcesError}</p>
         ) : (
           <section className="resource-list">
+            {actionError && <p className="inline-message error-message">{actionError}</p>}
+            {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
             <table>
               <thead>
                 <tr>
@@ -506,8 +644,13 @@ export function App() {
                     <td className="actions">
                       <button onClick={() => openDetail(item)}>Details</button>
                       {item.kind === "Pod" && item.namespace && (
-                        <button onClick={() => startLogs(item)}>Logs</button>
+                        <>
+                          <button onClick={() => startLogs(item)}>Logs</button>
+                          <button onClick={() => void openExec(item)}>Exec</button>
+                        </>
                       )}
+                      {item.kind === "Deployment" && <button onClick={() => void scaleDeployment(item)}>Scale</button>}
+                      <button className="danger-button" onClick={() => void deleteResource(item)}>Delete</button>
                     </td>
                   </tr>
                 ))}
@@ -559,7 +702,19 @@ export function App() {
                   <button className={detailTab === "overview" ? "active" : ""} onClick={() => setDetailTab("overview")}>Overview</button>
                   <button className={detailTab === "yaml" ? "active" : ""} onClick={() => setDetailTab("yaml")}>YAML</button>
                 </div>
-                {detailTab === "yaml" ? <pre>{detail.yaml}</pre> : (
+                {actionError && <p className="inline-message error-message">{actionError}</p>}
+                {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
+                {detailTab === "yaml" ? (
+                  <div className="yaml-editor">
+                    <textarea value={yamlDraft} onChange={(event) => setYamlDraft(event.target.value)} spellCheck={false} />
+                    <div className="editor-actions">
+                      <button onClick={() => setYamlDraft(detail.yaml)} disabled={actionLoading}>Reset</button>
+                      <button onClick={() => void applyYaml()} disabled={actionLoading || yamlDraft === detail.yaml}>
+                        {actionLoading ? "Applying..." : "Apply"}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
                   <div className="detail-overview">
                     {detail.sections.map((section) => (
                       <section key={section.title} className="detail-section">
@@ -632,6 +787,34 @@ export function App() {
               ))}
               <div ref={logEndRef} />
             </div>
+          </div>
+        </div>
+      )}
+
+      {execResource && (
+        <div className="detail-panel-overlay" onClick={() => setExecResource(undefined)}>
+          <div className="detail-panel exec-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <h3>Exec: {execResource.namespace}/{execResource.name}</h3>
+              <button onClick={() => setExecResource(undefined)}>Close</button>
+            </header>
+            <div className="exec-controls">
+              <select value={execContainer} onChange={(event) => setExecContainer(event.target.value)} disabled={execLoading}>
+                {execContainers.map((container) => <option key={container} value={container}>{container}</option>)}
+              </select>
+              <input
+                value={execCommand}
+                onChange={(event) => setExecCommand(event.target.value)}
+                onKeyDown={(event) => { if (event.key === "Enter") void runExec(); }}
+                placeholder="Command, for example: ls -la"
+                disabled={execLoading}
+              />
+              <button onClick={() => void runExec()} disabled={execLoading || !execContainer || !execCommand.trim()}>
+                {execLoading ? "Running..." : "Run"}
+              </button>
+            </div>
+            {execError && <p className="error-message">{execError}</p>}
+            <pre className="exec-output">{execOutput || "Command output will appear here."}</pre>
           </div>
         </div>
       )}

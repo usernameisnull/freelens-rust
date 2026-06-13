@@ -6,8 +6,13 @@ import {
   IPC_VERSION,
   KubeconfigListRequest,
   KubeconfigListResponse,
+  KubernetesApplyResourceRequest,
+  KubernetesApplyResourceResponse,
+  KubernetesDeleteResourceRequest,
   KubernetesDiscoverResourcesRequest,
   KubernetesDiscoverResourcesResponse,
+  KubernetesExecPodRequest,
+  KubernetesExecPodResponse,
   KubernetesGetResourceDetailRequest,
   KubernetesGetResourceDetailResponse,
   KubernetesGetResourceYamlRequest,
@@ -18,6 +23,7 @@ import {
   KubernetesListNamespacesResponse,
   KubernetesListResourcesRequest,
   KubernetesListResourcesResponse,
+  KubernetesScaleDeploymentRequest,
   KubernetesStopPodLogsRequest,
   KubernetesStreamPodLogsRequest,
   KubernetesStreamPodLogsResponse,
@@ -48,6 +54,12 @@ export interface Transport {
   kubernetesGetResourceDetail(
     request: KubernetesGetResourceDetailRequest
   ): Promise<KubernetesGetResourceDetailResponse>;
+  kubernetesApplyResource(
+    request: KubernetesApplyResourceRequest
+  ): Promise<KubernetesApplyResourceResponse>;
+  kubernetesDeleteResource(request: KubernetesDeleteResourceRequest): Promise<void>;
+  kubernetesScaleDeployment(request: KubernetesScaleDeploymentRequest): Promise<void>;
+  kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse>;
   kubernetesGetPodContainers(
     request: KubernetesGetPodContainersRequest
   ): Promise<KubernetesGetPodContainersResponse>;
@@ -104,6 +116,24 @@ class TauriTransport implements Transport {
     request: KubernetesGetResourceDetailRequest
   ): Promise<KubernetesGetResourceDetailResponse> {
     return invoke("kubernetes_get_resource_detail", { request });
+  }
+
+  kubernetesApplyResource(
+    request: KubernetesApplyResourceRequest
+  ): Promise<KubernetesApplyResourceResponse> {
+    return invoke("kubernetes_apply_resource", { request });
+  }
+
+  kubernetesDeleteResource(request: KubernetesDeleteResourceRequest): Promise<void> {
+    return invoke("kubernetes_delete_resource", { request });
+  }
+
+  kubernetesScaleDeployment(request: KubernetesScaleDeploymentRequest): Promise<void> {
+    return invoke("kubernetes_scale_deployment", { request });
+  }
+
+  kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse> {
+    return invoke("kubernetes_exec_pod", { request });
   }
 
   kubernetesGetPodContainers(
@@ -236,7 +266,7 @@ class MockTransport implements Transport {
           kind: request.kind,
           apiVersion: request.kind === "Deployment" ? "apps/v1" : "v1",
           name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
-          namespace: request.namespace,
+          namespace: request.namespace ?? item.namespace,
           uid: `uid-${index}`,
           created: new Date().toISOString(),
           columns,
@@ -281,6 +311,27 @@ class MockTransport implements Transport {
         timestamp: new Date().toISOString(),
       }] : [],
       yaml: `apiVersion: v1\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
+    };
+  }
+
+  async kubernetesApplyResource(
+    request: KubernetesApplyResourceRequest
+  ): Promise<KubernetesApplyResourceResponse> {
+    return { version: IPC_VERSION, requestId: request.meta.requestId, yaml: request.yaml };
+  }
+
+  async kubernetesDeleteResource(): Promise<void> {}
+
+  async kubernetesScaleDeployment(): Promise<void> {}
+
+  async kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      stdout: "mock command output\n",
+      stderr: "",
+      success: true,
+      status: "Success",
     };
   }
 

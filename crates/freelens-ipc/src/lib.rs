@@ -257,6 +257,67 @@ pub struct KubernetesGetResourceDetailResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesApplyResourceRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesApplyResourceResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesDeleteResourceRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesScaleDeploymentRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub namespace: String,
+    pub name: String,
+    pub replicas: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesExecPodRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+    pub container: String,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesExecPodResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub success: bool,
+    pub status: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesGetPodContainersRequest {
     pub meta: RequestMeta,
     pub context: String,
@@ -400,5 +461,21 @@ mod tests {
         assert_eq!(json["requestId"], "r5");
         assert_eq!(json["containers"][1], "sidecar");
         assert_eq!(json["defaultContainer"], "app");
+    }
+
+    #[test]
+    fn exec_pod_response_serializes_camel_case() {
+        let response = KubernetesExecPodResponse {
+            version: IPC_VERSION,
+            request_id: "r6".into(),
+            stdout: "ok\n".into(),
+            stderr: String::new(),
+            success: true,
+            status: Some("Success".into()),
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["requestId"], "r6");
+        assert_eq!(json["stdout"], "ok\n");
+        assert_eq!(json["success"], true);
     }
 }

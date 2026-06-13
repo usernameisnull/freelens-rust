@@ -187,6 +187,55 @@ export interface KubernetesGetResourceDetailResponse {
   yaml: string;
 }
 
+export interface KubernetesApplyResourceRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  kind: string;
+  namespace: string;
+  name: string;
+  yaml: string;
+}
+
+export interface KubernetesApplyResourceResponse {
+  version: number;
+  requestId: string;
+  yaml: string;
+}
+
+export interface KubernetesDeleteResourceRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  kind: string;
+  namespace: string;
+  name: string;
+}
+
+export interface KubernetesScaleDeploymentRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  namespace: string;
+  name: string;
+  replicas: number;
+}
+
+export interface KubernetesExecPodRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  namespace: string;
+  pod: string;
+  container: string;
+  command: string;
+}
+
+export interface KubernetesExecPodResponse {
+  version: number;
+  requestId: string;
+  stdout: string;
+  stderr: string;
+  success: boolean;
+  status: string | null;
+}
+
 export interface KubernetesGetPodContainersRequest {
   meta: {
     version: number;
