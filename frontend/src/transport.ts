@@ -8,6 +8,8 @@ import {
   KubeconfigListResponse,
   KubernetesDiscoverResourcesRequest,
   KubernetesDiscoverResourcesResponse,
+  KubernetesGetResourceDetailRequest,
+  KubernetesGetResourceDetailResponse,
   KubernetesGetResourceYamlRequest,
   KubernetesGetResourceYamlResponse,
   KubernetesGetPodContainersRequest,
@@ -43,6 +45,9 @@ export interface Transport {
   kubernetesGetResourceYaml(
     request: KubernetesGetResourceYamlRequest
   ): Promise<KubernetesGetResourceYamlResponse>;
+  kubernetesGetResourceDetail(
+    request: KubernetesGetResourceDetailRequest
+  ): Promise<KubernetesGetResourceDetailResponse>;
   kubernetesGetPodContainers(
     request: KubernetesGetPodContainersRequest
   ): Promise<KubernetesGetPodContainersResponse>;
@@ -93,6 +98,12 @@ class TauriTransport implements Transport {
     request: KubernetesGetResourceYamlRequest
   ): Promise<KubernetesGetResourceYamlResponse> {
     return invoke("kubernetes_get_resource_yaml", { request });
+  }
+
+  kubernetesGetResourceDetail(
+    request: KubernetesGetResourceDetailRequest
+  ): Promise<KubernetesGetResourceDetailResponse> {
+    return invoke("kubernetes_get_resource_detail", { request });
   }
 
   kubernetesGetPodContainers(
@@ -237,6 +248,31 @@ class MockTransport implements Transport {
       kind: request.kind,
       name: request.name,
       yaml: `apiVersion: ${request.kind === "Deployment" ? "apps/v1" : "v1"}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n  namespace: ${request.namespace ?? "default"}\n`,
+    };
+  }
+
+  async kubernetesGetResourceDetail(
+    request: KubernetesGetResourceDetailRequest
+  ): Promise<KubernetesGetResourceDetailResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      context: request.context,
+      kind: request.kind,
+      name: request.name,
+      namespace: request.namespace,
+      sections: [{
+        title: request.kind === "Deployment" ? "Replicas" : "Status",
+        fields: [{ label: "Ready", value: "1" }, { label: "Desired", value: "1" }],
+      }],
+      containers: request.kind === "Pod" ? [{
+        name: "app", image: "nginx:latest", ready: true, restarts: 0, state: "Running",
+      }] : [],
+      events: request.kind === "Pod" ? [{
+        eventType: "Normal", reason: "Started", message: "Started container app", count: 1,
+        timestamp: new Date().toISOString(),
+      }] : [],
+      yaml: `apiVersion: v1\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
     };
   }
 

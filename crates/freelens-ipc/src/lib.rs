@@ -196,6 +196,65 @@ pub struct KubernetesGetResourceYamlResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesGetResourceDetailRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailFieldItem {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailSectionItem {
+    pub title: String,
+    pub fields: Vec<DetailFieldItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerDetailItem {
+    pub name: String,
+    pub image: String,
+    pub ready: bool,
+    pub restarts: i32,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDetailItem {
+    pub event_type: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub count: Option<i32>,
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesGetResourceDetailResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub sections: Vec<DetailSectionItem>,
+    pub containers: Vec<ContainerDetailItem>,
+    pub events: Vec<EventDetailItem>,
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesGetPodContainersRequest {
     pub meta: RequestMeta,
     pub context: String,

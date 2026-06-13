@@ -153,6 +153,39 @@ export interface KubernetesGetResourceYamlResponse {
   yaml: string;
 }
 
+export interface KubernetesGetResourceDetailRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  kind: string;
+  namespace: string;
+  name: string;
+}
+
+export interface KubernetesGetResourceDetailResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  sections: Array<{ title: string; fields: Array<{ label: string; value: string }> }>;
+  containers: Array<{
+    name: string;
+    image: string;
+    ready: boolean;
+    restarts: number;
+    state: string;
+  }>;
+  events: Array<{
+    eventType: string | null;
+    reason: string | null;
+    message: string | null;
+    count: number | null;
+    timestamp: string | null;
+  }>;
+  yaml: string;
+}
+
 export interface KubernetesGetPodContainersRequest {
   meta: {
     version: number;

@@ -3,7 +3,7 @@ import {
   IPC_VERSION,
   KubeconfigContext,
   KubeconfigListResponse,
-  KubernetesGetResourceYamlResponse,
+  KubernetesGetResourceDetailResponse,
   KubernetesListNamespacesResponse,
   KubernetesListResourcesResponse,
   NamespaceItem,
@@ -63,7 +63,8 @@ export function App() {
   const [continueToken, setContinueToken] = useState<string | null>(null);
   const resourceRequestRef = useRef(0);
 
-  const [detail, setDetail] = useState<KubernetesGetResourceYamlResponse>();
+  const [detail, setDetail] = useState<KubernetesGetResourceDetailResponse>();
+  const [detailTab, setDetailTab] = useState<"overview" | "yaml">("overview");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
   const detailRequestRef = useRef(0);
@@ -187,13 +188,14 @@ export function App() {
   };
 
   const openDetail = (item: ResourceItem) => {
-    if (!selectedContext) return;
+    if (!selectedContext || !item.namespace) return;
     const requestNumber = ++detailRequestRef.current;
     setDetail(undefined);
     setDetailLoading(true);
     setDetailError(undefined);
+    setDetailTab("overview");
     transport
-      .kubernetesGetResourceYaml({
+      .kubernetesGetResourceDetail({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context: selectedContext,
         kind: item.kind,
@@ -413,7 +415,7 @@ export function App() {
                     <td>{item.namespace ?? "—"}</td>
                     <td>{item.created ? new Date(item.created).toLocaleString() : "—"}</td>
                     <td className="actions">
-                      <button onClick={() => openDetail(item)}>YAML</button>
+                      <button onClick={() => openDetail(item)}>Details</button>
                       {item.kind === "Pod" && item.namespace && (
                         <button onClick={() => startLogs(item)}>Logs</button>
                       )}
@@ -443,15 +445,48 @@ export function App() {
               <h3>
                 {detail ? `${detail.kind}: ${detail.name}` : detailLoading ? "Loading…" : "Error"}
               </h3>
-              <button onClick={closeDetail}>Close</button>
+              <div>
+                {detail && (
+                  <button onClick={() => openDetail({
+                    kind: detail.kind,
+                    apiVersion: "",
+                    name: detail.name,
+                    namespace: detail.namespace,
+                    uid: null,
+                    created: null,
+                  })}>Refresh</button>
+                )}
+                <button onClick={closeDetail}>Close</button>
+              </div>
             </header>
             {detailError ? (
               <p className="error-message">{detailError}</p>
             ) : detailLoading ? (
               <p>Loading YAML…</p>
-            ) : (
-              <pre>{detail?.yaml}</pre>
-            )}
+            ) : detail ? (
+              <>
+                <div className="detail-tabs">
+                  <button className={detailTab === "overview" ? "active" : ""} onClick={() => setDetailTab("overview")}>Overview</button>
+                  <button className={detailTab === "yaml" ? "active" : ""} onClick={() => setDetailTab("yaml")}>YAML</button>
+                </div>
+                {detailTab === "yaml" ? <pre>{detail.yaml}</pre> : (
+                  <div className="detail-overview">
+                    {detail.sections.map((section) => (
+                      <section key={section.title} className="detail-section">
+                        <h4>{section.title}</h4>
+                        <dl>{section.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+                      </section>
+                    ))}
+                    {detail.containers.length > 0 && (
+                      <section className="detail-section"><h4>Containers</h4><table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ready</th><th>Restarts</th></tr></thead><tbody>{detail.containers.map((container) => <tr key={container.name}><td>{container.name}</td><td>{container.image}</td><td>{container.state}</td><td>{container.ready ? "Yes" : "No"}</td><td>{container.restarts}</td></tr>)}</tbody></table></section>
+                    )}
+                    {detail.kind === "Pod" && (
+                      <section className="detail-section"><h4>Events</h4>{detail.events.length === 0 ? <p>No events</p> : <table><thead><tr><th>Type</th><th>Reason</th><th>Message</th><th>Count</th><th>Last seen</th></tr></thead><tbody>{detail.events.map((event, index) => <tr key={`${event.reason}-${index}`}><td>{event.eventType ?? "-"}</td><td>{event.reason ?? "-"}</td><td>{event.message ?? "-"}</td><td>{event.count ?? "-"}</td><td>{event.timestamp ? new Date(event.timestamp).toLocaleString() : "-"}</td></tr>)}</tbody></table>}</section>
+                    )}
+                  </div>
+                )}
+              </>
+            ) : null}
           </div>
         </div>
       )}

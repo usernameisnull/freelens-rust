@@ -259,6 +259,90 @@ input {
   cursor: pointer;
 }
 
+.detail-panel header > div,
+.detail-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.detail-tabs {
+  padding: 10px 18px 0;
+  border-bottom: 1px solid #26313a;
+}
+
+.detail-tabs button {
+  padding: 8px 12px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #9eabb8;
+  cursor: pointer;
+}
+
+.detail-tabs button.active {
+  border-bottom-color: #58d1b5;
+  color: #58d1b5;
+}
+
+.detail-overview {
+  flex: 1;
+  overflow: auto;
+  padding: 18px;
+}
+
+.detail-section {
+  margin-bottom: 24px;
+}
+
+.detail-section h4 {
+  margin: 0 0 12px;
+  color: #e8edf2;
+}
+
+.detail-section dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.detail-section dl > div {
+  padding: 10px 12px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+}
+
+.detail-section dt {
+  margin-bottom: 4px;
+  color: #71808e;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+}
+
+.detail-section dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-section table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.detail-section th,
+.detail-section td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #26313a;
+  text-align: left;
+  vertical-align: top;
+}
+
+.detail-section th {
+  color: #71808e;
+}
+
 .detail-panel pre {
   flex: 1;
   overflow: auto;

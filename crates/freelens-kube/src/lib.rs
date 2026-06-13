@@ -1,5 +1,6 @@
 use futures::{AsyncBufReadExt, StreamExt};
-use k8s_openapi::api::core::v1::{Namespace, Pod};
+use k8s_openapi::api::apps::v1::Deployment;
+use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
 use kube::ResourceExt;
 use kube::api::{Api, DynamicObject, ListParams, LogParams};
 use kube::config::KubeConfigOptions;
@@ -106,6 +107,77 @@ pub struct LogStreamOptions {
 pub struct PodContainers {
     pub names: Vec<String>,
     pub default_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailField {
+    pub label: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetailSection {
+    pub title: String,
+    pub fields: Vec<DetailField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerDetail {
+    pub name: String,
+    pub image: String,
+    pub ready: bool,
+    pub restarts: i32,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventDetail {
+    pub event_type: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub count: Option<i32>,
+    pub timestamp: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceDetail {
+    pub kind: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub sections: Vec<DetailSection>,
+    pub containers: Vec<ContainerDetail>,
+    pub events: Vec<EventDetail>,
+    pub yaml: String,
+}
+
+fn field(label: &str, value: impl ToString) -> DetailField {
+    DetailField {
+        label: label.into(),
+        value: value.to_string(),
+    }
+}
+
+fn container_state(status: &k8s_openapi::api::core::v1::ContainerStatus) -> String {
+    let Some(state) = &status.state else {
+        return "Unknown".into();
+    };
+    if state.running.is_some() {
+        "Running".into()
+    } else if let Some(waiting) = &state.waiting {
+        waiting.reason.clone().unwrap_or_else(|| "Waiting".into())
+    } else if let Some(terminated) = &state.terminated {
+        terminated
+            .reason
+            .clone()
+            .unwrap_or_else(|| format!("Terminated ({})", terminated.exit_code))
+    } else {
+        "Unknown".into()
+    }
 }
 
 fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
@@ -274,6 +346,228 @@ pub async fn get_resource_yaml(
 
     serde_yaml_ng::to_string(&obj)
         .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))
+}
+
+/// Get a structured overview and YAML for the supported resource kinds.
+pub async fn get_resource_detail(
+    client: kube::Client,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<ResourceDetail, KubernetesError> {
+    let yaml = get_resource_yaml(client.clone(), kind, Some(namespace), name).await?;
+    let mut sections = Vec::new();
+    let mut containers = Vec::new();
+    let mut events = Vec::new();
+
+    match kind {
+        "Pod" => {
+            let pod: Pod = Api::namespaced(client.clone(), namespace)
+                .get(name)
+                .await
+                .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+            let status = pod.status.as_ref();
+            sections.push(DetailSection {
+                title: "Status".into(),
+                fields: vec![
+                    field(
+                        "Phase",
+                        status.and_then(|s| s.phase.as_deref()).unwrap_or("Unknown"),
+                    ),
+                    field(
+                        "Node",
+                        pod.spec
+                            .as_ref()
+                            .and_then(|s| s.node_name.as_deref())
+                            .unwrap_or("-"),
+                    ),
+                    field(
+                        "Pod IP",
+                        status.and_then(|s| s.pod_ip.as_deref()).unwrap_or("-"),
+                    ),
+                    field(
+                        "Host IP",
+                        status.and_then(|s| s.host_ip.as_deref()).unwrap_or("-"),
+                    ),
+                    field(
+                        "QoS Class",
+                        status.and_then(|s| s.qos_class.as_deref()).unwrap_or("-"),
+                    ),
+                ],
+            });
+            let images: HashMap<String, String> = pod
+                .spec
+                .as_ref()
+                .map(|spec| {
+                    spec.containers
+                        .iter()
+                        .map(|container| {
+                            (
+                                container.name.clone(),
+                                container.image.clone().unwrap_or_default(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            containers = status
+                .and_then(|s| s.container_statuses.as_ref())
+                .into_iter()
+                .flatten()
+                .map(|container| ContainerDetail {
+                    name: container.name.clone(),
+                    image: images.get(&container.name).cloned().unwrap_or_default(),
+                    ready: container.ready,
+                    restarts: container.restart_count,
+                    state: container_state(container),
+                })
+                .collect();
+
+            if let Some(uid) = pod.uid() {
+                let params = ListParams::default().fields(&format!("involvedObject.uid={uid}"));
+                let listed = Api::<Event>::namespaced(client, namespace)
+                    .list(&params)
+                    .await
+                    .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+                events = listed
+                    .into_iter()
+                    .map(|event| EventDetail {
+                        event_type: event.type_,
+                        reason: event.reason,
+                        message: event.message,
+                        count: event.count,
+                        timestamp: event
+                            .last_timestamp
+                            .map(|time| time.0.to_rfc3339())
+                            .or_else(|| event.event_time.map(|time| time.0.to_rfc3339())),
+                    })
+                    .collect();
+            }
+        }
+        "Deployment" => {
+            let deployment: Deployment = Api::namespaced(client, namespace)
+                .get(name)
+                .await
+                .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+            let desired = deployment
+                .spec
+                .as_ref()
+                .and_then(|s| s.replicas)
+                .unwrap_or(1);
+            let status = deployment.status.as_ref();
+            sections.push(DetailSection {
+                title: "Replicas".into(),
+                fields: vec![
+                    field("Desired", desired),
+                    field("Current", status.and_then(|s| s.replicas).unwrap_or(0)),
+                    field("Ready", status.and_then(|s| s.ready_replicas).unwrap_or(0)),
+                    field(
+                        "Updated",
+                        status.and_then(|s| s.updated_replicas).unwrap_or(0),
+                    ),
+                    field(
+                        "Available",
+                        status.and_then(|s| s.available_replicas).unwrap_or(0),
+                    ),
+                    field(
+                        "Unavailable",
+                        status.and_then(|s| s.unavailable_replicas).unwrap_or(0),
+                    ),
+                ],
+            });
+            sections.push(DetailSection {
+                title: "Strategy".into(),
+                fields: vec![field(
+                    "Type",
+                    deployment
+                        .spec
+                        .as_ref()
+                        .and_then(|s| s.strategy.as_ref())
+                        .and_then(|s| s.type_.as_deref())
+                        .unwrap_or("RollingUpdate"),
+                )],
+            });
+        }
+        "Service" => {
+            let service: Service = Api::namespaced(client, namespace)
+                .get(name)
+                .await
+                .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+            let spec = service.spec.as_ref();
+            sections.push(DetailSection {
+                title: "Service".into(),
+                fields: vec![
+                    field(
+                        "Type",
+                        spec.and_then(|s| s.type_.as_deref()).unwrap_or("ClusterIP"),
+                    ),
+                    field(
+                        "Cluster IP",
+                        spec.and_then(|s| s.cluster_ip.as_deref()).unwrap_or("-"),
+                    ),
+                    field(
+                        "External IPs",
+                        spec.and_then(|s| s.external_ips.as_ref())
+                            .map(|values| values.join(", "))
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                ],
+            });
+            let selector = spec
+                .and_then(|s| s.selector.as_ref())
+                .map(|values| {
+                    values
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".into());
+            sections.push(DetailSection {
+                title: "Routing".into(),
+                fields: vec![
+                    field("Selector", selector),
+                    field(
+                        "Ports",
+                        spec.and_then(|s| s.ports.as_ref())
+                            .map(|ports| {
+                                ports
+                                    .iter()
+                                    .map(|port| {
+                                        let target = port.target_port.as_ref().map(|target| match target {
+                                            k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::Int(value) => value.to_string(),
+                                            k8s_openapi::apimachinery::pkg::util::intstr::IntOrString::String(value) => value.clone(),
+                                        }).unwrap_or_else(|| port.port.to_string());
+                                        format!(
+                                            "{}/{} -> {}",
+                                            port.port,
+                                            port.protocol.as_deref().unwrap_or("TCP"),
+                                            target
+                                        )
+                                    })
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            })
+                            .filter(|value| !value.is_empty())
+                            .unwrap_or_else(|| "-".into()),
+                    ),
+                ],
+            });
+        }
+        _ => return Err(KubernetesError::UnsupportedResourceKind { kind: kind.into() }),
+    }
+
+    Ok(ResourceDetail {
+        kind: kind.into(),
+        name: name.into(),
+        namespace: Some(namespace.into()),
+        sections,
+        containers,
+        events,
+        yaml,
+    })
 }
 
 /// Return the loggable containers declared by a Pod.

@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use freelens_ipc::{
-    HealthCheckRequest, HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError,
-    KubeconfigListRequest, KubeconfigListResponse, KubernetesDiscoverResourcesRequest,
+    ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem, HealthCheckRequest,
+    HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError, KubeconfigListRequest,
+    KubeconfigListResponse, KubernetesDiscoverResourcesRequest,
     KubernetesDiscoverResourcesResponse, KubernetesGetPodContainersRequest,
-    KubernetesGetPodContainersResponse, KubernetesGetResourceYamlRequest,
+    KubernetesGetPodContainersResponse, KubernetesGetResourceDetailRequest,
+    KubernetesGetResourceDetailResponse, KubernetesGetResourceYamlRequest,
     KubernetesGetResourceYamlResponse, KubernetesListNamespacesRequest,
     KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
     KubernetesListResourcesResponse, KubernetesStopPodLogsRequest, KubernetesStreamPodLogsRequest,
@@ -328,6 +330,87 @@ async fn kubernetes_get_resource_yaml(
 }
 
 #[tauri::command]
+async fn kubernetes_get_resource_detail(
+    request: KubernetesGetResourceDetailRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesGetResourceDetailResponse, IpcError> {
+    if request.meta.version != IPC_VERSION {
+        return Err(IpcError {
+            code: "unsupported_ipc_version".into(),
+            message: format!(
+                "IPC version {} is not supported; expected {}",
+                request.meta.version, IPC_VERSION
+            ),
+        });
+    }
+    let client = cache
+        .client(Some(request.context.clone()))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let detail = freelens_kube::get_resource_detail(
+        client,
+        &request.kind,
+        &request.namespace,
+        &request.name,
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })?;
+
+    Ok(KubernetesGetResourceDetailResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        context: request.context,
+        kind: detail.kind,
+        name: detail.name,
+        namespace: detail.namespace,
+        sections: detail
+            .sections
+            .into_iter()
+            .map(|section| DetailSectionItem {
+                title: section.title,
+                fields: section
+                    .fields
+                    .into_iter()
+                    .map(|item| DetailFieldItem {
+                        label: item.label,
+                        value: item.value,
+                    })
+                    .collect(),
+            })
+            .collect(),
+        containers: detail
+            .containers
+            .into_iter()
+            .map(|item| ContainerDetailItem {
+                name: item.name,
+                image: item.image,
+                ready: item.ready,
+                restarts: item.restarts,
+                state: item.state,
+            })
+            .collect(),
+        events: detail
+            .events
+            .into_iter()
+            .map(|item| EventDetailItem {
+                event_type: item.event_type,
+                reason: item.reason,
+                message: item.message,
+                count: item.count,
+                timestamp: item.timestamp,
+            })
+            .collect(),
+        yaml: detail.yaml,
+    })
+}
+
+#[tauri::command]
 async fn kubernetes_get_pod_containers(
     request: KubernetesGetPodContainersRequest,
     cache: State<'_, freelens_kube::ClientCache>,
@@ -499,6 +582,7 @@ fn main() {
             kubernetes_discover_resources,
             kubernetes_list_resources,
             kubernetes_get_resource_yaml,
+            kubernetes_get_resource_detail,
             kubernetes_get_pod_containers,
             kubernetes_stream_pod_logs,
             kubernetes_stop_pod_logs
