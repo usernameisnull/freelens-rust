@@ -177,7 +177,7 @@ export interface KubernetesGetResourceDetailRequest {
   meta: { version: number; requestId: string };
   context: string;
   kind: string;
-  namespace: string;
+  namespace: string | null;
   name: string;
 }
 
@@ -210,7 +210,7 @@ export interface KubernetesApplyResourceRequest {
   meta: { version: number; requestId: string };
   context: string;
   kind: string;
-  namespace: string;
+  namespace: string | null;
   name: string;
   yaml: string;
 }
@@ -225,7 +225,7 @@ export interface KubernetesDeleteResourceRequest {
   meta: { version: number; requestId: string };
   context: string;
   kind: string;
-  namespace: string;
+  namespace: string | null;
   name: string;
 }
 

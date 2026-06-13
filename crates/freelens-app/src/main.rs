@@ -368,7 +368,7 @@ async fn kubernetes_get_resource_detail(
     let detail = freelens_kube::get_resource_detail(
         client,
         &request.kind,
-        &request.namespace,
+        request.namespace.as_deref(),
         &request.name,
     )
     .await
@@ -441,7 +441,7 @@ async fn kubernetes_apply_resource(
     let yaml = freelens_kube::apply_resource_yaml(
         client,
         &request.kind,
-        &request.namespace,
+        request.namespace.as_deref(),
         &request.name,
         &request.yaml,
     )
@@ -470,12 +470,17 @@ async fn kubernetes_delete_resource(
             code: error.code().into(),
             message: error.to_string(),
         })?;
-    freelens_kube::delete_resource(client, &request.kind, &request.namespace, &request.name)
-        .await
-        .map_err(|error| IpcError {
-            code: error.code().into(),
-            message: error.to_string(),
-        })
+    freelens_kube::delete_resource(
+        client,
+        &request.kind,
+        request.namespace.as_deref(),
+        &request.name,
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })
 }
 
 #[tauri::command]

@@ -35,11 +35,19 @@ function errorMessage(reason: unknown): string {
 const RESOURCE_GROUPS = [
   {
     label: "Workloads",
-    kinds: ["Pod", "Deployment"],
+    kinds: ["Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"],
   },
   {
     label: "Network",
-    kinds: ["Service"],
+    kinds: ["Service", "Ingress"],
+  },
+  {
+    label: "Config",
+    kinds: ["ConfigMap", "Secret"],
+  },
+  {
+    label: "Storage",
+    kinds: ["PersistentVolumeClaim", "PersistentVolume"],
   },
 ];
 
@@ -55,12 +63,59 @@ const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = 
     { key: "upToDate", label: "Up-to-date" },
     { key: "available", label: "Available" },
   ],
+  StatefulSet: [
+    { key: "ready", label: "Ready" },
+    { key: "upToDate", label: "Updated" },
+    { key: "available", label: "Available" },
+  ],
+  DaemonSet: [
+    { key: "desired", label: "Desired" },
+    { key: "current", label: "Current" },
+    { key: "ready", label: "Ready" },
+    { key: "available", label: "Available" },
+  ],
+  Job: [
+    { key: "completions", label: "Completions" },
+    { key: "active", label: "Active" },
+    { key: "failed", label: "Failed" },
+  ],
+  CronJob: [
+    { key: "schedule", label: "Schedule" },
+    { key: "suspend", label: "Suspend" },
+    { key: "active", label: "Active" },
+    { key: "lastSchedule", label: "Last Schedule" },
+  ],
   Service: [
     { key: "type", label: "Type" },
     { key: "clusterIP", label: "Cluster IP" },
     { key: "ports", label: "Ports" },
   ],
+  Ingress: [
+    { key: "class", label: "Class" },
+    { key: "hosts", label: "Hosts" },
+  ],
+  ConfigMap: [{ key: "data", label: "Data" }],
+  Secret: [
+    { key: "type", label: "Type" },
+    { key: "data", label: "Data" },
+  ],
+  PersistentVolumeClaim: [
+    { key: "status", label: "Status" },
+    { key: "capacity", label: "Capacity" },
+    { key: "storageClass", label: "Storage Class" },
+  ],
+  PersistentVolume: [
+    { key: "status", label: "Status" },
+    { key: "capacity", label: "Capacity" },
+    { key: "storageClass", label: "Storage Class" },
+  ],
 };
+
+const CLUSTER_SCOPED_KINDS = new Set(["PersistentVolume"]);
+
+function resourceKindLabel(kind: string): string {
+  return kind === "Ingress" ? "Ingresses" : `${kind}s`;
+}
 
 function formatAge(created: string | null): string {
   if (!created) return "-";
@@ -294,7 +349,7 @@ export function App() {
   };
 
   const openDetail = (item: ResourceItem) => {
-    if (!selectedContext || !item.namespace) return;
+    if (!selectedContext) return;
     const requestNumber = ++detailRequestRef.current;
     setDetail(undefined);
     setDetailLoading(true);
@@ -428,7 +483,7 @@ export function App() {
   };
 
   const applyYaml = async () => {
-    if (!detail || !detail.namespace || !selectedContext) return;
+    if (!detail || !selectedContext) return;
     setActionLoading(true);
     setActionError(undefined);
     setActionMessage(undefined);
@@ -453,8 +508,8 @@ export function App() {
   };
 
   const deleteResource = async (item: ResourceItem) => {
-    if (!selectedContext || !item.namespace) return;
-    if (!window.confirm(`Delete ${item.kind} ${item.namespace}/${item.name}?`)) return;
+    if (!selectedContext) return;
+    if (!window.confirm(`Delete ${item.kind} ${item.namespace ? `${item.namespace}/` : ""}${item.name}?`)) return;
     setActionError(undefined);
     setActionMessage(undefined);
     try {
@@ -620,11 +675,12 @@ export function App() {
                       className={selectedKind === kind ? "active" : ""}
                       onClick={() => {
                         setSelectedKind(kind);
+                        if (CLUSTER_SCOPED_KINDS.has(kind)) setSelectedNamespace("");
                         resourceRequestRef.current += 1;
                         setDetail(undefined);
                       }}
                     >
-                      {kind}s
+                      {resourceKindLabel(kind)}
                     </button>
                   </li>
                 ))}
@@ -637,7 +693,7 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div className="title-with-status">
-            <h2>{selectedKind}s</h2>
+            <h2>{resourceKindLabel(selectedKind)}</h2>
             <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>
           </div>
           <div className="topbar-controls">
@@ -653,6 +709,7 @@ export function App() {
                 resourceRequestRef.current += 1;
                 setSelectedNamespace(event.target.value);
               }}
+              disabled={CLUSTER_SCOPED_KINDS.has(selectedKind)}
             >
               <option value="">All namespaces</option>
               {namespaces.map((ns: NamespaceItem) => (

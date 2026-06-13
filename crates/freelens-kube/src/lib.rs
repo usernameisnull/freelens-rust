@@ -253,7 +253,7 @@ fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, St
             columns.insert("restarts".into(), restarts.to_string());
             columns.insert("node".into(), json_string(data, &["spec", "nodeName"]));
         }
-        "Deployment" => {
+        "Deployment" | "StatefulSet" => {
             let desired = data
                 .pointer("/spec/replicas")
                 .and_then(serde_json::Value::as_i64)
@@ -267,6 +267,107 @@ fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, St
             columns.insert(
                 "available".into(),
                 json_i64(data, &["status", "availableReplicas"]).to_string(),
+            );
+        }
+        "DaemonSet" => {
+            columns.insert(
+                "desired".into(),
+                json_i64(data, &["status", "desiredNumberScheduled"]).to_string(),
+            );
+            columns.insert(
+                "current".into(),
+                json_i64(data, &["status", "currentNumberScheduled"]).to_string(),
+            );
+            columns.insert(
+                "ready".into(),
+                json_i64(data, &["status", "numberReady"]).to_string(),
+            );
+            columns.insert(
+                "available".into(),
+                json_i64(data, &["status", "numberAvailable"]).to_string(),
+            );
+        }
+        "Job" => {
+            columns.insert(
+                "completions".into(),
+                format!(
+                    "{}/{}",
+                    json_i64(data, &["status", "succeeded"]),
+                    json_i64(data, &["spec", "completions"]).max(1)
+                ),
+            );
+            columns.insert(
+                "active".into(),
+                json_i64(data, &["status", "active"]).to_string(),
+            );
+            columns.insert(
+                "failed".into(),
+                json_i64(data, &["status", "failed"]).to_string(),
+            );
+        }
+        "CronJob" => {
+            columns.insert("schedule".into(), json_string(data, &["spec", "schedule"]));
+            columns.insert(
+                "suspend".into(),
+                data.pointer("/spec/suspend")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                    .to_string(),
+            );
+            columns.insert(
+                "active".into(),
+                data.pointer("/status/active")
+                    .and_then(serde_json::Value::as_array)
+                    .map_or(0, Vec::len)
+                    .to_string(),
+            );
+            columns.insert(
+                "lastSchedule".into(),
+                json_string(data, &["status", "lastScheduleTime"]),
+            );
+        }
+        "Ingress" => {
+            columns.insert(
+                "class".into(),
+                json_string(data, &["spec", "ingressClassName"]),
+            );
+            let hosts = data
+                .pointer("/spec/rules")
+                .and_then(serde_json::Value::as_array)
+                .map(|rules| {
+                    rules
+                        .iter()
+                        .filter_map(|rule| rule.get("host").and_then(serde_json::Value::as_str))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or_else(|| "-".into());
+            columns.insert("hosts".into(), hosts);
+        }
+        "ConfigMap" | "Secret" => {
+            columns.insert(
+                "data".into(),
+                data.get("data")
+                    .and_then(serde_json::Value::as_object)
+                    .map_or(0, serde_json::Map::len)
+                    .to_string(),
+            );
+            if kind == "Secret" {
+                columns.insert("type".into(), json_string(data, &["type"]));
+            }
+        }
+        "PersistentVolume" | "PersistentVolumeClaim" => {
+            columns.insert("status".into(), json_string(data, &["status", "phase"]));
+            let capacity = data
+                .pointer("/spec/resources/requests/storage")
+                .or_else(|| data.pointer("/spec/capacity/storage"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("-");
+            columns.insert("capacity".into(), capacity.into());
+            columns.insert(
+                "storageClass".into(),
+                json_string(data, &["spec", "storageClassName"]),
             );
         }
         "Service" => {
@@ -310,8 +411,21 @@ fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
         "Pod" => Some(GroupVersionKind::gvk("", "v1", "Pod")),
         "Deployment" => Some(GroupVersionKind::gvk("apps", "v1", "Deployment")),
         "Service" => Some(GroupVersionKind::gvk("", "v1", "Service")),
+        "StatefulSet" => Some(GroupVersionKind::gvk("apps", "v1", "StatefulSet")),
+        "DaemonSet" => Some(GroupVersionKind::gvk("apps", "v1", "DaemonSet")),
+        "Job" => Some(GroupVersionKind::gvk("batch", "v1", "Job")),
+        "CronJob" => Some(GroupVersionKind::gvk("batch", "v1", "CronJob")),
+        "Ingress" => Some(GroupVersionKind::gvk("networking.k8s.io", "v1", "Ingress")),
+        "ConfigMap" => Some(GroupVersionKind::gvk("", "v1", "ConfigMap")),
+        "Secret" => Some(GroupVersionKind::gvk("", "v1", "Secret")),
+        "PersistentVolume" => Some(GroupVersionKind::gvk("", "v1", "PersistentVolume")),
+        "PersistentVolumeClaim" => Some(GroupVersionKind::gvk("", "v1", "PersistentVolumeClaim")),
         _ => None,
     }
+}
+
+fn is_namespaced_kind(kind: &str) -> bool {
+    kind != "PersistentVolume"
 }
 
 /// Create a Kubernetes client for the given context.
@@ -405,7 +519,7 @@ pub async fn list_resources(
         params = params.continue_token(token);
     }
 
-    let api: Api<DynamicObject> = match namespace {
+    let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
         Some(ns) => Api::namespaced_with(client, ns, &ar),
         None => Api::all_with(client, &ar),
     };
@@ -455,6 +569,11 @@ pub async fn get_resource_yaml(
     namespace: Option<&str>,
     name: &str,
 ) -> Result<String, KubernetesError> {
+    if is_namespaced_kind(kind) && namespace.is_none() {
+        return Err(KubernetesError::GetResourceFailed(format!(
+            "{kind} namespace is required"
+        )));
+    }
     let gvk = gvk_for_kind(kind)
         .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
 
@@ -464,7 +583,7 @@ pub async fn get_resource_yaml(
             kind: format!("{}: {}", kind, error),
         })?;
 
-    let api: Api<DynamicObject> = match namespace {
+    let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
         Some(ns) => Api::namespaced_with(client, ns, &ar),
         None => Api::all_with(client, &ar),
     };
@@ -482,16 +601,19 @@ pub async fn get_resource_yaml(
 pub async fn get_resource_detail(
     client: kube::Client,
     kind: &str,
-    namespace: &str,
+    namespace: Option<&str>,
     name: &str,
 ) -> Result<ResourceDetail, KubernetesError> {
-    let yaml = get_resource_yaml(client.clone(), kind, Some(namespace), name).await?;
+    let yaml = get_resource_yaml(client.clone(), kind, namespace, name).await?;
     let mut sections = Vec::new();
     let mut containers = Vec::new();
     let mut events = Vec::new();
 
     match kind {
         "Pod" => {
+            let namespace = namespace.ok_or_else(|| {
+                KubernetesError::GetResourceFailed("Pod namespace is required".into())
+            })?;
             let pod: Pod = Api::namespaced(client.clone(), namespace)
                 .get(name)
                 .await
@@ -575,6 +697,9 @@ pub async fn get_resource_detail(
             }
         }
         "Deployment" => {
+            let namespace = namespace.ok_or_else(|| {
+                KubernetesError::GetResourceFailed("Deployment namespace is required".into())
+            })?;
             let deployment: Deployment = Api::namespaced(client, namespace)
                 .get(name)
                 .await
@@ -619,6 +744,9 @@ pub async fn get_resource_detail(
             });
         }
         "Service" => {
+            let namespace = namespace.ok_or_else(|| {
+                KubernetesError::GetResourceFailed("Service namespace is required".into())
+            })?;
             let service: Service = Api::namespaced(client, namespace)
                 .get(name)
                 .await
@@ -686,13 +814,46 @@ pub async fn get_resource_detail(
                 ],
             });
         }
-        _ => return Err(KubernetesError::UnsupportedResourceKind { kind: kind.into() }),
+        _ => {
+            let gvk = gvk_for_kind(kind)
+                .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
+            let (ar, _) = kube::discovery::pinned_kind(&client, &gvk)
+                .await
+                .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+            let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
+                Some(namespace) => Api::namespaced_with(client, namespace, &ar),
+                None => Api::all_with(client, &ar),
+            };
+            let object = api
+                .get(name)
+                .await
+                .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+            let data = object.data;
+            let columns = resource_columns(kind, &data);
+            sections.push(DetailSection {
+                title: "Overview".into(),
+                fields: columns
+                    .into_iter()
+                    .map(|(label, value)| field(&label, value))
+                    .collect(),
+            });
+            let labels = object.metadata.labels.unwrap_or_default();
+            if !labels.is_empty() {
+                sections.push(DetailSection {
+                    title: "Labels".into(),
+                    fields: labels
+                        .into_iter()
+                        .map(|(label, value)| field(&label, value))
+                        .collect(),
+                });
+            }
+        }
     }
 
     Ok(ResourceDetail {
         kind: kind.into(),
         name: name.into(),
-        namespace: Some(namespace.into()),
+        namespace: namespace.map(str::to_owned),
         sections,
         containers,
         events,
@@ -703,7 +864,7 @@ pub async fn get_resource_detail(
 async fn dynamic_api(
     client: kube::Client,
     kind: &str,
-    namespace: &str,
+    namespace: Option<&str>,
 ) -> Result<Api<DynamicObject>, KubernetesError> {
     let gvk = gvk_for_kind(kind)
         .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
@@ -712,7 +873,10 @@ async fn dynamic_api(
         .map_err(|error| KubernetesError::UnsupportedResourceKind {
             kind: format!("{}: {}", kind, error),
         })?;
-    Ok(Api::namespaced_with(client, namespace, &ar))
+    Ok(match namespace.filter(|_| is_namespaced_kind(kind)) {
+        Some(namespace) => Api::namespaced_with(client, namespace, &ar),
+        None => Api::all_with(client, &ar),
+    })
 }
 
 /// Watch a supported resource collection and reconnect after transient failures.
@@ -734,7 +898,7 @@ pub async fn watch_resources(
         .map_err(|error| KubernetesError::UnsupportedResourceKind {
             kind: format!("{}: {}", kind, error),
         })?;
-    let api: Api<DynamicObject> = match namespace {
+    let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
         Some(namespace) => Api::namespaced_with(client, namespace, &ar),
         None => Api::all_with(client, &ar),
     };
@@ -792,10 +956,15 @@ pub async fn watch_resources(
 pub async fn apply_resource_yaml(
     client: kube::Client,
     expected_kind: &str,
-    expected_namespace: &str,
+    expected_namespace: Option<&str>,
     expected_name: &str,
     yaml: &str,
 ) -> Result<String, KubernetesError> {
+    if is_namespaced_kind(expected_kind) && expected_namespace.is_none() {
+        return Err(KubernetesError::ApplyResourceFailed(format!(
+            "{expected_kind} namespace is required"
+        )));
+    }
     let object: DynamicObject = serde_yaml_ng::from_str(yaml)
         .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
     let actual_kind = object
@@ -804,15 +973,16 @@ pub async fn apply_resource_yaml(
         .map(|types| types.kind.as_str())
         .unwrap_or_default();
     let actual_name = object.name_any();
-    let actual_namespace = object
-        .namespace()
-        .unwrap_or_else(|| expected_namespace.into());
+    let actual_namespace = object.namespace();
     if actual_kind != expected_kind
         || actual_name != expected_name
-        || actual_namespace != expected_namespace
+        || actual_namespace.as_deref() != expected_namespace
     {
         return Err(KubernetesError::ApplyResourceFailed(format!(
-            "YAML identity {actual_kind} {actual_namespace}/{actual_name} does not match {expected_kind} {expected_namespace}/{expected_name}"
+            "YAML identity {actual_kind} {}/{actual_name} does not match {expected_kind} {}/{}",
+            actual_namespace.as_deref().unwrap_or("<cluster>"),
+            expected_namespace.unwrap_or("<cluster>"),
+            expected_name,
         )));
     }
     let api = dynamic_api(client, expected_kind, expected_namespace).await?;
@@ -832,9 +1002,14 @@ pub async fn apply_resource_yaml(
 pub async fn delete_resource(
     client: kube::Client,
     kind: &str,
-    namespace: &str,
+    namespace: Option<&str>,
     name: &str,
 ) -> Result<(), KubernetesError> {
+    if is_namespaced_kind(kind) && namespace.is_none() {
+        return Err(KubernetesError::DeleteResourceFailed(format!(
+            "{kind} namespace is required"
+        )));
+    }
     dynamic_api(client, kind, namespace)
         .await?
         .delete(name, &DeleteParams::default())
@@ -1149,5 +1324,36 @@ mod tests {
         assert_eq!(json["apiVersion"], "v1");
         assert_eq!(json["columns"]["status"], "Running");
         assert_eq!(json["namespace"], "default");
+    }
+
+    #[test]
+    fn extended_resource_kinds_have_expected_scope() {
+        for kind in [
+            "StatefulSet",
+            "DaemonSet",
+            "Job",
+            "CronJob",
+            "Ingress",
+            "ConfigMap",
+            "Secret",
+            "PersistentVolumeClaim",
+            "PersistentVolume",
+        ] {
+            assert!(gvk_for_kind(kind).is_some(), "missing GVK for {kind}");
+        }
+        assert!(!is_namespaced_kind("PersistentVolume"));
+        assert!(is_namespaced_kind("PersistentVolumeClaim"));
+    }
+
+    #[test]
+    fn secret_columns_only_expose_metadata() {
+        let secret = serde_json::json!({
+            "type": "Opaque",
+            "data": {"username": "dXNlcg==", "password": "c2VjcmV0"}
+        });
+        let columns = resource_columns("Secret", &secret);
+        assert_eq!(columns.get("type").map(String::as_str), Some("Opaque"));
+        assert_eq!(columns.get("data").map(String::as_str), Some("2"));
+        assert!(!columns.values().any(|value| value.contains("c2VjcmV0")));
     }
 }

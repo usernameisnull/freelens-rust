@@ -275,19 +275,32 @@ class MockTransport implements Transport {
       context: request.context,
       kind: request.kind,
       items: base.map((item, index) => {
-        const columns: Record<string, string> = request.kind === "Pod"
-          ? { status: "Running", ready: "1/1", restarts: "0", node: "worker-1" }
-          : request.kind === "Deployment"
-            ? { ready: "3/3", upToDate: "3", available: "3" }
-            : { type: "ClusterIP", clusterIP: "10.96.0.10", ports: "80/TCP" };
+        const columnsByKind: Record<string, Record<string, string>> = {
+          Pod: { status: "Running", ready: "1/1", restarts: "0", node: "worker-1" },
+          Deployment: { ready: "3/3", upToDate: "3", available: "3" },
+          StatefulSet: { ready: "3/3", upToDate: "3", available: "3" },
+          DaemonSet: { desired: "3", current: "3", ready: "3", available: "3" },
+          Job: { completions: "1/1", active: "0", failed: "0" },
+          CronJob: { schedule: "*/5 * * * *", suspend: "false", active: "0", lastSchedule: "-" },
+          Service: { type: "ClusterIP", clusterIP: "10.96.0.10", ports: "80/TCP" },
+          Ingress: { class: "nginx", hosts: "example.test" },
+          ConfigMap: { data: "3" },
+          Secret: { type: "Opaque", data: "2" },
+          PersistentVolumeClaim: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
+          PersistentVolume: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
+        };
+        const apiVersions: Record<string, string> = {
+          Deployment: "apps/v1", StatefulSet: "apps/v1", DaemonSet: "apps/v1",
+          Job: "batch/v1", CronJob: "batch/v1", Ingress: "networking.k8s.io/v1",
+        };
         return {
           kind: request.kind,
-          apiVersion: request.kind === "Deployment" ? "apps/v1" : "v1",
+          apiVersion: apiVersions[request.kind] ?? "v1",
           name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
-          namespace: request.namespace ?? item.namespace,
+          namespace: request.kind === "PersistentVolume" ? null : request.namespace ?? item.namespace,
           uid: `uid-${index}`,
           created: new Date().toISOString(),
-          columns,
+          columns: columnsByKind[request.kind] ?? {},
         };
       }),
       continueToken: null,
@@ -305,13 +318,14 @@ class MockTransport implements Transport {
   async kubernetesGetResourceYaml(
     request: KubernetesGetResourceYamlRequest
   ): Promise<KubernetesGetResourceYamlResponse> {
+    const namespace = request.namespace ? `  namespace: ${request.namespace}\n` : "";
     return {
       version: IPC_VERSION,
       requestId: request.meta.requestId,
       context: request.context,
       kind: request.kind,
       name: request.name,
-      yaml: `apiVersion: ${request.kind === "Deployment" ? "apps/v1" : "v1"}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n  namespace: ${request.namespace ?? "default"}\n`,
+      yaml: `apiVersion: v1\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n${namespace}`,
     };
   }
 

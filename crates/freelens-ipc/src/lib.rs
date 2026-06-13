@@ -219,7 +219,7 @@ pub struct KubernetesGetResourceDetailRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
-    pub namespace: String,
+    pub namespace: Option<String>,
     pub name: String,
 }
 
@@ -278,7 +278,7 @@ pub struct KubernetesApplyResourceRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
-    pub namespace: String,
+    pub namespace: Option<String>,
     pub name: String,
     pub yaml: String,
 }
@@ -297,7 +297,7 @@ pub struct KubernetesDeleteResourceRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
-    pub namespace: String,
+    pub namespace: Option<String>,
     pub name: String,
 }
 
