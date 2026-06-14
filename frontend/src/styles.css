@@ -494,6 +494,74 @@ input {
   width: min(1000px, 78vw);
 }
 
+.kubectl-panel {
+  width: min(1000px, 78vw);
+}
+
+.kubectl-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid #26313a;
+}
+
+.kubectl-controls select,
+.kubectl-command-row input {
+  padding: 7px 9px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #e8edf2;
+}
+
+.kubectl-command-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kubectl-command-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.kubectl-command-row button {
+  padding: 7px 16px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #1c242d;
+  color: #e8edf2;
+  cursor: pointer;
+}
+
+.kubectl-command-row button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.kubectl-controls p {
+  margin: 0;
+  color: #71808e;
+  font-size: 0.8rem;
+}
+
+.kubectl-output {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 0;
+  padding: 18px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: #0f1419;
+  color: #d7e0e8;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
 .exec-controls {
   align-items: center;
   border-top: none;

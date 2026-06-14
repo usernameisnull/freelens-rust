@@ -5,6 +5,8 @@ import {
   IPC_VERSION,
   KubeconfigContext,
   KubeconfigListResponse,
+  KubectlInstallation,
+  KubectlRunResponse,
   KubernetesGetResourceDetailResponse,
   KubernetesListNamespacesResponse,
   KubernetesListResourcesResponse,
@@ -33,6 +35,37 @@ function errorMessage(reason: unknown): string {
     }
   }
   return String(reason);
+}
+
+function parseCommandArguments(value: string): string[] {
+  const argumentsList: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  let escaped = false;
+  for (const character of value.trim()) {
+    if (escaped) {
+      current += character;
+      escaped = false;
+    } else if (character === "\\" && quote !== "'") {
+      escaped = true;
+    } else if (quote) {
+      if (character === quote) quote = undefined;
+      else current += character;
+    } else if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/\s/.test(character)) {
+      if (current) {
+        argumentsList.push(current);
+        current = "";
+      }
+    } else {
+      current += character;
+    }
+  }
+  if (escaped) current += "\\";
+  if (quote) throw new Error("Command contains an unterminated quote");
+  if (current) argumentsList.push(current);
+  return argumentsList;
 }
 
 const RESOURCE_GROUPS = [
@@ -251,6 +284,15 @@ export function App() {
     remotePort: number;
   }>>({});
   const portForwardsRef = useRef(portForwards);
+  const [kubectlOpen, setKubectlOpen] = useState(false);
+  const [kubectlInstallations, setKubectlInstallations] = useState<KubectlInstallation[]>([]);
+  const [kubectlExecutable, setKubectlExecutable] = useState("");
+  const [kubectlCommand, setKubectlCommand] = useState("get pods");
+  const [kubectlOperationId, setKubectlOperationId] = useState<string>();
+  const kubectlOperationIdRef = useRef<string | undefined>(undefined);
+  const [kubectlResult, setKubectlResult] = useState<KubectlRunResponse>();
+  const [kubectlError, setKubectlError] = useState<string>();
+  const [kubectlLoading, setKubectlLoading] = useState(false);
 
   const updatePortForwards = useCallback((next: Record<string, {
     operationId: string;
@@ -386,6 +428,13 @@ export function App() {
         void transport.kubernetesStopPodPortForward({
           meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
           operationId: forward.operationId,
+        });
+      }
+      const kubectlId = kubectlOperationIdRef.current;
+      if (kubectlId) {
+        void transport.kubectlCancel({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          operationId: kubectlId,
         });
       }
       unlistenLog?.();
@@ -1009,6 +1058,81 @@ export function App() {
     }
   };
 
+  const openKubectl = async () => {
+    setKubectlOpen(true);
+    setKubectlError(undefined);
+    try {
+      const response = await transport.kubectlInfo({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      });
+      setKubectlInstallations(response.installations);
+      setKubectlExecutable((current) => current || response.installations[0]?.path || "");
+      if (response.installations.length === 0) {
+        setKubectlError("kubectl was not found on PATH");
+      }
+    } catch (reason) {
+      setKubectlError(errorMessage(reason));
+    }
+  };
+
+  const runKubectl = async () => {
+    if (!selectedContext || !kubectlExecutable) return;
+    let argumentsList: string[];
+    try {
+      argumentsList = parseCommandArguments(kubectlCommand);
+    } catch (reason) {
+      setKubectlError(errorMessage(reason));
+      return;
+    }
+    if (argumentsList[0]?.toLowerCase() === "kubectl") argumentsList.shift();
+    if (argumentsList.length === 0) {
+      setKubectlError("Enter a command, for example: get pods");
+      return;
+    }
+    const operationId = crypto.randomUUID();
+    kubectlOperationIdRef.current = operationId;
+    setKubectlOperationId(operationId);
+    setKubectlLoading(true);
+    setKubectlError(undefined);
+    setKubectlResult(undefined);
+    try {
+      const response = await transport.kubectlRun({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId,
+        executable: kubectlExecutable,
+        context: selectedContext,
+        namespace: selectedNamespace || null,
+        arguments: argumentsList,
+      });
+      setKubectlResult(response);
+    } catch (reason) {
+      if (kubectlOperationIdRef.current === operationId) setKubectlError(errorMessage(reason));
+    } finally {
+      if (kubectlOperationIdRef.current === operationId) {
+        kubectlOperationIdRef.current = undefined;
+        setKubectlOperationId(undefined);
+        setKubectlLoading(false);
+      }
+    }
+  };
+
+  const cancelKubectl = async () => {
+    const operationId = kubectlOperationIdRef.current;
+    if (!operationId) return;
+    kubectlOperationIdRef.current = undefined;
+    setKubectlOperationId(undefined);
+    setKubectlLoading(false);
+    await transport.kubectlCancel({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      operationId,
+    }).catch((reason) => setKubectlError(errorMessage(reason)));
+  };
+
+  const closeKubectl = () => {
+    void cancelKubectl();
+    setKubectlOpen(false);
+  };
+
   const visibleResources = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     const filtered = query
@@ -1079,6 +1203,7 @@ export function App() {
             <select
               value={selectedContext}
               onChange={(event) => {
+                void cancelKubectl();
                 for (const forward of Object.values(portForwardsRef.current)) {
                   void transport.kubernetesStopPodPortForward({
                     meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -1185,6 +1310,7 @@ export function App() {
               Refresh
             </button>
             <button onClick={openCreate}>Create Resource</button>
+            <button onClick={() => void openKubectl()}>Kubectl</button>
           </div>
         </header>
 
@@ -1338,6 +1464,61 @@ export function App() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {kubectlOpen && (
+        <div className="detail-panel-overlay" onClick={closeKubectl}>
+          <div className="detail-panel kubectl-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <h3>Kubectl: {selectedContext}</h3>
+              <div>
+                {kubectlOperationId && <button onClick={() => void cancelKubectl()}>Stop</button>}
+                <button onClick={closeKubectl}>Close</button>
+              </div>
+            </header>
+            <div className="kubectl-controls">
+              <select
+                value={kubectlExecutable}
+                onChange={(event) => setKubectlExecutable(event.target.value)}
+                disabled={kubectlLoading}
+              >
+                {kubectlInstallations.map((installation) => (
+                  <option key={installation.path} value={installation.path}>
+                    {installation.version} - {installation.path}
+                  </option>
+                ))}
+              </select>
+              <div className="kubectl-command-row">
+                <span>kubectl</span>
+                <input
+                  value={kubectlCommand}
+                  onChange={(event) => setKubectlCommand(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !kubectlLoading) void runKubectl();
+                  }}
+                  placeholder="get pods -o wide"
+                  disabled={kubectlLoading}
+                  autoFocus
+                />
+                <button
+                  onClick={() => void runKubectl()}
+                  disabled={kubectlLoading || !kubectlExecutable || !kubectlCommand.trim()}
+                >
+                  {kubectlLoading ? "Running..." : "Run"}
+                </button>
+              </div>
+              <p>
+                Context: {selectedContext}; namespace: {selectedNamespace || "all namespaces"}
+              </p>
+            </div>
+            {kubectlError && <p className="error-message">{kubectlError}</p>}
+            <pre className="kubectl-output">
+              {kubectlResult
+                ? `${kubectlResult.stdout}${kubectlResult.stderr}${kubectlResult.outputTruncated ? "\n[Output truncated at 1 MiB]\n" : ""}\n[Exit code: ${kubectlResult.exitCode ?? "terminated"}]`
+                : kubectlLoading ? "Running kubectl..." : "Enter a command to run kubectl."}
+            </pre>
           </div>
         </div>
       )}

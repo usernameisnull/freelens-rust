@@ -330,6 +330,45 @@ export interface KubernetesStopPodTerminalRequest {
   sessionId: string;
 }
 
+export interface KubectlInfoRequest {
+  meta: { version: number; requestId: string };
+}
+
+export interface KubectlInstallation {
+  path: string;
+  version: string;
+}
+
+export interface KubectlInfoResponse {
+  version: number;
+  requestId: string;
+  installations: KubectlInstallation[];
+}
+
+export interface KubectlRunRequest {
+  meta: { version: number; requestId: string };
+  operationId: string;
+  executable: string;
+  context: string;
+  namespace: string | null;
+  arguments: string[];
+}
+
+export interface KubectlRunResponse {
+  version: number;
+  requestId: string;
+  operationId: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  outputTruncated: boolean;
+}
+
+export interface KubectlCancelRequest {
+  meta: { version: number; requestId: string };
+  operationId: string;
+}
+
 export interface KubernetesStartPodPortForwardRequest {
   meta: { version: number; requestId: string };
   operationId: string;

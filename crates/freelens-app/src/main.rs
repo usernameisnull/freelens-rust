@@ -3,28 +3,32 @@
 use freelens_ipc::{
     ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem, HealthCheckRequest,
     HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError, KubeconfigListRequest,
-    KubeconfigListResponse, KubernetesApplyResourceRequest, KubernetesApplyResourceResponse,
-    KubernetesCreateResourceRequest, KubernetesCreateResourceResponse,
-    KubernetesDeleteResourceRequest, KubernetesDiscoverResourcesRequest,
-    KubernetesDiscoverResourcesResponse, KubernetesExecPodRequest, KubernetesExecPodResponse,
-    KubernetesGetPodContainersRequest, KubernetesGetPodContainersResponse,
-    KubernetesGetResourceDetailRequest, KubernetesGetResourceDetailResponse,
-    KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
-    KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
-    KubernetesListResourcesRequest, KubernetesListResourcesResponse,
-    KubernetesResizePodTerminalRequest, KubernetesScaleDeploymentRequest,
-    KubernetesStartPodPortForwardRequest, KubernetesStartPodPortForwardResponse,
-    KubernetesStartPodTerminalRequest, KubernetesStartPodTerminalResponse,
-    KubernetesStartResourceWatchRequest, KubernetesStopPodLogsRequest,
-    KubernetesStopPodPortForwardRequest, KubernetesStopPodTerminalRequest,
-    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
-    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
-    KubernetesTerminalInputResponse, KubernetesVersionRequest, KubernetesVersionResponse,
-    NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    KubeconfigListResponse, KubectlCancelRequest, KubectlInfoRequest, KubectlInfoResponse,
+    KubectlInstallation, KubectlRunRequest, KubectlRunResponse, KubernetesApplyResourceRequest,
+    KubernetesApplyResourceResponse, KubernetesCreateResourceRequest,
+    KubernetesCreateResourceResponse, KubernetesDeleteResourceRequest,
+    KubernetesDiscoverResourcesRequest, KubernetesDiscoverResourcesResponse,
+    KubernetesExecPodRequest, KubernetesExecPodResponse, KubernetesGetPodContainersRequest,
+    KubernetesGetPodContainersResponse, KubernetesGetResourceDetailRequest,
+    KubernetesGetResourceDetailResponse, KubernetesGetResourceYamlRequest,
+    KubernetesGetResourceYamlResponse, KubernetesListNamespacesRequest,
+    KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
+    KubernetesListResourcesResponse, KubernetesResizePodTerminalRequest,
+    KubernetesScaleDeploymentRequest, KubernetesStartPodPortForwardRequest,
+    KubernetesStartPodPortForwardResponse, KubernetesStartPodTerminalRequest,
+    KubernetesStartPodTerminalResponse, KubernetesStartResourceWatchRequest,
+    KubernetesStopPodLogsRequest, KubernetesStopPodPortForwardRequest,
+    KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
+    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
+    KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
+    KubernetesVersionResponse, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, path::BaseDirectory};
+use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::process::Command;
 
 fn validate_ipc_version(version: u16) -> Result<(), IpcError> {
     if version == IPC_VERSION {
@@ -655,6 +659,29 @@ struct PortForwardManager {
     forwards: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
 }
 
+#[derive(Default, Clone)]
+struct KubectlProcessManager {
+    processes: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+}
+
+impl KubectlProcessManager {
+    fn insert(&self, id: String, abort: tokio::task::AbortHandle) {
+        if let Some(previous) = self.processes.lock().unwrap().insert(id, abort) {
+            previous.abort();
+        }
+    }
+
+    fn remove(&self, id: &str) {
+        self.processes.lock().unwrap().remove(id);
+    }
+
+    fn cancel(&self, id: &str) {
+        if let Some(process) = self.processes.lock().unwrap().remove(id) {
+            process.abort();
+        }
+    }
+}
+
 impl PortForwardManager {
     fn insert(&self, id: String, abort: tokio::task::AbortHandle) {
         if let Some(previous) = self.forwards.lock().unwrap().insert(id, abort) {
@@ -1100,6 +1127,224 @@ fn kubernetes_stop_pod_port_forward(
     Ok(())
 }
 
+const KUBECTL_OUTPUT_LIMIT: usize = 1024 * 1024;
+
+fn display_path(path: &Path) -> PathBuf {
+    let value = path.to_string_lossy();
+    if let Some(value) = value.strip_prefix(r"\\?\UNC\") {
+        PathBuf::from(format!(r"\\{value}"))
+    } else if let Some(value) = value.strip_prefix(r"\\?\") {
+        PathBuf::from(value)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn kubectl_candidates() -> Vec<PathBuf> {
+    let executable_names: &[&str] = if cfg!(windows) {
+        &["kubectl.exe", "kubectl"]
+    } else {
+        &["kubectl"]
+    };
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+    if let Some(path) = std::env::var_os("PATH") {
+        for directory in std::env::split_paths(&path) {
+            for name in executable_names {
+                let candidate = directory.join(name);
+                if candidate.is_file() {
+                    let canonical = candidate.canonicalize().unwrap_or(candidate);
+                    let identity = canonical.to_string_lossy().to_lowercase();
+                    if seen.insert(identity) {
+                        candidates.push(display_path(&canonical));
+                    }
+                }
+            }
+        }
+    }
+    candidates
+}
+
+async fn kubectl_version(path: &Path) -> String {
+    let mut command = Command::new(path);
+    command
+        .args(["version", "--client", "--output=json"])
+        .kill_on_drop(true);
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(5), command.output()).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(error)) => return format!("Unavailable: {error}"),
+            Err(_) => return "Version check timed out".into(),
+        };
+    if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        && let Some(version) = value
+            .pointer("/clientVersion/gitVersion")
+            .and_then(|value| value.as_str())
+    {
+        return version.into();
+    }
+    let text = String::from_utf8_lossy(if output.stdout.is_empty() {
+        &output.stderr
+    } else {
+        &output.stdout
+    });
+    text.lines()
+        .next()
+        .unwrap_or("Unknown version")
+        .trim()
+        .into()
+}
+
+#[tauri::command]
+async fn kubectl_info(request: KubectlInfoRequest) -> Result<KubectlInfoResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let mut installations = Vec::new();
+    for path in kubectl_candidates() {
+        installations.push(KubectlInstallation {
+            version: kubectl_version(&path).await,
+            path: path.display().to_string(),
+        });
+    }
+    Ok(KubectlInfoResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        installations,
+    })
+}
+
+async fn read_limited<R>(mut reader: R) -> std::io::Result<(Vec<u8>, bool)>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut output = Vec::new();
+    let mut buffer = [0_u8; 8192];
+    let mut truncated = false;
+    loop {
+        let read = reader.read(&mut buffer).await?;
+        if read == 0 {
+            break;
+        }
+        let remaining = KUBECTL_OUTPUT_LIMIT.saturating_sub(output.len());
+        output.extend_from_slice(&buffer[..read.min(remaining)]);
+        truncated |= read > remaining;
+    }
+    Ok((output, truncated))
+}
+
+async fn run_kubectl_process(request: &KubectlRunRequest) -> Result<KubectlRunResponse, IpcError> {
+    if request.arguments.is_empty() {
+        return Err(IpcError {
+            code: "kubectl_arguments_empty".into(),
+            message: "Enter a kubectl command, for example: get pods".into(),
+        });
+    }
+    let requested_path = PathBuf::from(&request.executable);
+    let requested_canonical = requested_path.canonicalize().ok();
+    let allowed = requested_canonical.as_ref().is_some_and(|requested| {
+        kubectl_candidates()
+            .into_iter()
+            .filter_map(|candidate| candidate.canonicalize().ok())
+            .any(|candidate| &candidate == requested)
+    });
+    if !allowed {
+        return Err(IpcError {
+            code: "kubectl_executable_not_found".into(),
+            message: "The selected kubectl executable is not available on PATH".into(),
+        });
+    }
+
+    let mut command = Command::new(&requested_path);
+    command
+        .args(&request.arguments)
+        .arg("--context")
+        .arg(&request.context)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(namespace) = request
+        .namespace
+        .as_deref()
+        .filter(|value| !value.is_empty())
+    {
+        command.arg("--namespace").arg(namespace);
+    }
+    let mut child = command.spawn().map_err(|error| IpcError {
+        code: "kubectl_start_failed".into(),
+        message: error.to_string(),
+    })?;
+    let stdout = child.stdout.take().expect("kubectl stdout must be piped");
+    let stderr = child.stderr.take().expect("kubectl stderr must be piped");
+    let stdout_task = tokio::spawn(read_limited(stdout));
+    let stderr_task = tokio::spawn(read_limited(stderr));
+    let status = child.wait().await.map_err(|error| IpcError {
+        code: "kubectl_wait_failed".into(),
+        message: error.to_string(),
+    })?;
+    let (stdout, stdout_truncated) = stdout_task
+        .await
+        .map_err(|error| IpcError {
+            code: "kubectl_output_failed".into(),
+            message: error.to_string(),
+        })?
+        .map_err(|error| IpcError {
+            code: "kubectl_output_failed".into(),
+            message: error.to_string(),
+        })?;
+    let (stderr, stderr_truncated) = stderr_task
+        .await
+        .map_err(|error| IpcError {
+            code: "kubectl_output_failed".into(),
+            message: error.to_string(),
+        })?
+        .map_err(|error| IpcError {
+            code: "kubectl_output_failed".into(),
+            message: error.to_string(),
+        })?;
+    Ok(KubectlRunResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id.clone(),
+        operation_id: request.operation_id.clone(),
+        stdout: String::from_utf8_lossy(&stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&stderr).into_owned(),
+        exit_code: status.code(),
+        output_truncated: stdout_truncated || stderr_truncated,
+    })
+}
+
+#[tauri::command]
+async fn kubectl_run(
+    request: KubectlRunRequest,
+    processes: State<'_, KubectlProcessManager>,
+) -> Result<KubectlRunResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let operation_id = request.operation_id.clone();
+    let task = tokio::spawn(async move { run_kubectl_process(&request).await });
+    processes.insert(operation_id.clone(), task.abort_handle());
+    let result = task.await;
+    processes.remove(&operation_id);
+    match result {
+        Ok(result) => result,
+        Err(error) if error.is_cancelled() => Err(IpcError {
+            code: "kubectl_cancelled".into(),
+            message: "kubectl command was cancelled".into(),
+        }),
+        Err(error) => Err(IpcError {
+            code: "kubectl_task_failed".into(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+#[tauri::command]
+fn kubectl_cancel(
+    request: KubectlCancelRequest,
+    processes: State<'_, KubectlProcessManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    processes.cancel(&request.operation_id);
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1123,6 +1368,7 @@ fn main() {
         .manage(ResourceWatchManager::default())
         .manage(TerminalSessionManager::default())
         .manage(PortForwardManager::default())
+        .manage(KubectlProcessManager::default())
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
@@ -1144,6 +1390,9 @@ fn main() {
             kubernetes_stop_pod_terminal,
             kubernetes_start_pod_port_forward,
             kubernetes_stop_pod_port_forward,
+            kubectl_info,
+            kubectl_run,
+            kubectl_cancel,
             kubernetes_start_resource_watch,
             kubernetes_stop_resource_watch,
             kubernetes_get_pod_containers,
@@ -1158,6 +1407,18 @@ fn main() {
 mod tests {
     use super::*;
     use freelens_ipc::RequestMeta;
+
+    #[test]
+    fn display_path_removes_windows_verbatim_prefix() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\D:\tools\kubectl.exe")),
+            PathBuf::from(r"D:\tools\kubectl.exe")
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\tools\kubectl.exe")),
+            PathBuf::from(r"\\server\tools\kubectl.exe")
+        );
+    }
 
     #[test]
     fn health_check_echoes_request_id() {

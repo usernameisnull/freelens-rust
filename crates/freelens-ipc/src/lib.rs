@@ -455,6 +455,57 @@ pub struct KubernetesStopPodPortForwardRequest {
     pub operation_id: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubectlInfoRequest {
+    pub meta: RequestMeta,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubectlInstallation {
+    pub path: String,
+    pub version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubectlInfoResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub installations: Vec<KubectlInstallation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubectlRunRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+    pub executable: String,
+    pub context: String,
+    pub namespace: Option<String>,
+    pub arguments: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubectlRunResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub operation_id: String,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub output_truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct KubectlCancelRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KubernetesGetPodContainersRequest {
@@ -669,6 +720,22 @@ mod tests {
         assert_eq!(json["operationId"], "forward-1");
         assert_eq!(json["remotePort"], 8080);
         assert_eq!(json["localPort"], 0);
+    }
+
+    #[test]
+    fn kubectl_run_request_serializes_arguments_without_a_shell_command() {
+        let request = KubectlRunRequest {
+            meta: RequestMeta::new("r-kubectl"),
+            operation_id: "kubectl-1".into(),
+            executable: r"C:\tools\kubectl.exe".into(),
+            context: "dev".into(),
+            namespace: Some("default".into()),
+            arguments: vec!["get".into(), "pods".into(), "-o".into(), "wide".into()],
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["operationId"], "kubectl-1");
+        assert_eq!(json["arguments"][1], "pods");
+        assert_eq!(json["namespace"], "default");
     }
 
     #[test]

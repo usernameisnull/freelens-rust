@@ -6,6 +6,11 @@ import {
   IPC_VERSION,
   KubeconfigListRequest,
   KubeconfigListResponse,
+  KubectlCancelRequest,
+  KubectlInfoRequest,
+  KubectlInfoResponse,
+  KubectlRunRequest,
+  KubectlRunResponse,
   KubernetesApplyResourceRequest,
   KubernetesApplyResourceResponse,
   KubernetesDeleteResourceRequest,
@@ -54,6 +59,9 @@ export interface Transport {
   healthCheck(request: HealthCheckRequest): Promise<HealthCheckResponse>;
   systemInfo(): Promise<SystemInfoResponse>;
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse>;
+  kubectlInfo(request: KubectlInfoRequest): Promise<KubectlInfoResponse>;
+  kubectlRun(request: KubectlRunRequest): Promise<KubectlRunResponse>;
+  kubectlCancel(request: KubectlCancelRequest): Promise<void>;
   kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse>;
   kubernetesListNamespaces(
     request: KubernetesListNamespacesRequest
@@ -112,6 +120,18 @@ class TauriTransport implements Transport {
 
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
     return invoke("kubeconfig_list", { request });
+  }
+
+  kubectlInfo(request: KubectlInfoRequest): Promise<KubectlInfoResponse> {
+    return invoke("kubectl_info", { request });
+  }
+
+  kubectlRun(request: KubectlRunRequest): Promise<KubectlRunResponse> {
+    return invoke("kubectl_run", { request });
+  }
+
+  kubectlCancel(request: KubectlCancelRequest): Promise<void> {
+    return invoke("kubectl_cancel", { request });
   }
 
   kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse> {
@@ -285,6 +305,28 @@ class MockTransport implements Transport {
       ],
     };
   }
+
+  async kubectlInfo(request: KubectlInfoRequest): Promise<KubectlInfoResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      installations: [{ path: "kubectl", version: "v1.mock.0" }],
+    };
+  }
+
+  async kubectlRun(request: KubectlRunRequest): Promise<KubectlRunResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      operationId: request.operationId,
+      stdout: `mock kubectl ${request.arguments.join(" ")}\n`,
+      stderr: "",
+      exitCode: 0,
+      outputTruncated: false,
+    };
+  }
+
+  async kubectlCancel(): Promise<void> {}
 
   async kubernetesVersion(request: KubernetesVersionRequest): Promise<KubernetesVersionResponse> {
     return {
