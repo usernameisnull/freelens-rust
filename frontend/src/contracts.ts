@@ -330,6 +330,29 @@ export interface KubernetesStopPodTerminalRequest {
   sessionId: string;
 }
 
+export interface KubernetesStartPodPortForwardRequest {
+  meta: { version: number; requestId: string };
+  operationId: string;
+  context: string;
+  namespace: string;
+  pod: string;
+  remotePort: number;
+  localPort: number;
+}
+
+export interface KubernetesStartPodPortForwardResponse {
+  version: number;
+  requestId: string;
+  operationId: string;
+  localPort: number;
+  remotePort: number;
+}
+
+export interface KubernetesStopPodPortForwardRequest {
+  meta: { version: number; requestId: string };
+  operationId: string;
+}
+
 export interface TerminalEvent {
   sessionId: string;
   stream: "stdout" | "stderr";

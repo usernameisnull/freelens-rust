@@ -30,7 +30,10 @@ import {
   KubernetesStartResourceWatchRequest,
   KubernetesStartPodTerminalRequest,
   KubernetesStartPodTerminalResponse,
+  KubernetesStartPodPortForwardRequest,
+  KubernetesStartPodPortForwardResponse,
   KubernetesStopPodTerminalRequest,
+  KubernetesStopPodPortForwardRequest,
   KubernetesStopPodLogsRequest,
   KubernetesStopResourceWatchRequest,
   KubernetesStreamPodLogsRequest,
@@ -83,6 +86,8 @@ export interface Transport {
   kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse>;
   kubernetesResizePodTerminal(request: KubernetesResizePodTerminalRequest): Promise<void>;
   kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void>;
+  kubernetesStartPodPortForward(request: KubernetesStartPodPortForwardRequest): Promise<KubernetesStartPodPortForwardResponse>;
+  kubernetesStopPodPortForward(request: KubernetesStopPodPortForwardRequest): Promise<void>;
   onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn>;
   onTerminalDone(callback: (event: TerminalDoneEvent) => void): Promise<UnlistenFn>;
   kubernetesGetPodContainers(
@@ -193,6 +198,14 @@ class TauriTransport implements Transport {
 
   kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void> {
     return invoke("kubernetes_stop_pod_terminal", { request });
+  }
+
+  kubernetesStartPodPortForward(request: KubernetesStartPodPortForwardRequest): Promise<KubernetesStartPodPortForwardResponse> {
+    return invoke("kubernetes_start_pod_port_forward", { request });
+  }
+
+  kubernetesStopPodPortForward(request: KubernetesStopPodPortForwardRequest): Promise<void> {
+    return invoke("kubernetes_stop_pod_port_forward", { request });
   }
 
   onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn> {
@@ -499,6 +512,18 @@ class MockTransport implements Transport {
       queueMicrotask(() => this.terminalDoneCallback?.({ sessionId: request.sessionId }));
     }
   }
+
+  async kubernetesStartPodPortForward(request: KubernetesStartPodPortForwardRequest): Promise<KubernetesStartPodPortForwardResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      operationId: request.operationId,
+      localPort: request.localPort || request.remotePort,
+      remotePort: request.remotePort,
+    };
+  }
+
+  async kubernetesStopPodPortForward(): Promise<void> {}
 
   async onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn> {
     this.terminalCallback = callback;

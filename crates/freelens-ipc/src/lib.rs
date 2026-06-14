@@ -428,6 +428,35 @@ pub struct KubernetesStopPodTerminalRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesStartPodPortForwardRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+    pub remote_port: u16,
+    pub local_port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStartPodPortForwardResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub operation_id: String,
+    pub local_port: u16,
+    pub remote_port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStopPodPortForwardRequest {
+    pub meta: RequestMeta,
+    pub operation_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesGetPodContainersRequest {
     pub meta: RequestMeta,
     pub context: String,
@@ -623,6 +652,23 @@ mod tests {
         assert_eq!(json["sessionId"], "session-1");
         assert_eq!(json["initialOutput"], "sh-5.1# ");
         assert_eq!(json["active"], true);
+    }
+
+    #[test]
+    fn port_forward_request_serializes_ports() {
+        let request = KubernetesStartPodPortForwardRequest {
+            meta: RequestMeta::new("r-forward"),
+            operation_id: "forward-1".into(),
+            context: "dev".into(),
+            namespace: "default".into(),
+            pod: "web".into(),
+            remote_port: 8080,
+            local_port: 0,
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["operationId"], "forward-1");
+        assert_eq!(json["remotePort"], 8080);
+        assert_eq!(json["localPort"], 0);
     }
 
     #[test]

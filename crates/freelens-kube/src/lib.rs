@@ -43,6 +43,8 @@ pub enum KubernetesError {
     ScaleDeploymentFailed(String),
     #[error("failed to execute pod command: {0}")]
     ExecPodFailed(String),
+    #[error("failed to forward pod port: {0}")]
+    PortForwardFailed(String),
 }
 
 impl KubernetesError {
@@ -62,6 +64,7 @@ impl KubernetesError {
             KubernetesError::DeleteResourceFailed(..) => "kubernetes_delete_resource_failed",
             KubernetesError::ScaleDeploymentFailed(..) => "kubernetes_scale_deployment_failed",
             KubernetesError::ExecPodFailed(..) => "kubernetes_exec_pod_failed",
+            KubernetesError::PortForwardFailed(..) => "kubernetes_port_forward_failed",
         }
     }
 }
@@ -219,6 +222,11 @@ pub struct PodTerminal {
     pub input: tokio::sync::mpsc::Sender<String>,
     pub resize: tokio::sync::mpsc::Sender<(u16, u16)>,
     pub output: tokio::sync::mpsc::Receiver<TerminalOutput>,
+    pub abort: tokio::task::AbortHandle,
+}
+
+pub struct PodPortForward {
+    pub local_port: u16,
     pub abort: tokio::task::AbortHandle,
 }
 
@@ -1579,6 +1587,76 @@ pub async fn start_pod_terminal(
         input: input_tx,
         resize: resize_tx,
         output: output_rx,
+        abort: task.abort_handle(),
+    })
+}
+
+/// Bind a loopback TCP port and forward each accepted connection to a Pod port.
+pub async fn start_pod_port_forward(
+    client: kube::Client,
+    namespace: &str,
+    pod: &str,
+    remote_port: u16,
+    local_port: u16,
+) -> Result<PodPortForward, KubernetesError> {
+    use tokio::io::copy_bidirectional;
+    use tokio::net::TcpListener;
+
+    if remote_port == 0 {
+        return Err(KubernetesError::PortForwardFailed(
+            "remote port must be between 1 and 65535".into(),
+        ));
+    }
+    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, local_port))
+        .await
+        .map_err(|error| KubernetesError::PortForwardFailed(error.to_string()))?;
+    let bound_port = listener
+        .local_addr()
+        .map_err(|error| KubernetesError::PortForwardFailed(error.to_string()))?
+        .port();
+    let namespace = namespace.to_owned();
+    let pod = pod.to_owned();
+    let task = tokio::spawn(async move {
+        let mut connections = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                accepted = listener.accept() => {
+                    let (mut socket, _) = match accepted {
+                        Ok(connection) => connection,
+                        Err(error) => {
+                            tracing::warn!(%error, "pod port-forward listener stopped");
+                            break;
+                        }
+                    };
+                    let client = client.clone();
+                    let namespace = namespace.clone();
+                    let pod = pod.clone();
+                    connections.spawn(async move {
+                        let api: Api<Pod> = Api::namespaced(client, &namespace);
+                        let mut forwarder = match api.portforward(&pod, &[remote_port]).await {
+                            Ok(forwarder) => forwarder,
+                            Err(error) => {
+                                tracing::warn!(%error, %pod, remote_port, "failed to open pod port-forward");
+                                return;
+                            }
+                        };
+                        let Some(mut stream) = forwarder.take_stream(remote_port) else {
+                            tracing::warn!(%pod, remote_port, "pod port-forward stream is unavailable");
+                            return;
+                        };
+                        if let Err(error) = copy_bidirectional(&mut socket, &mut stream).await {
+                            tracing::debug!(%error, %pod, remote_port, "pod port-forward connection closed");
+                        }
+                    });
+                }
+                Some(_) = connections.join_next(), if !connections.is_empty() => {
+                    // Completed connections are removed from the session task set.
+                }
+            }
+        }
+    });
+    Ok(PodPortForward {
+        local_port: bound_port,
         abort: task.abort_handle(),
     })
 }

@@ -245,6 +245,21 @@ export function App() {
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const xtermFitRef = useRef<FitAddon | null>(null);
+  const [portForwards, setPortForwards] = useState<Record<string, {
+    operationId: string;
+    localPort: number;
+    remotePort: number;
+  }>>({});
+  const portForwardsRef = useRef(portForwards);
+
+  const updatePortForwards = useCallback((next: Record<string, {
+    operationId: string;
+    localPort: number;
+    remotePort: number;
+  }>) => {
+    portForwardsRef.current = next;
+    setPortForwards(next);
+  }, []);
 
   const writeTerminal = useCallback((data: string) => {
     xtermRef.current?.write(data);
@@ -365,6 +380,12 @@ export function App() {
         void transport.kubernetesStopPodTerminal({
           meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
           sessionId,
+        });
+      }
+      for (const forward of Object.values(portForwardsRef.current)) {
+        void transport.kubernetesStopPodPortForward({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          operationId: forward.operationId,
         });
       }
       unlistenLog?.();
@@ -924,6 +945,70 @@ export function App() {
     setExecResource(undefined);
   };
 
+  const portForwardKey = (item: ResourceItem) => `${item.namespace ?? ""}/${item.name}`;
+
+  const startPortForward = async (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    const suggestedRemote = item.columns.ports?.match(/\d+/)?.[0] ?? "8080";
+    const remoteValue = window.prompt(`Remote port for ${item.name}`, suggestedRemote);
+    if (remoteValue === null) return;
+    const remotePort = Number(remoteValue);
+    if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65535) {
+      setActionError("Remote port must be between 1 and 65535");
+      return;
+    }
+    const localValue = window.prompt("Local port (0 selects an available port)", String(remotePort));
+    if (localValue === null) return;
+    const localPort = Number(localValue);
+    if (!Number.isInteger(localPort) || localPort < 0 || localPort > 65535) {
+      setActionError("Local port must be between 0 and 65535");
+      return;
+    }
+    setActionError(undefined);
+    const operationId = crypto.randomUUID();
+    try {
+      const response = await transport.kubernetesStartPodPortForward({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId,
+        context: selectedContext,
+        namespace: item.namespace,
+        pod: item.name,
+        remotePort,
+        localPort,
+      });
+      const key = portForwardKey(item);
+      updatePortForwards({
+        ...portForwardsRef.current,
+        [key]: {
+          operationId,
+          localPort: response.localPort,
+          remotePort: response.remotePort,
+        },
+      });
+      setActionMessage(`Forwarding 127.0.0.1:${response.localPort} to ${item.name}:${response.remotePort}`);
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    }
+  };
+
+  const stopPortForward = async (item: ResourceItem) => {
+    const key = portForwardKey(item);
+    const forward = portForwardsRef.current[key];
+    if (!forward) return;
+    try {
+      await transport.kubernetesStopPodPortForward({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId: forward.operationId,
+      });
+      const next = { ...portForwardsRef.current };
+      delete next[key];
+      updatePortForwards(next);
+      setActionMessage(`Stopped port forward for ${item.name}`);
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    }
+  };
+
   const visibleResources = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     const filtered = query
@@ -994,6 +1079,13 @@ export function App() {
             <select
               value={selectedContext}
               onChange={(event) => {
+                for (const forward of Object.values(portForwardsRef.current)) {
+                  void transport.kubernetesStopPodPortForward({
+                    meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+                    operationId: forward.operationId,
+                  });
+                }
+                updatePortForwards({});
                 setSelectedContextAndRef(event.target.value);
                 setNamespaces([]);
                 setSelectedNamespace("");
@@ -1127,6 +1219,13 @@ export function App() {
                         <>
                           <button onClick={() => startLogs(item)}>Logs</button>
                           <button onClick={() => void openExec(item)}>Terminal</button>
+                          {portForwards[portForwardKey(item)] ? (
+                            <button onClick={() => void stopPortForward(item)}>
+                              Stop {portForwards[portForwardKey(item)].localPort}:{portForwards[portForwardKey(item)].remotePort}
+                            </button>
+                          ) : (
+                            <button onClick={() => void startPortForward(item)}>Port Forward</button>
+                          )}
                         </>
                       )}
                       {item.kind === "Deployment" && item.apiVersion === "apps/v1"

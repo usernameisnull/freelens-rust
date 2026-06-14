@@ -13,12 +13,14 @@ use freelens_ipc::{
     KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
     KubernetesListResourcesRequest, KubernetesListResourcesResponse,
     KubernetesResizePodTerminalRequest, KubernetesScaleDeploymentRequest,
+    KubernetesStartPodPortForwardRequest, KubernetesStartPodPortForwardResponse,
     KubernetesStartPodTerminalRequest, KubernetesStartPodTerminalResponse,
     KubernetesStartResourceWatchRequest, KubernetesStopPodLogsRequest,
-    KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
-    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
-    KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
-    KubernetesVersionResponse, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    KubernetesStopPodPortForwardRequest, KubernetesStopPodTerminalRequest,
+    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
+    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
+    KubernetesTerminalInputResponse, KubernetesVersionRequest, KubernetesVersionResponse,
+    NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -648,6 +650,25 @@ struct ResourceWatchManager {
     watches: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
 }
 
+#[derive(Default, Clone)]
+struct PortForwardManager {
+    forwards: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+}
+
+impl PortForwardManager {
+    fn insert(&self, id: String, abort: tokio::task::AbortHandle) {
+        if let Some(previous) = self.forwards.lock().unwrap().insert(id, abort) {
+            previous.abort();
+        }
+    }
+
+    fn stop(&self, id: &str) {
+        if let Some(abort) = self.forwards.lock().unwrap().remove(id) {
+            abort.abort();
+        }
+    }
+}
+
 struct TerminalSession {
     input: tokio::sync::mpsc::Sender<String>,
     resize: tokio::sync::mpsc::Sender<(u16, u16)>,
@@ -1033,6 +1054,52 @@ fn kubernetes_stop_pod_terminal(
     Ok(())
 }
 
+#[tauri::command]
+async fn kubernetes_start_pod_port_forward(
+    request: KubernetesStartPodPortForwardRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+    forwards: State<'_, PortForwardManager>,
+) -> Result<KubernetesStartPodPortForwardResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let forward = freelens_kube::start_pod_port_forward(
+        client,
+        &request.namespace,
+        &request.pod,
+        request.remote_port,
+        request.local_port,
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })?;
+    forwards.insert(request.operation_id.clone(), forward.abort);
+    Ok(KubernetesStartPodPortForwardResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        operation_id: request.operation_id,
+        local_port: forward.local_port,
+        remote_port: request.remote_port,
+    })
+}
+
+#[tauri::command]
+fn kubernetes_stop_pod_port_forward(
+    request: KubernetesStopPodPortForwardRequest,
+    forwards: State<'_, PortForwardManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    forwards.stop(&request.operation_id);
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1055,6 +1122,7 @@ fn main() {
         .manage(LogStreamManager::default())
         .manage(ResourceWatchManager::default())
         .manage(TerminalSessionManager::default())
+        .manage(PortForwardManager::default())
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
@@ -1074,6 +1142,8 @@ fn main() {
             kubernetes_terminal_input,
             kubernetes_resize_pod_terminal,
             kubernetes_stop_pod_terminal,
+            kubernetes_start_pod_port_forward,
+            kubernetes_stop_pod_port_forward,
             kubernetes_start_resource_watch,
             kubernetes_stop_resource_watch,
             kubernetes_get_pod_containers,
