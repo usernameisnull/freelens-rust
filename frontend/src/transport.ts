@@ -256,7 +256,17 @@ class MockTransport implements Transport {
       kinds: [
         { group: "", version: "v1", kind: "Pod", plural: "pods", scope: "Namespaced", namespaced: true },
         { group: "apps", version: "v1", kind: "Deployment", plural: "deployments", scope: "Namespaced", namespaced: true },
+        { group: "apps", version: "v1", kind: "StatefulSet", plural: "statefulsets", scope: "Namespaced", namespaced: true },
+        { group: "apps", version: "v1", kind: "DaemonSet", plural: "daemonsets", scope: "Namespaced", namespaced: true },
+        { group: "batch", version: "v1", kind: "Job", plural: "jobs", scope: "Namespaced", namespaced: true },
+        { group: "batch", version: "v1", kind: "CronJob", plural: "cronjobs", scope: "Namespaced", namespaced: true },
         { group: "", version: "v1", kind: "Service", plural: "services", scope: "Namespaced", namespaced: true },
+        { group: "networking.k8s.io", version: "v1", kind: "Ingress", plural: "ingresses", scope: "Namespaced", namespaced: true },
+        { group: "", version: "v1", kind: "ConfigMap", plural: "configmaps", scope: "Namespaced", namespaced: true },
+        { group: "", version: "v1", kind: "Secret", plural: "secrets", scope: "Namespaced", namespaced: true },
+        { group: "", version: "v1", kind: "PersistentVolumeClaim", plural: "persistentvolumeclaims", scope: "Namespaced", namespaced: true },
+        { group: "", version: "v1", kind: "PersistentVolume", plural: "persistentvolumes", scope: "Cluster", namespaced: false },
+        { group: "example.freelens.dev", version: "v1alpha1", kind: "Widget", plural: "widgets", scope: "Namespaced", namespaced: true },
       ],
     };
   }
@@ -295,7 +305,7 @@ class MockTransport implements Transport {
         };
         return {
           kind: request.kind,
-          apiVersion: apiVersions[request.kind] ?? "v1",
+          apiVersion: request.apiVersion || apiVersions[request.kind] || "v1",
           name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
           namespace: request.kind === "PersistentVolume" ? null : request.namespace ?? item.namespace,
           uid: `uid-${index}`,
@@ -325,7 +335,7 @@ class MockTransport implements Transport {
       context: request.context,
       kind: request.kind,
       name: request.name,
-      yaml: `apiVersion: v1\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n${namespace}`,
+      yaml: `apiVersion: ${request.apiVersion}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n${namespace}`,
     };
   }
 
@@ -337,6 +347,7 @@ class MockTransport implements Transport {
       requestId: request.meta.requestId,
       context: request.context,
       kind: request.kind,
+      apiVersion: request.apiVersion,
       name: request.name,
       namespace: request.namespace,
       sections: [{
@@ -350,7 +361,7 @@ class MockTransport implements Transport {
         eventType: "Normal", reason: "Started", message: "Started container app", count: 1,
         timestamp: new Date().toISOString(),
       }] : [],
-      yaml: `apiVersion: v1\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
+      yaml: `apiVersion: ${request.apiVersion}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
     };
   }
 

@@ -110,6 +110,7 @@ export interface KubernetesListResourcesRequest {
   };
   context: string;
   kind: string;
+  apiVersion: string;
   namespace: string | null;
   limit: number | null;
   continueToken: string | null;
@@ -139,6 +140,7 @@ export interface KubernetesStartResourceWatchRequest {
   operationId: string;
   context: string;
   kind: string;
+  apiVersion: string;
   namespace: string | null;
 }
 
@@ -160,6 +162,7 @@ export interface KubernetesGetResourceYamlRequest {
   };
   context: string;
   kind: string;
+  apiVersion: string;
   namespace: string | null;
   name: string;
 }
@@ -177,6 +180,7 @@ export interface KubernetesGetResourceDetailRequest {
   meta: { version: number; requestId: string };
   context: string;
   kind: string;
+  apiVersion: string;
   namespace: string | null;
   name: string;
 }
@@ -186,6 +190,7 @@ export interface KubernetesGetResourceDetailResponse {
   requestId: string;
   context: string;
   kind: string;
+  apiVersion: string;
   name: string;
   namespace: string | null;
   sections: Array<{ title: string; fields: Array<{ label: string; value: string }> }>;
@@ -210,6 +215,7 @@ export interface KubernetesApplyResourceRequest {
   meta: { version: number; requestId: string };
   context: string;
   kind: string;
+  apiVersion: string;
   namespace: string | null;
   name: string;
   yaml: string;
@@ -225,6 +231,7 @@ export interface KubernetesDeleteResourceRequest {
   meta: { version: number; requestId: string };
   context: string;
   kind: string;
+  apiVersion: string;
   namespace: string | null;
   name: string;
 }

@@ -147,6 +147,7 @@ pub struct KubernetesListResourcesRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub namespace: Option<String>,
     pub limit: Option<u32>,
     pub continue_token: Option<String>,
@@ -182,6 +183,7 @@ pub struct KubernetesStartResourceWatchRequest {
     pub operation_id: String,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub namespace: Option<String>,
 }
 
@@ -198,6 +200,7 @@ pub struct KubernetesGetResourceYamlRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub namespace: Option<String>,
     pub name: String,
 }
@@ -219,6 +222,7 @@ pub struct KubernetesGetResourceDetailRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub namespace: Option<String>,
     pub name: String,
 }
@@ -264,6 +268,7 @@ pub struct KubernetesGetResourceDetailResponse {
     pub request_id: String,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub name: String,
     pub namespace: Option<String>,
     pub sections: Vec<DetailSectionItem>,
@@ -278,6 +283,7 @@ pub struct KubernetesApplyResourceRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub namespace: Option<String>,
     pub name: String,
     pub yaml: String,
@@ -297,6 +303,7 @@ pub struct KubernetesDeleteResourceRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub kind: String,
+    pub api_version: String,
     pub namespace: Option<String>,
     pub name: String,
 }
@@ -494,5 +501,21 @@ mod tests {
         assert_eq!(json["requestId"], "r6");
         assert_eq!(json["stdout"], "ok\n");
         assert_eq!(json["success"], true);
+    }
+
+    #[test]
+    fn resource_request_preserves_custom_api_version() {
+        let request = KubernetesListResourcesRequest {
+            meta: RequestMeta::new("r7"),
+            context: "dev".into(),
+            kind: "Widget".into(),
+            api_version: "example.freelens.dev/v1alpha1".into(),
+            namespace: Some("default".into()),
+            limit: Some(50),
+            continue_token: None,
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["apiVersion"], "example.freelens.dev/v1alpha1");
+        assert_eq!(json["kind"], "Widget");
     }
 }

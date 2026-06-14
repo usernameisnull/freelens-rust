@@ -1,14 +1,15 @@
 use futures::{AsyncBufReadExt, StreamExt};
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
+use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::ResourceExt;
 use kube::api::{
     Api, AttachParams, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
     WatchEvent, WatchParams,
 };
 use kube::config::KubeConfigOptions;
-use kube::core::GroupVersionKind;
-use kube::discovery::{Discovery, verbs};
+use kube::core::{GroupVersion, GroupVersionKind};
+use kube::discovery::{pinned_group, verbs};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
@@ -424,8 +425,23 @@ fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
     }
 }
 
-fn is_namespaced_kind(kind: &str) -> bool {
-    kind != "PersistentVolume"
+fn gvk_for_resource(kind: &str, api_version: &str) -> Option<GroupVersionKind> {
+    if api_version.is_empty() {
+        return gvk_for_kind(kind);
+    }
+    let (group, version) = api_version
+        .split_once('/')
+        .map_or(("", api_version), |(group, version)| (group, version));
+    if version.is_empty() {
+        return None;
+    }
+    Some(GroupVersionKind::gvk(group, version, kind))
+}
+
+fn is_builtin_resource(kind: &str, api_version: &str) -> bool {
+    gvk_for_kind(kind).is_some_and(|expected| {
+        gvk_for_resource(kind, api_version).is_some_and(|actual| actual == expected)
+    })
 }
 
 /// Create a Kubernetes client for the given context.
@@ -463,49 +479,186 @@ pub async fn list_namespaces(
 pub async fn discover_resources(
     client: kube::Client,
 ) -> Result<Vec<ResourceKind>, KubernetesError> {
-    let discovery = Discovery::new(client.clone())
-        .run()
+    let api_groups = client
+        .list_api_groups()
         .await
         .map_err(|error| KubernetesError::DiscoveryFailed(error.to_string()))?;
-
     let mut kinds = Vec::new();
-    for group in discovery.groups() {
-        let group_name = group.name().to_string();
-        for (ar, caps) in group.recommended_resources() {
-            if !caps.supports_operation(verbs::LIST) {
-                continue;
+    let group_discovery = futures::stream::iter(api_groups.groups.into_iter().map(|group| {
+        let client = client.clone();
+        async move {
+            let group_name = group.name.clone();
+            let mut versions = group.versions;
+            if let Some(preferred) = group.preferred_version {
+                versions.sort_by_key(|version| version.version != preferred.version);
             }
-            let scope = if caps.scope == kube::discovery::Scope::Namespaced {
-                ResourceScope::Namespaced
-            } else {
-                ResourceScope::Cluster
-            };
-            kinds.push(ResourceKind {
+            for version in versions {
+                let group_version = GroupVersion::gv(&group_name, &version.version);
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    pinned_group(&client, &group_version),
+                )
+                .await
+                {
+                    Ok(Ok(discovered)) => return Some(discovered),
+                    Ok(Err(error)) => tracing::warn!(
+                        group = %group_name,
+                        version = %version.version,
+                        error = %error,
+                        "skipping unavailable Kubernetes API group version"
+                    ),
+                    Err(_) => tracing::warn!(
+                        group = %group_name,
+                        version = %version.version,
+                        "timed out discovering Kubernetes API group version"
+                    ),
+                }
+            }
+            None
+        }
+    }))
+    .buffer_unordered(8);
+    futures::pin_mut!(group_discovery);
+    while let Some(Some(discovered)) = group_discovery.next().await {
+        append_discovered_resources(&mut kinds, &discovered);
+    }
+
+    append_registered_custom_resources(client.clone(), &mut kinds).await;
+
+    let core_versions = client
+        .list_core_api_versions()
+        .await
+        .map_err(|error| KubernetesError::DiscoveryFailed(error.to_string()))?;
+    for version in core_versions.versions {
+        let group_version = GroupVersion::gv("", &version);
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(8),
+            pinned_group(&client, &group_version),
+        )
+        .await
+        {
+            Ok(Ok(discovered)) => {
+                append_discovered_resources(&mut kinds, &discovered);
+                break;
+            }
+            Ok(Err(error)) => tracing::warn!(
+                version = %version,
+                error = %error,
+                "skipping unavailable core Kubernetes API version"
+            ),
+            Err(_) => tracing::warn!(
+                version = %version,
+                "timed out discovering core Kubernetes API version"
+            ),
+        }
+    }
+
+    if kinds.is_empty() {
+        return Err(KubernetesError::DiscoveryFailed(
+            "no listable Kubernetes resources were discovered".into(),
+        ));
+    }
+
+    Ok(kinds)
+}
+
+fn append_discovered_resources(kinds: &mut Vec<ResourceKind>, group: &kube::discovery::ApiGroup) {
+    let group_name = group.name().to_string();
+    for (ar, caps) in group.recommended_resources() {
+        if !caps.supports_operation(verbs::LIST) {
+            continue;
+        }
+        let namespaced = caps.scope == kube::discovery::Scope::Namespaced;
+        push_resource_kind(
+            kinds,
+            ResourceKind {
                 group: group_name.clone(),
                 version: ar.version.clone(),
                 kind: ar.kind.clone(),
                 plural: ar.plural.clone(),
-                scope,
-                namespaced: caps.scope == kube::discovery::Scope::Namespaced,
-            });
-        }
+                scope: if namespaced {
+                    ResourceScope::Namespaced
+                } else {
+                    ResourceScope::Cluster
+                },
+                namespaced,
+            },
+        );
     }
+}
 
-    Ok(kinds)
+async fn append_registered_custom_resources(client: kube::Client, kinds: &mut Vec<ResourceKind>) {
+    let crds: Api<CustomResourceDefinition> = Api::all(client);
+    let listed = match tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        crds.list(&ListParams::default()),
+    )
+    .await
+    {
+        Ok(Ok(listed)) => listed,
+        Ok(Err(error)) => {
+            tracing::warn!(error = %error, "failed to list custom resource definitions");
+            return;
+        }
+        Err(_) => {
+            tracing::warn!("timed out listing custom resource definitions");
+            return;
+        }
+    };
+
+    for crd in listed {
+        let Some(version) = crd
+            .spec
+            .versions
+            .iter()
+            .find(|version| version.storage && version.served)
+            .or_else(|| crd.spec.versions.iter().find(|version| version.served))
+        else {
+            continue;
+        };
+        let namespaced = crd.spec.scope == "Namespaced";
+        push_resource_kind(
+            kinds,
+            ResourceKind {
+                group: crd.spec.group,
+                version: version.name.clone(),
+                kind: crd.spec.names.kind,
+                plural: crd.spec.names.plural,
+                scope: if namespaced {
+                    ResourceScope::Namespaced
+                } else {
+                    ResourceScope::Cluster
+                },
+                namespaced,
+            },
+        );
+    }
+}
+
+fn push_resource_kind(kinds: &mut Vec<ResourceKind>, resource: ResourceKind) {
+    if kinds.iter().any(|item| {
+        item.group == resource.group
+            && item.version == resource.version
+            && item.kind == resource.kind
+    }) {
+        return;
+    }
+    kinds.push(resource);
 }
 
 /// List resources of a given kind.
 pub async fn list_resources(
     client: kube::Client,
     kind: &str,
+    api_version: &str,
     namespace: Option<&str>,
     limit: Option<u32>,
     continue_token: Option<&str>,
 ) -> Result<ResourceList, KubernetesError> {
-    let gvk = gvk_for_kind(kind)
+    let gvk = gvk_for_resource(kind, api_version)
         .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
 
-    let (ar, _caps) = kube::discovery::pinned_kind(&client, &gvk)
+    let (ar, caps) = kube::discovery::pinned_kind(&client, &gvk)
         .await
         .map_err(|error| KubernetesError::UnsupportedResourceKind {
             kind: format!("{}: {}", kind, error),
@@ -519,10 +672,11 @@ pub async fn list_resources(
         params = params.continue_token(token);
     }
 
-    let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
-        Some(ns) => Api::namespaced_with(client, ns, &ar),
-        None => Api::all_with(client, &ar),
-    };
+    let api: Api<DynamicObject> =
+        match namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced) {
+            Some(ns) => Api::namespaced_with(client, ns, &ar),
+            None => Api::all_with(client, &ar),
+        };
 
     let list = api
         .list(&params)
@@ -545,7 +699,7 @@ pub async fn list_resources(
                     .types
                     .as_ref()
                     .map(|t| t.api_version.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_else(|| api_version.into()),
                 name: obj.name_any(),
                 namespace: obj.namespace(),
                 uid: obj.uid(),
@@ -566,27 +720,29 @@ pub async fn list_resources(
 pub async fn get_resource_yaml(
     client: kube::Client,
     kind: &str,
+    api_version: &str,
     namespace: Option<&str>,
     name: &str,
 ) -> Result<String, KubernetesError> {
-    if is_namespaced_kind(kind) && namespace.is_none() {
-        return Err(KubernetesError::GetResourceFailed(format!(
-            "{kind} namespace is required"
-        )));
-    }
-    let gvk = gvk_for_kind(kind)
+    let gvk = gvk_for_resource(kind, api_version)
         .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
 
-    let (ar, _caps) = kube::discovery::pinned_kind(&client, &gvk)
+    let (ar, caps) = kube::discovery::pinned_kind(&client, &gvk)
         .await
         .map_err(|error| KubernetesError::UnsupportedResourceKind {
             kind: format!("{}: {}", kind, error),
         })?;
 
-    let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
-        Some(ns) => Api::namespaced_with(client, ns, &ar),
-        None => Api::all_with(client, &ar),
-    };
+    if caps.scope == kube::discovery::Scope::Namespaced && namespace.is_none() {
+        return Err(KubernetesError::GetResourceFailed(format!(
+            "{kind} namespace is required"
+        )));
+    }
+    let api: Api<DynamicObject> =
+        match namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced) {
+            Some(ns) => Api::namespaced_with(client, ns, &ar),
+            None => Api::all_with(client, &ar),
+        };
 
     let obj = api
         .get(name)
@@ -601,16 +757,17 @@ pub async fn get_resource_yaml(
 pub async fn get_resource_detail(
     client: kube::Client,
     kind: &str,
+    api_version: &str,
     namespace: Option<&str>,
     name: &str,
 ) -> Result<ResourceDetail, KubernetesError> {
-    let yaml = get_resource_yaml(client.clone(), kind, namespace, name).await?;
+    let yaml = get_resource_yaml(client.clone(), kind, api_version, namespace, name).await?;
     let mut sections = Vec::new();
     let mut containers = Vec::new();
     let mut events = Vec::new();
 
     match kind {
-        "Pod" => {
+        "Pod" if is_builtin_resource(kind, api_version) => {
             let namespace = namespace.ok_or_else(|| {
                 KubernetesError::GetResourceFailed("Pod namespace is required".into())
             })?;
@@ -696,7 +853,7 @@ pub async fn get_resource_detail(
                     .collect();
             }
         }
-        "Deployment" => {
+        "Deployment" if is_builtin_resource(kind, api_version) => {
             let namespace = namespace.ok_or_else(|| {
                 KubernetesError::GetResourceFailed("Deployment namespace is required".into())
             })?;
@@ -743,7 +900,7 @@ pub async fn get_resource_detail(
                 )],
             });
         }
-        "Service" => {
+        "Service" if is_builtin_resource(kind, api_version) => {
             let namespace = namespace.ok_or_else(|| {
                 KubernetesError::GetResourceFailed("Service namespace is required".into())
             })?;
@@ -815,27 +972,31 @@ pub async fn get_resource_detail(
             });
         }
         _ => {
-            let gvk = gvk_for_kind(kind)
+            let gvk = gvk_for_resource(kind, api_version)
                 .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
-            let (ar, _) = kube::discovery::pinned_kind(&client, &gvk)
+            let (ar, caps) = kube::discovery::pinned_kind(&client, &gvk)
                 .await
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
-            let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
-                Some(namespace) => Api::namespaced_with(client, namespace, &ar),
-                None => Api::all_with(client, &ar),
-            };
+            let api: Api<DynamicObject> =
+                match namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced) {
+                    Some(namespace) => Api::namespaced_with(client, namespace, &ar),
+                    None => Api::all_with(client, &ar),
+                };
             let object = api
                 .get(name)
                 .await
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
             let data = object.data;
             let columns = resource_columns(kind, &data);
+            let mut overview = vec![field("API Version", api_version)];
+            overview.extend(
+                columns
+                    .into_iter()
+                    .map(|(label, value)| field(&label, value)),
+            );
             sections.push(DetailSection {
                 title: "Overview".into(),
-                fields: columns
-                    .into_iter()
-                    .map(|(label, value)| field(&label, value))
-                    .collect(),
+                fields: overview,
             });
             let labels = object.metadata.labels.unwrap_or_default();
             if !labels.is_empty() {
@@ -864,25 +1025,29 @@ pub async fn get_resource_detail(
 async fn dynamic_api(
     client: kube::Client,
     kind: &str,
+    api_version: &str,
     namespace: Option<&str>,
-) -> Result<Api<DynamicObject>, KubernetesError> {
-    let gvk = gvk_for_kind(kind)
+) -> Result<(Api<DynamicObject>, kube::discovery::Scope), KubernetesError> {
+    let gvk = gvk_for_resource(kind, api_version)
         .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
-    let (ar, _) = kube::discovery::pinned_kind(&client, &gvk)
+    let (ar, caps) = kube::discovery::pinned_kind(&client, &gvk)
         .await
         .map_err(|error| KubernetesError::UnsupportedResourceKind {
             kind: format!("{}: {}", kind, error),
         })?;
-    Ok(match namespace.filter(|_| is_namespaced_kind(kind)) {
+    let scope = caps.scope;
+    let api = match namespace.filter(|_| scope == kube::discovery::Scope::Namespaced) {
         Some(namespace) => Api::namespaced_with(client, namespace, &ar),
         None => Api::all_with(client, &ar),
-    })
+    };
+    Ok((api, scope))
 }
 
 /// Watch a supported resource collection and reconnect after transient failures.
 pub async fn watch_resources(
     client: kube::Client,
     kind: &str,
+    api_version: &str,
     namespace: Option<&str>,
 ) -> Result<
     (
@@ -891,17 +1056,18 @@ pub async fn watch_resources(
     ),
     KubernetesError,
 > {
-    let gvk = gvk_for_kind(kind)
+    let gvk = gvk_for_resource(kind, api_version)
         .ok_or_else(|| KubernetesError::UnsupportedResourceKind { kind: kind.into() })?;
-    let (ar, _) = kube::discovery::pinned_kind(&client, &gvk)
+    let (ar, caps) = kube::discovery::pinned_kind(&client, &gvk)
         .await
         .map_err(|error| KubernetesError::UnsupportedResourceKind {
             kind: format!("{}: {}", kind, error),
         })?;
-    let api: Api<DynamicObject> = match namespace.filter(|_| is_namespaced_kind(kind)) {
-        Some(namespace) => Api::namespaced_with(client, namespace, &ar),
-        None => Api::all_with(client, &ar),
-    };
+    let api: Api<DynamicObject> =
+        match namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced) {
+            Some(namespace) => Api::namespaced_with(client, namespace, &ar),
+            None => Api::all_with(client, &ar),
+        };
     let (tx, rx) = tokio::sync::mpsc::channel(32);
     let task = tokio::spawn(async move {
         loop {
@@ -956,15 +1122,11 @@ pub async fn watch_resources(
 pub async fn apply_resource_yaml(
     client: kube::Client,
     expected_kind: &str,
+    expected_api_version: &str,
     expected_namespace: Option<&str>,
     expected_name: &str,
     yaml: &str,
 ) -> Result<String, KubernetesError> {
-    if is_namespaced_kind(expected_kind) && expected_namespace.is_none() {
-        return Err(KubernetesError::ApplyResourceFailed(format!(
-            "{expected_kind} namespace is required"
-        )));
-    }
     let object: DynamicObject = serde_yaml_ng::from_str(yaml)
         .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
     let actual_kind = object
@@ -972,20 +1134,37 @@ pub async fn apply_resource_yaml(
         .as_ref()
         .map(|types| types.kind.as_str())
         .unwrap_or_default();
+    let actual_api_version = object
+        .types
+        .as_ref()
+        .map(|types| types.api_version.as_str())
+        .unwrap_or_default();
     let actual_name = object.name_any();
     let actual_namespace = object.namespace();
     if actual_kind != expected_kind
+        || actual_api_version != expected_api_version
         || actual_name != expected_name
         || actual_namespace.as_deref() != expected_namespace
     {
         return Err(KubernetesError::ApplyResourceFailed(format!(
-            "YAML identity {actual_kind} {}/{actual_name} does not match {expected_kind} {}/{}",
+            "YAML identity {actual_api_version} {actual_kind} {}/{actual_name} does not match {expected_api_version} {expected_kind} {}/{}",
             actual_namespace.as_deref().unwrap_or("<cluster>"),
             expected_namespace.unwrap_or("<cluster>"),
             expected_name,
         )));
     }
-    let api = dynamic_api(client, expected_kind, expected_namespace).await?;
+    let (api, scope) = dynamic_api(
+        client,
+        expected_kind,
+        expected_api_version,
+        expected_namespace,
+    )
+    .await?;
+    if scope == kube::discovery::Scope::Namespaced && expected_namespace.is_none() {
+        return Err(KubernetesError::ApplyResourceFailed(format!(
+            "{expected_kind} namespace is required"
+        )));
+    }
     let applied = api
         .patch(
             expected_name,
@@ -1002,17 +1181,17 @@ pub async fn apply_resource_yaml(
 pub async fn delete_resource(
     client: kube::Client,
     kind: &str,
+    api_version: &str,
     namespace: Option<&str>,
     name: &str,
 ) -> Result<(), KubernetesError> {
-    if is_namespaced_kind(kind) && namespace.is_none() {
+    let (api, scope) = dynamic_api(client, kind, api_version, namespace).await?;
+    if scope == kube::discovery::Scope::Namespaced && namespace.is_none() {
         return Err(KubernetesError::DeleteResourceFailed(format!(
             "{kind} namespace is required"
         )));
     }
-    dynamic_api(client, kind, namespace)
-        .await?
-        .delete(name, &DeleteParams::default())
+    api.delete(name, &DeleteParams::default())
         .await
         .map_err(|error| KubernetesError::DeleteResourceFailed(error.to_string()))?;
     Ok(())
@@ -1341,8 +1520,16 @@ mod tests {
         ] {
             assert!(gvk_for_kind(kind).is_some(), "missing GVK for {kind}");
         }
-        assert!(!is_namespaced_kind("PersistentVolume"));
-        assert!(is_namespaced_kind("PersistentVolumeClaim"));
+        assert_eq!(
+            gvk_for_resource("Widget", "example.freelens.dev/v1alpha1"),
+            Some(GroupVersionKind::gvk(
+                "example.freelens.dev",
+                "v1alpha1",
+                "Widget"
+            ))
+        );
+        assert!(is_builtin_resource("Pod", "v1"));
+        assert!(!is_builtin_resource("Pod", "example.freelens.dev/v1"));
     }
 
     #[test]
@@ -1355,5 +1542,21 @@ mod tests {
         assert_eq!(columns.get("type").map(String::as_str), Some("Opaque"));
         assert_eq!(columns.get("data").map(String::as_str), Some("2"));
         assert!(!columns.values().any(|value| value.contains("c2VjcmV0")));
+    }
+
+    #[test]
+    fn discovered_resources_are_deduplicated_by_gvk() {
+        let resource = ResourceKind {
+            group: "mysql.presslabs.org".into(),
+            version: "v1alpha1".into(),
+            kind: "MysqlCluster".into(),
+            plural: "mysqlclusters".into(),
+            scope: ResourceScope::Namespaced,
+            namespaced: true,
+        };
+        let mut kinds = Vec::new();
+        push_resource_kind(&mut kinds, resource.clone());
+        push_resource_kind(&mut kinds, resource);
+        assert_eq!(kinds.len(), 1);
     }
 }

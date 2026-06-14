@@ -267,6 +267,7 @@ async fn kubernetes_list_resources(
     let list = freelens_kube::list_resources(
         client,
         &request.kind,
+        &request.api_version,
         request.namespace.as_deref(),
         request.limit,
         request.continue_token.as_deref(),
@@ -325,6 +326,7 @@ async fn kubernetes_get_resource_yaml(
     let yaml = freelens_kube::get_resource_yaml(
         client,
         &request.kind,
+        &request.api_version,
         request.namespace.as_deref(),
         &request.name,
     )
@@ -368,6 +370,7 @@ async fn kubernetes_get_resource_detail(
     let detail = freelens_kube::get_resource_detail(
         client,
         &request.kind,
+        &request.api_version,
         request.namespace.as_deref(),
         &request.name,
     )
@@ -382,6 +385,7 @@ async fn kubernetes_get_resource_detail(
         request_id: request.meta.request_id,
         context: request.context,
         kind: detail.kind,
+        api_version: request.api_version,
         name: detail.name,
         namespace: detail.namespace,
         sections: detail
@@ -441,6 +445,7 @@ async fn kubernetes_apply_resource(
     let yaml = freelens_kube::apply_resource_yaml(
         client,
         &request.kind,
+        &request.api_version,
         request.namespace.as_deref(),
         &request.name,
         &request.yaml,
@@ -473,6 +478,7 @@ async fn kubernetes_delete_resource(
     freelens_kube::delete_resource(
         client,
         &request.kind,
+        &request.api_version,
         request.namespace.as_deref(),
         &request.name,
     )
@@ -630,13 +636,17 @@ async fn kubernetes_start_resource_watch(
             code: error.code().into(),
             message: error.to_string(),
         })?;
-    let (mut rx, abort) =
-        freelens_kube::watch_resources(client, &request.kind, request.namespace.as_deref())
-            .await
-            .map_err(|error| IpcError {
-                code: error.code().into(),
-                message: error.to_string(),
-            })?;
+    let (mut rx, abort) = freelens_kube::watch_resources(
+        client,
+        &request.kind,
+        &request.api_version,
+        request.namespace.as_deref(),
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })?;
     let operation_id = request.operation_id;
     watches.insert(operation_id.clone(), abort);
     let manager = watches.inner().clone();

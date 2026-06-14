@@ -48,13 +48,24 @@ input {
   color: #58d1b5;
 }
 
-.sidebar-header select {
+.sidebar-header select,
+.resource-catalog-search {
   width: 100%;
   padding: 6px 8px;
   border: 1px solid #26313a;
   border-radius: 6px;
   background: #0f1419;
   color: #e8edf2;
+}
+
+.resource-catalog-search {
+  margin-top: 10px;
+}
+
+.sidebar-warning {
+  margin: 8px 16px;
+  color: #d8a657;
+  font-size: 0.75rem;
 }
 
 .sidebar-nav {

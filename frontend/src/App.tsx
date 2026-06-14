@@ -51,6 +51,36 @@ const RESOURCE_GROUPS = [
   },
 ];
 
+const RESOURCE_API_VERSIONS: Record<string, string> = {
+  Pod: "v1",
+  Deployment: "apps/v1",
+  StatefulSet: "apps/v1",
+  DaemonSet: "apps/v1",
+  Job: "batch/v1",
+  CronJob: "batch/v1",
+  Service: "v1",
+  Ingress: "networking.k8s.io/v1",
+  ConfigMap: "v1",
+  Secret: "v1",
+  PersistentVolumeClaim: "v1",
+  PersistentVolume: "v1",
+};
+
+const FALLBACK_RESOURCE_KINDS: ResourceKindItem[] = RESOURCE_GROUPS.flatMap((group) =>
+  group.kinds.map((kind) => {
+    const apiVersion = RESOURCE_API_VERSIONS[kind];
+    const [apiGroup, version] = apiVersion.includes("/") ? apiVersion.split("/", 2) : ["", apiVersion];
+    return {
+      group: apiGroup,
+      version,
+      kind,
+      plural: resourceKindLabel(kind).toLowerCase(),
+      scope: kind === "PersistentVolume" ? "Cluster" : "Namespaced",
+      namespaced: kind !== "PersistentVolume",
+    };
+  })
+);
+
 const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = {
   Pod: [
     { key: "status", label: "Status" },
@@ -111,10 +141,20 @@ const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = 
   ],
 };
 
-const CLUSTER_SCOPED_KINDS = new Set(["PersistentVolume"]);
-
 function resourceKindLabel(kind: string): string {
-  return kind === "Ingress" ? "Ingresses" : `${kind}s`;
+  if (kind.endsWith("s") || kind.endsWith("x") || kind.endsWith("ch") || kind.endsWith("sh")) {
+    return `${kind}es`;
+  }
+  if (kind.endsWith("y") && !/[aeiou]y$/i.test(kind)) return `${kind.slice(0, -1)}ies`;
+  return `${kind}s`;
+}
+
+function resourceApiVersion(resource: ResourceKindItem): string {
+  return resource.group ? `${resource.group}/${resource.version}` : resource.version;
+}
+
+function resourceKey(resource: ResourceKindItem): string {
+  return `${resourceApiVersion(resource)}:${resource.kind}`;
 }
 
 function formatAge(created: string | null): string {
@@ -141,7 +181,12 @@ export function App() {
 
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
-  const [selectedKind, setSelectedKind] = useState<string>("Pod");
+  const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
+  const [resourceDiscoveryError, setResourceDiscoveryError] = useState<string>();
+  const [resourceCatalogSearch, setResourceCatalogSearch] = useState("");
+  const [selectedResource, setSelectedResource] = useState<ResourceKindItem>(FALLBACK_RESOURCE_KINDS[0]);
+  const selectedKind = selectedResource.kind;
+  const selectedApiVersion = resourceApiVersion(selectedResource);
 
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const [resourcesLoading, setResourcesLoading] = useState(false);
@@ -249,6 +294,27 @@ export function App() {
 
   useEffect(() => {
     if (!selectedContext) return;
+    setResourceDiscoveryError(undefined);
+    transport
+      .kubernetesDiscoverResources({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+      })
+      .then((response) => {
+        if (selectedContextRef.current !== selectedContext) return;
+        const discovered = response.kinds.length > 0 ? response.kinds : FALLBACK_RESOURCE_KINDS;
+        setResourceKinds(discovered);
+        setSelectedResource((current) =>
+          discovered.find((item) => resourceKey(item) === resourceKey(current))
+          ?? discovered.find((item) => item.kind === "Pod" && resourceApiVersion(item) === "v1")
+          ?? discovered[0]
+        );
+      })
+      .catch((reason: unknown) => {
+        if (selectedContextRef.current !== selectedContext) return;
+        setResourceKinds(FALLBACK_RESOURCE_KINDS);
+        setResourceDiscoveryError(errorMessage(reason));
+      });
     transport
       .kubernetesListNamespaces({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -261,9 +327,13 @@ export function App() {
   }, [selectedContext]);
 
   useEffect(() => {
+    if (!selectedResource.namespaced && selectedNamespace) setSelectedNamespace("");
+  }, [selectedResource, selectedNamespace]);
+
+  useEffect(() => {
     if (!selectedContext || !selectedKind) return;
     loadResources();
-  }, [selectedContext, selectedKind, selectedNamespace]);
+  }, [selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
   useEffect(() => {
     if (!selectedContext || !selectedKind) return;
@@ -282,6 +352,7 @@ export function App() {
       operationId,
       context: selectedContext,
       kind: selectedKind,
+      apiVersion: selectedApiVersion,
       namespace: selectedNamespace || null,
     }).then(() => {
       if (resourceWatchOperationRef.current === operationId) setWatchStatus("live");
@@ -298,13 +369,13 @@ export function App() {
         operationId,
       });
     };
-  }, [selectedContext, selectedKind, selectedNamespace]);
+  }, [selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
   useEffect(() => {
     if (!refreshSeconds || !selectedContext || !selectedKind) return;
     const interval = window.setInterval(() => loadResources(), refreshSeconds * 1000);
     return () => window.clearInterval(interval);
-  }, [refreshSeconds, selectedContext, selectedKind, selectedNamespace]);
+  }, [refreshSeconds, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -323,6 +394,7 @@ export function App() {
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context,
         kind,
+        apiVersion: selectedApiVersion,
         namespace: namespace || null,
         limit: 50,
         continueToken: token,
@@ -360,6 +432,7 @@ export function App() {
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context: selectedContext,
         kind: item.kind,
+        apiVersion: item.apiVersion,
         namespace: item.namespace,
         name: item.name,
       })
@@ -492,6 +565,7 @@ export function App() {
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context: selectedContext,
         kind: detail.kind,
+        apiVersion: detail.apiVersion,
         namespace: detail.namespace,
         name: detail.name,
         yaml: yamlDraft,
@@ -517,10 +591,12 @@ export function App() {
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context: selectedContext,
         kind: item.kind,
+        apiVersion: item.apiVersion,
         namespace: item.namespace,
         name: item.name,
       });
-      if (detail?.kind === item.kind && detail.name === item.name && detail.namespace === item.namespace) {
+      if (detail?.kind === item.kind && detail.apiVersion === item.apiVersion
+        && detail.name === item.name && detail.namespace === item.namespace) {
         closeDetail();
       }
       setActionMessage(`${item.kind} deletion requested`);
@@ -633,6 +709,35 @@ export function App() {
   const sortLabel = (key: string, label: string) =>
     `${label}${sortKey === key ? (sortDirection === "asc" ? " ^" : " v") : ""}`;
 
+  const navigationGroups = useMemo(() => {
+    const query = resourceCatalogSearch.trim().toLowerCase();
+    const matchesQuery = (resource: ResourceKindItem) => !query || [
+      resource.kind,
+      resource.plural,
+      resource.group,
+      resource.version,
+    ].some((value) => value.toLowerCase().includes(query));
+    const coreKeys = new Set(FALLBACK_RESOURCE_KINDS.map(resourceKey));
+    const coreGroups = RESOURCE_GROUPS.map((group) => ({
+      label: group.label,
+      resources: group.kinds.flatMap((kind) => {
+        const expected = FALLBACK_RESOURCE_KINDS.find((item) => item.kind === kind);
+        if (!expected) return [];
+        const discovered = resourceKinds.find((item) => resourceKey(item) === resourceKey(expected));
+        return discovered && matchesQuery(discovered) ? [discovered] : [];
+      }),
+    })).filter((group) => group.resources.length > 0);
+    const moreResources = resourceKinds
+      .filter((item) => !coreKeys.has(resourceKey(item)))
+      .filter(matchesQuery)
+      .sort((left, right) =>
+        left.group.localeCompare(right.group) || left.kind.localeCompare(right.kind)
+      );
+    return moreResources.length > 0
+      ? [...coreGroups, { label: "More Resources", resources: moreResources }]
+      : coreGroups;
+  }, [resourceKinds, resourceCatalogSearch]);
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -662,31 +767,44 @@ export function App() {
           ) : (
             <p>{kubeconfigError ?? "Loading contexts…"}</p>
           )}
+          <input
+            className="resource-catalog-search"
+            type="search"
+            placeholder="Find resource type"
+            value={resourceCatalogSearch}
+            onChange={(event) => setResourceCatalogSearch(event.target.value)}
+          />
         </div>
 
         <nav className="sidebar-nav">
-          {RESOURCE_GROUPS.map((group) => (
+          {navigationGroups.map((group) => (
             <div key={group.label} className="nav-group">
               <h3>{group.label}</h3>
               <ul>
-                {group.kinds.map((kind) => (
-                  <li key={kind}>
+                {group.resources.map((resource) => (
+                  <li key={resourceKey(resource)}>
                     <button
-                      className={selectedKind === kind ? "active" : ""}
+                      className={resourceKey(selectedResource) === resourceKey(resource) ? "active" : ""}
+                      title={resourceApiVersion(resource)}
                       onClick={() => {
-                        setSelectedKind(kind);
-                        if (CLUSTER_SCOPED_KINDS.has(kind)) setSelectedNamespace("");
+                        setSelectedResource(resource);
+                        if (!resource.namespaced) setSelectedNamespace("");
                         resourceRequestRef.current += 1;
                         setDetail(undefined);
                       }}
                     >
-                      {resourceKindLabel(kind)}
+                      {group.label === "More Resources" && resource.group
+                        ? `${resourceKindLabel(resource.kind)} (${resource.group})`
+                        : resourceKindLabel(resource.kind)}
                     </button>
                   </li>
                 ))}
               </ul>
             </div>
           ))}
+          {resourceDiscoveryError && (
+            <p className="sidebar-warning" title={resourceDiscoveryError}>Using built-in resource catalog</p>
+          )}
         </nav>
       </aside>
 
@@ -709,7 +827,7 @@ export function App() {
                 resourceRequestRef.current += 1;
                 setSelectedNamespace(event.target.value);
               }}
-              disabled={CLUSTER_SCOPED_KINDS.has(selectedKind)}
+              disabled={!selectedResource.namespaced}
             >
               <option value="">All namespaces</option>
               {namespaces.map((ns: NamespaceItem) => (
@@ -750,20 +868,21 @@ export function App() {
               </thead>
               <tbody>
                 {visibleResources.map((item: ResourceItem) => (
-                  <tr key={`${item.namespace ?? ""}/${item.name}`}>
+                  <tr key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}>
                     <td>{item.name}</td>
                     <td>{item.namespace ?? "-"}</td>
                     {(RESOURCE_COLUMNS[selectedKind] ?? []).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
                     <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
                     <td className="actions">
                       <button onClick={() => openDetail(item)}>Details</button>
-                      {item.kind === "Pod" && item.namespace && (
+                      {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
                         <>
                           <button onClick={() => startLogs(item)}>Logs</button>
                           <button onClick={() => void openExec(item)}>Exec</button>
                         </>
                       )}
-                      {item.kind === "Deployment" && <button onClick={() => void scaleDeployment(item)}>Scale</button>}
+                      {item.kind === "Deployment" && item.apiVersion === "apps/v1"
+                        && <button onClick={() => void scaleDeployment(item)}>Scale</button>}
                       <button className="danger-button" onClick={() => void deleteResource(item)}>Delete</button>
                     </td>
                   </tr>
@@ -795,7 +914,7 @@ export function App() {
                 {detail && (
                   <button onClick={() => openDetail({
                     kind: detail.kind,
-                    apiVersion: "",
+                    apiVersion: detail.apiVersion,
                     name: detail.name,
                     namespace: detail.namespace,
                     uid: null,
@@ -839,7 +958,7 @@ export function App() {
                     {detail.containers.length > 0 && (
                       <section className="detail-section"><h4>Containers</h4><table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ready</th><th>Restarts</th></tr></thead><tbody>{detail.containers.map((container) => <tr key={container.name}><td>{container.name}</td><td>{container.image}</td><td>{container.state}</td><td>{container.ready ? "Yes" : "No"}</td><td>{container.restarts}</td></tr>)}</tbody></table></section>
                     )}
-                    {detail.kind === "Pod" && (
+                    {detail.kind === "Pod" && detail.apiVersion === "v1" && (
                       <section className="detail-section"><h4>Events</h4>{detail.events.length === 0 ? <p>No events</p> : <table><thead><tr><th>Type</th><th>Reason</th><th>Message</th><th>Count</th><th>Last seen</th></tr></thead><tbody>{detail.events.map((event, index) => <tr key={`${event.reason}-${index}`}><td>{event.eventType ?? "-"}</td><td>{event.reason ?? "-"}</td><td>{event.message ?? "-"}</td><td>{event.count ?? "-"}</td><td>{event.timestamp ? new Date(event.timestamp).toLocaleString() : "-"}</td></tr>)}</tbody></table>}</section>
                     )}
                   </div>
