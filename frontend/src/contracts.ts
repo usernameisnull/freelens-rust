@@ -286,6 +286,51 @@ export interface KubernetesExecPodResponse {
   status: string | null;
 }
 
+export interface KubernetesStartPodTerminalRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+  context: string;
+  namespace: string;
+  pod: string;
+  container: string;
+}
+
+export interface KubernetesStartPodTerminalResponse {
+  version: number;
+  requestId: string;
+  sessionId: string;
+  active: boolean;
+  initialOutput: string;
+}
+
+export interface KubernetesTerminalInputRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+  input: string;
+}
+
+export interface KubernetesTerminalInputResponse {
+  version: number;
+  requestId: string;
+  sessionId: string;
+  output: string;
+}
+
+export interface KubernetesStopPodTerminalRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+}
+
+export interface TerminalEvent {
+  sessionId: string;
+  stream: "stdout" | "stderr";
+  data: string;
+}
+
+export interface TerminalDoneEvent {
+  sessionId: string;
+}
+
 export interface KubernetesGetPodContainersRequest {
   meta: {
     version: number;

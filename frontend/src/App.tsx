@@ -32,6 +32,13 @@ function errorMessage(reason: unknown): string {
   return String(reason);
 }
 
+function cleanTerminalOutput(value: string): string {
+  return value
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
 const RESOURCE_GROUPS = [
   {
     label: "Workloads",
@@ -233,10 +240,14 @@ export function App() {
   const [execResource, setExecResource] = useState<ResourceItem>();
   const [execContainers, setExecContainers] = useState<string[]>([]);
   const [execContainer, setExecContainer] = useState("");
-  const [execCommand, setExecCommand] = useState("pwd");
+  const [execCommand, setExecCommand] = useState("");
   const [execOutput, setExecOutput] = useState("");
   const [execLoading, setExecLoading] = useState(false);
   const [execError, setExecError] = useState<string>();
+  const [terminalSessionId, setTerminalSessionId] = useState<string>();
+  const terminalSessionIdRef = useRef<string | undefined>(undefined);
+  const terminalEndRef = useRef<HTMLDivElement>(null);
+  const terminalInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     transport
@@ -255,6 +266,8 @@ export function App() {
     let unlistenLog: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     let unlistenResourceWatch: (() => void) | undefined;
+    let unlistenTerminal: (() => void) | undefined;
+    let unlistenTerminalDone: (() => void) | undefined;
 
     transport.onLogEvent((event) => {
       if (event.operationId === logOperationIdRef.current) {
@@ -286,6 +299,25 @@ export function App() {
       unlistenResourceWatch = unlisten;
     });
 
+    transport.onTerminalEvent((event) => {
+      if (event.sessionId === terminalSessionIdRef.current) {
+        setExecOutput((current) => current + cleanTerminalOutput(event.data));
+      }
+    }).then((unlisten) => {
+      unlistenTerminal = unlisten;
+    });
+
+    transport.onTerminalDone((event) => {
+      if (event.sessionId === terminalSessionIdRef.current) {
+        terminalSessionIdRef.current = undefined;
+        setTerminalSessionId(undefined);
+        setExecError(undefined);
+        setExecOutput((current) => `${current}${current.endsWith("\n") || !current ? "" : "\n"}[Terminal session ended]\n`);
+      }
+    }).then((unlisten) => {
+      unlistenTerminalDone = unlisten;
+    });
+
     return () => {
       const operationId = logOperationIdRef.current;
       if (operationId) {
@@ -294,12 +326,25 @@ export function App() {
           operationId,
         });
       }
+      const sessionId = terminalSessionIdRef.current;
+      if (sessionId) {
+        void transport.kubernetesStopPodTerminal({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          sessionId,
+        });
+      }
       unlistenLog?.();
       unlistenDone?.();
       unlistenResourceWatch?.();
+      unlistenTerminal?.();
+      unlistenTerminalDone?.();
       if (resourceWatchRefreshRef.current) window.clearTimeout(resourceWatchRefreshRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    terminalEndRef.current?.scrollIntoView({ block: "end" });
+  }, [execOutput]);
 
   useEffect(() => {
     if (!selectedContext) return;
@@ -689,6 +734,7 @@ export function App() {
     setExecContainers([]);
     setExecContainer("");
     setExecOutput("");
+    setExecCommand("");
     setExecError(undefined);
     setExecLoading(true);
     try {
@@ -707,25 +753,76 @@ export function App() {
     }
   };
 
-  const runExec = async () => {
-    if (!selectedContext || !execResource?.namespace || !execContainer || !execCommand.trim()) return;
+  const startTerminal = async () => {
+    if (!selectedContext || !execResource?.namespace || !execContainer) return;
     setExecLoading(true);
     setExecError(undefined);
+    setExecOutput("");
+    const sessionId = crypto.randomUUID();
+    terminalSessionIdRef.current = sessionId;
     try {
-      const response = await transport.kubernetesExecPod({
+      const response = await transport.kubernetesStartPodTerminal({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        sessionId,
         context: selectedContext,
         namespace: execResource.namespace,
         pod: execResource.name,
         container: execContainer,
-        command: execCommand,
       });
-      setExecOutput((current) => `${current}$ ${execCommand}\n${response.stdout}${response.stderr}${response.success ? "" : `[${response.status ?? "Failed"}]\n`}`);
+      setExecOutput(cleanTerminalOutput(response.initialOutput));
+      if (response.active) {
+        setTerminalSessionId(sessionId);
+        window.setTimeout(() => terminalInputRef.current?.focus(), 0);
+      } else {
+        terminalSessionIdRef.current = undefined;
+      }
     } catch (reason) {
+      terminalSessionIdRef.current = undefined;
       setExecError(errorMessage(reason));
     } finally {
       setExecLoading(false);
     }
+  };
+
+  const sendTerminalInput = async () => {
+    const sessionId = terminalSessionIdRef.current;
+    if (!sessionId || !execCommand.trim()) return;
+    const input = execCommand;
+    setExecCommand("");
+    setExecError(undefined);
+    try {
+      const response = await transport.kubernetesTerminalInput({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        sessionId,
+        input: `${input}\r`,
+      });
+      setExecOutput((current) => current + cleanTerminalOutput(response.output));
+    } catch (reason) {
+      terminalSessionIdRef.current = undefined;
+      setTerminalSessionId(undefined);
+      const message = errorMessage(reason);
+      if (message.includes("kubernetes_terminal_not_found") || message.includes("kubernetes_terminal_closed")) {
+        setExecOutput((current) => `${current}${current.endsWith("\n") || !current ? "" : "\n"}[Terminal session ended]\n`);
+      } else {
+        setExecError(message);
+      }
+    }
+  };
+
+  const stopTerminal = async () => {
+    const sessionId = terminalSessionIdRef.current;
+    terminalSessionIdRef.current = undefined;
+    setTerminalSessionId(undefined);
+    if (!sessionId) return;
+    await transport.kubernetesStopPodTerminal({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      sessionId,
+    }).catch((reason) => setExecError(errorMessage(reason)));
+  };
+
+  const closeTerminal = () => {
+    void stopTerminal();
+    setExecResource(undefined);
   };
 
   const visibleResources = useMemo(() => {
@@ -803,7 +900,7 @@ export function App() {
                 setSelectedNamespace("");
                 setResources([]);
                 setDetail(undefined);
-                setExecResource(undefined);
+                closeTerminal();
                 setLogs([]);
                 resourceRequestRef.current += 1;
                 closeLogs();
@@ -930,7 +1027,7 @@ export function App() {
                       {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
                         <>
                           <button onClick={() => startLogs(item)}>Logs</button>
-                          <button onClick={() => void openExec(item)}>Exec</button>
+                          <button onClick={() => void openExec(item)}>Terminal</button>
                         </>
                       )}
                       {item.kind === "Deployment" && item.apiVersion === "apps/v1"
@@ -1103,29 +1200,46 @@ export function App() {
       )}
 
       {execResource && (
-        <div className="detail-panel-overlay" onClick={() => setExecResource(undefined)}>
+        <div className="detail-panel-overlay" onClick={closeTerminal}>
           <div className="detail-panel exec-panel" onClick={(event) => event.stopPropagation()}>
             <header>
-              <h3>Exec: {execResource.namespace}/{execResource.name}</h3>
-              <button onClick={() => setExecResource(undefined)}>Close</button>
+              <h3>Terminal: {execResource.namespace}/{execResource.name}</h3>
+              <div>
+                {terminalSessionId && <button onClick={() => void stopTerminal()}>Stop</button>}
+                <button onClick={closeTerminal}>Close</button>
+              </div>
             </header>
-            <div className="exec-controls">
-              <select value={execContainer} onChange={(event) => setExecContainer(event.target.value)} disabled={execLoading}>
+            <form
+              className="exec-controls"
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (terminalSessionId) void sendTerminalInput();
+              }}
+            >
+              <select value={execContainer} onChange={(event) => setExecContainer(event.target.value)} disabled={execLoading || Boolean(terminalSessionId)}>
                 {execContainers.map((container) => <option key={container} value={container}>{container}</option>)}
               </select>
-              <input
-                value={execCommand}
-                onChange={(event) => setExecCommand(event.target.value)}
-                onKeyDown={(event) => { if (event.key === "Enter") void runExec(); }}
-                placeholder="Command, for example: ls -la"
-                disabled={execLoading}
-              />
-              <button onClick={() => void runExec()} disabled={execLoading || !execContainer || !execCommand.trim()}>
-                {execLoading ? "Running..." : "Run"}
-              </button>
-            </div>
+              {terminalSessionId ? (
+                <>
+                  <input
+                    ref={terminalInputRef}
+                    value={execCommand}
+                    onChange={(event) => setExecCommand(event.target.value)}
+                    placeholder="Enter a shell command"
+                  />
+                  <button type="submit" disabled={!execCommand.trim()}>Send</button>
+                </>
+              ) : (
+                <button type="button" onClick={() => void startTerminal()} disabled={execLoading || !execContainer}>
+                  {execLoading ? "Starting..." : "Start Terminal"}
+                </button>
+              )}
+            </form>
             {execError && <p className="error-message">{execError}</p>}
-            <pre className="exec-output">{execOutput || "Command output will appear here."}</pre>
+            <pre className="exec-output">
+              {execOutput || (terminalSessionId ? "Connected. Enter a command above." : "Start a terminal session to run commands.")}
+              <span ref={terminalEndRef} />
+            </pre>
           </div>
         </div>
       )}

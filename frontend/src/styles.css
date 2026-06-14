@@ -514,6 +514,11 @@ input {
 }
 
 .exec-output {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 16px;
   color: #d7e0e8;
   white-space: pre-wrap;
 }

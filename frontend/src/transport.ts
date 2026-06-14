@@ -27,15 +27,22 @@ import {
   KubernetesListResourcesResponse,
   KubernetesScaleDeploymentRequest,
   KubernetesStartResourceWatchRequest,
+  KubernetesStartPodTerminalRequest,
+  KubernetesStartPodTerminalResponse,
+  KubernetesStopPodTerminalRequest,
   KubernetesStopPodLogsRequest,
   KubernetesStopResourceWatchRequest,
   KubernetesStreamPodLogsRequest,
   KubernetesStreamPodLogsResponse,
+  KubernetesTerminalInputRequest,
+  KubernetesTerminalInputResponse,
   KubernetesVersionRequest,
   KubernetesVersionResponse,
   LogDoneEvent,
   LogEvent,
   ResourceWatchEvent,
+  TerminalDoneEvent,
+  TerminalEvent,
   SystemInfoResponse,
 } from "./contracts";
 
@@ -71,6 +78,11 @@ export interface Transport {
   kubernetesDeleteResource(request: KubernetesDeleteResourceRequest): Promise<void>;
   kubernetesScaleDeployment(request: KubernetesScaleDeploymentRequest): Promise<void>;
   kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse>;
+  kubernetesStartPodTerminal(request: KubernetesStartPodTerminalRequest): Promise<KubernetesStartPodTerminalResponse>;
+  kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse>;
+  kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void>;
+  onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn>;
+  onTerminalDone(callback: (event: TerminalDoneEvent) => void): Promise<UnlistenFn>;
   kubernetesGetPodContainers(
     request: KubernetesGetPodContainersRequest
   ): Promise<KubernetesGetPodContainersResponse>;
@@ -165,6 +177,26 @@ class TauriTransport implements Transport {
     return invoke("kubernetes_exec_pod", { request });
   }
 
+  kubernetesStartPodTerminal(request: KubernetesStartPodTerminalRequest): Promise<KubernetesStartPodTerminalResponse> {
+    return invoke("kubernetes_start_pod_terminal", { request });
+  }
+
+  kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse> {
+    return invoke("kubernetes_terminal_input", { request });
+  }
+
+  kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void> {
+    return invoke("kubernetes_stop_pod_terminal", { request });
+  }
+
+  onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn> {
+    return listen<TerminalEvent>("kubernetes:terminal", (event) => callback(event.payload));
+  }
+
+  onTerminalDone(callback: (event: TerminalDoneEvent) => void): Promise<UnlistenFn> {
+    return listen<TerminalDoneEvent>("kubernetes:terminal:done", (event) => callback(event.payload));
+  }
+
   kubernetesGetPodContainers(
     request: KubernetesGetPodContainersRequest
   ): Promise<KubernetesGetPodContainersResponse> {
@@ -191,6 +223,9 @@ class TauriTransport implements Transport {
 }
 
 class MockTransport implements Transport {
+  private terminalSessionId?: string;
+  private terminalCallback?: (event: TerminalEvent) => void;
+  private terminalDoneCallback?: (event: TerminalDoneEvent) => void;
   async healthCheck(request: HealthCheckRequest): Promise<HealthCheckResponse> {
     return {
       version: IPC_VERSION,
@@ -421,6 +456,44 @@ class MockTransport implements Transport {
       success: true,
       status: "Success",
     };
+  }
+
+  async kubernetesStartPodTerminal(request: KubernetesStartPodTerminalRequest): Promise<KubernetesStartPodTerminalResponse> {
+    this.terminalSessionId = request.sessionId;
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      sessionId: request.sessionId,
+      active: true,
+      initialOutput: `Connected to ${request.pod}/${request.container}\n$ `,
+    };
+  }
+
+  async kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse> {
+    if (request.sessionId !== this.terminalSessionId) throw new Error("terminal session is not active");
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      sessionId: request.sessionId,
+      output: `${request.input.trim()}\r\nmock terminal output\r\n$ `,
+    };
+  }
+
+  async kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void> {
+    if (request.sessionId === this.terminalSessionId) {
+      this.terminalSessionId = undefined;
+      queueMicrotask(() => this.terminalDoneCallback?.({ sessionId: request.sessionId }));
+    }
+  }
+
+  async onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn> {
+    this.terminalCallback = callback;
+    return () => { this.terminalCallback = undefined; };
+  }
+
+  async onTerminalDone(callback: (event: TerminalDoneEvent) => void): Promise<UnlistenFn> {
+    this.terminalDoneCallback = callback;
+    return () => { this.terminalDoneCallback = undefined; };
   }
 
   async kubernetesGetPodContainers(

@@ -372,6 +372,51 @@ pub struct KubernetesExecPodResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesStartPodTerminalRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+    pub context: String,
+    pub namespace: String,
+    pub pod: String,
+    pub container: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStartPodTerminalResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub session_id: String,
+    pub active: bool,
+    pub initial_output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesTerminalInputRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+    pub input: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesTerminalInputResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub session_id: String,
+    pub output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesStopPodTerminalRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesGetPodContainersRequest {
     pub meta: RequestMeta,
     pub context: String,
@@ -531,6 +576,38 @@ mod tests {
         assert_eq!(json["requestId"], "r6");
         assert_eq!(json["stdout"], "ok\n");
         assert_eq!(json["success"], true);
+    }
+
+    #[test]
+    fn terminal_start_request_serializes_camel_case() {
+        let request = KubernetesStartPodTerminalRequest {
+            meta: RequestMeta::new("r-terminal"),
+            session_id: "session-1".into(),
+            context: "dev".into(),
+            namespace: "default".into(),
+            pod: "web".into(),
+            container: "app".into(),
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["sessionId"], "session-1");
+        assert_eq!(json["meta"]["requestId"], "r-terminal");
+        assert_eq!(json["container"], "app");
+    }
+
+    #[test]
+    fn terminal_start_response_serializes_initial_output() {
+        let response = KubernetesStartPodTerminalResponse {
+            version: IPC_VERSION,
+            request_id: "r-terminal".into(),
+            session_id: "session-1".into(),
+            active: true,
+            initial_output: "sh-5.1# ".into(),
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["requestId"], "r-terminal");
+        assert_eq!(json["sessionId"], "session-1");
+        assert_eq!(json["initialOutput"], "sh-5.1# ");
+        assert_eq!(json["active"], true);
     }
 
     #[test]

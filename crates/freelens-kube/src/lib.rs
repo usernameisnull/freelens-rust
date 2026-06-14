@@ -210,6 +210,18 @@ pub struct ExecResult {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalOutput {
+    pub stream: &'static str,
+    pub data: String,
+}
+
+pub struct PodTerminal {
+    pub input: tokio::sync::mpsc::Sender<String>,
+    pub output: tokio::sync::mpsc::Receiver<TerminalOutput>,
+    pub abort: tokio::task::AbortHandle,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResourceWatchNotification {
     Changed,
     Error(String),
@@ -1445,6 +1457,112 @@ pub async fn exec_pod_command(
         stderr,
         success,
         status: status_text,
+    })
+}
+
+/// Start a persistent shell in a Pod container with line-oriented input and streamed output.
+pub async fn start_pod_terminal(
+    client: kube::Client,
+    namespace: &str,
+    pod: &str,
+    container: &str,
+    shell: &str,
+) -> Result<PodTerminal, KubernetesError> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let api: Api<Pod> = Api::namespaced(client, namespace);
+    let params = AttachParams::interactive_tty().container(container);
+    let mut process = api
+        .exec(pod, [shell, "-i"], &params)
+        .await
+        .map_err(|error| KubernetesError::ExecPodFailed(error.to_string()))?;
+    let mut stdin = process
+        .stdin()
+        .ok_or_else(|| KubernetesError::ExecPodFailed("stdin is unavailable".into()))?;
+    let mut stdout = process
+        .stdout()
+        .ok_or_else(|| KubernetesError::ExecPodFailed("stdout is unavailable".into()))?;
+    let status = process.take_status();
+    let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<String>(32);
+    let (output_tx, output_rx) = tokio::sync::mpsc::channel::<TerminalOutput>(128);
+
+    let task = tokio::spawn(async move {
+        let join = process.join();
+        tokio::pin!(join);
+        let status = async move {
+            match status {
+                Some(status) => status.await,
+                None => None,
+            }
+        };
+        tokio::pin!(status);
+        let mut stdout_buffer = [0u8; 4096];
+        let mut stdout_open = true;
+        loop {
+            tokio::select! {
+                biased;
+                input = input_rx.recv() => match input {
+                    Some(input) => {
+                        if let Err(error) = stdin.write_all(input.as_bytes()).await {
+                            let _ = output_tx.send(TerminalOutput {
+                                stream: "stderr",
+                                data: format!("terminal input failed: {error}\n"),
+                            }).await;
+                            break;
+                        }
+                        let _ = stdin.flush().await;
+                    }
+                    None => break,
+                },
+                result = stdout.read(&mut stdout_buffer), if stdout_open => match result {
+                    Ok(0) => stdout_open = false,
+                    Ok(size) => {
+                        if output_tx.send(TerminalOutput {
+                            stream: "stdout",
+                            data: String::from_utf8_lossy(&stdout_buffer[..size]).into_owned(),
+                        }).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        let _ = output_tx.send(TerminalOutput {
+                            stream: "stderr",
+                            data: format!("terminal stdout failed: {error}\n"),
+                        }).await;
+                        stdout_open = false;
+                    }
+                },
+                remote_status = &mut status => {
+                    if let Some(remote_status) = remote_status {
+                        if remote_status.status.as_deref() == Some("Failure") {
+                            let message = remote_status.message
+                                .or(remote_status.reason)
+                                .unwrap_or_else(|| "terminal command failed".into());
+                            let _ = output_tx.send(TerminalOutput {
+                                stream: "stderr",
+                                data: format!("{message}\n"),
+                            }).await;
+                        }
+                    }
+                    break;
+                },
+                result = &mut join => {
+                    if let Err(error) = result {
+                        let _ = output_tx.send(TerminalOutput {
+                            stream: "stderr",
+                            data: format!("terminal session failed: {error}\n"),
+                        }).await;
+                    }
+                    break;
+                }
+            }
+        }
+    });
+
+    Ok(PodTerminal {
+        input: input_tx,
+        output: output_rx,
+        abort: task.abort_handle(),
     })
 }
 

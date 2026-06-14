@@ -12,10 +12,13 @@ use freelens_ipc::{
     KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
     KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
     KubernetesListResourcesRequest, KubernetesListResourcesResponse,
-    KubernetesScaleDeploymentRequest, KubernetesStartResourceWatchRequest,
-    KubernetesStopPodLogsRequest, KubernetesStopResourceWatchRequest,
-    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse, KubernetesVersionRequest,
-    KubernetesVersionResponse, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    KubernetesScaleDeploymentRequest, KubernetesStartPodTerminalRequest,
+    KubernetesStartPodTerminalResponse, KubernetesStartResourceWatchRequest,
+    KubernetesStopPodLogsRequest, KubernetesStopPodTerminalRequest,
+    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
+    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
+    KubernetesTerminalInputResponse, KubernetesVersionRequest, KubernetesVersionResponse,
+    NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -645,6 +648,49 @@ struct ResourceWatchManager {
     watches: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
 }
 
+struct TerminalSession {
+    input: tokio::sync::mpsc::Sender<String>,
+    output: std::sync::Arc<
+        tokio::sync::Mutex<tokio::sync::mpsc::Receiver<freelens_kube::TerminalOutput>>,
+    >,
+    abort: tokio::task::AbortHandle,
+}
+
+#[derive(Default, Clone)]
+struct TerminalSessionManager {
+    sessions: std::sync::Arc<Mutex<HashMap<String, TerminalSession>>>,
+}
+
+impl TerminalSessionManager {
+    fn insert(&self, id: String, session: TerminalSession) {
+        if let Some(previous) = self.sessions.lock().unwrap().insert(id, session) {
+            previous.abort.abort();
+        }
+    }
+
+    fn io(
+        &self,
+        id: &str,
+    ) -> Option<(
+        tokio::sync::mpsc::Sender<String>,
+        std::sync::Arc<
+            tokio::sync::Mutex<tokio::sync::mpsc::Receiver<freelens_kube::TerminalOutput>>,
+        >,
+    )> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|session| (session.input.clone(), session.output.clone()))
+    }
+
+    fn stop(&self, id: &str) {
+        if let Some(session) = self.sessions.lock().unwrap().remove(id) {
+            session.abort.abort();
+        }
+    }
+}
+
 impl ResourceWatchManager {
     fn insert(&self, id: String, handle: tokio::task::AbortHandle) {
         if let Some(previous) = self.watches.lock().unwrap().insert(id, handle) {
@@ -816,6 +862,137 @@ fn kubernetes_stop_pod_logs(
     Ok(())
 }
 
+#[tauri::command]
+async fn kubernetes_start_pod_terminal(
+    request: KubernetesStartPodTerminalRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+    sessions: State<'_, TerminalSessionManager>,
+) -> Result<KubernetesStartPodTerminalResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let request_id = request.meta.request_id;
+    let session_id = request.session_id;
+    let mut selected_terminal = None;
+    let mut initial_output = String::new();
+    for shell in ["sh", "bash", "ash"] {
+        let mut terminal = freelens_kube::start_pod_terminal(
+            client.clone(),
+            &request.namespace,
+            &request.pod,
+            &request.container,
+            shell,
+        )
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+        match tokio::time::timeout(std::time::Duration::from_secs(2), terminal.output.recv()).await
+        {
+            Ok(Some(chunk)) if chunk.stream == "stderr" => {
+                initial_output = chunk.data;
+                terminal.abort.abort();
+            }
+            Ok(Some(chunk)) => {
+                initial_output = chunk.data;
+                selected_terminal = Some(terminal);
+                break;
+            }
+            Ok(None) => {
+                terminal.abort.abort();
+            }
+            Err(_) => {
+                selected_terminal = Some(terminal);
+                break;
+            }
+        }
+    }
+    let active = selected_terminal.is_some();
+    if !active && initial_output.is_empty() {
+        initial_output =
+            "No supported interactive shell (sh, bash, or ash) was found in this container.".into();
+    }
+    if let Some(terminal) = selected_terminal {
+        let input = terminal.input;
+        let output = std::sync::Arc::new(tokio::sync::Mutex::new(terminal.output));
+        sessions.insert(
+            session_id.clone(),
+            TerminalSession {
+                input,
+                output,
+                abort: terminal.abort,
+            },
+        );
+    }
+    Ok(KubernetesStartPodTerminalResponse {
+        version: IPC_VERSION,
+        request_id,
+        session_id,
+        active,
+        initial_output,
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_terminal_input(
+    request: KubernetesTerminalInputRequest,
+    sessions: State<'_, TerminalSessionManager>,
+) -> Result<KubernetesTerminalInputResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let request_id = request.meta.request_id;
+    let session_id = request.session_id;
+    let (input, output) = sessions.io(&session_id).ok_or_else(|| IpcError {
+        code: "kubernetes_terminal_not_found".into(),
+        message: "terminal session is not active".into(),
+    })?;
+    input.send(request.input).await.map_err(|_| IpcError {
+        code: "kubernetes_terminal_closed".into(),
+        message: "terminal session is closed".into(),
+    })?;
+    let mut receiver = output.lock().await;
+    let first = tokio::time::timeout(std::time::Duration::from_secs(30), receiver.recv())
+        .await
+        .map_err(|_| IpcError {
+            code: "kubernetes_terminal_timeout".into(),
+            message: "timed out waiting for terminal output".into(),
+        })?;
+    let Some(first) = first else {
+        sessions.stop(&session_id);
+        return Err(IpcError {
+            code: "kubernetes_terminal_closed".into(),
+            message: "terminal session is closed".into(),
+        });
+    };
+    let mut combined = first.data;
+    while let Ok(Some(chunk)) =
+        tokio::time::timeout(std::time::Duration::from_millis(300), receiver.recv()).await
+    {
+        combined.push_str(&chunk.data);
+    }
+    Ok(KubernetesTerminalInputResponse {
+        version: IPC_VERSION,
+        request_id,
+        session_id,
+        output: combined,
+    })
+}
+
+#[tauri::command]
+fn kubernetes_stop_pod_terminal(
+    request: KubernetesStopPodTerminalRequest,
+    sessions: State<'_, TerminalSessionManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    sessions.stop(&request.session_id);
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -837,6 +1014,7 @@ fn main() {
         .manage(freelens_kube::ClientCache::new())
         .manage(LogStreamManager::default())
         .manage(ResourceWatchManager::default())
+        .manage(TerminalSessionManager::default())
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
@@ -852,6 +1030,9 @@ fn main() {
             kubernetes_delete_resource,
             kubernetes_scale_deployment,
             kubernetes_exec_pod,
+            kubernetes_start_pod_terminal,
+            kubernetes_terminal_input,
+            kubernetes_stop_pod_terminal,
             kubernetes_start_resource_watch,
             kubernetes_stop_resource_watch,
             kubernetes_get_pod_containers,
