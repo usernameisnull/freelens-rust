@@ -152,6 +152,7 @@ Crate 的边界应按照行为和职责划分，不应机械复制现有 TypeScr
 - 实现 kubectl 版本选择和命令执行。
 - 实现 Helm 仓库、Chart、安装、升级、回滚和卸载操作。
 - 使用 `portable-pty` 实现本地 Shell 和集群终端会话。
+- Pod Terminal 后续支持选择常见 Shell，并允许输入自定义 Shell 绝对路径；自动探测默认按 `bash`、`sh`、`ash`、`zsh` 顺序执行，以覆盖 `fish`、`dash`、`ksh` 或非标准安装路径等情况。
 - 增加进程取消、退出状态、输出限制和应用关闭时的清理机制。
 
 交付物：kubectl、Helm 和终端工作流通过 Rust 运行。

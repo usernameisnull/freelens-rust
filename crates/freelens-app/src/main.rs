@@ -896,7 +896,7 @@ async fn kubernetes_start_pod_terminal(
     let session_id = request.session_id;
     let mut selected_terminal = None;
     let mut initial_output = String::new();
-    for shell in ["sh", "bash", "ash"] {
+    for shell in ["bash", "sh", "ash", "zsh"] {
         let mut terminal = freelens_kube::start_pod_terminal(
             client.clone(),
             &request.namespace,
@@ -932,7 +932,8 @@ async fn kubernetes_start_pod_terminal(
     let active = selected_terminal.is_some();
     if !active && initial_output.is_empty() {
         initial_output =
-            "No supported interactive shell (sh, bash, or ash) was found in this container.".into();
+            "No supported interactive shell (bash, sh, ash, or zsh) was found in this container."
+                .into();
     }
     if let Some(terminal) = selected_terminal {
         let input = terminal.input;
