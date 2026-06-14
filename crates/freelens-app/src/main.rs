@@ -236,6 +236,15 @@ async fn kubernetes_discover_resources(
                     freelens_kube::ResourceScope::Cluster => "Cluster".into(),
                 },
                 namespaced: k.namespaced,
+                columns: k
+                    .columns
+                    .into_iter()
+                    .map(|column| freelens_ipc::ResourceColumnItem {
+                        name: column.name,
+                        json_path: column.json_path,
+                        priority: column.priority,
+                    })
+                    .collect(),
             })
             .collect(),
     })
@@ -264,10 +273,20 @@ async fn kubernetes_list_resources(
             message: error.to_string(),
         })?;
 
+    let columns = request
+        .columns
+        .iter()
+        .map(|column| freelens_kube::ResourceColumn {
+            name: column.name.clone(),
+            json_path: column.json_path.clone(),
+            priority: column.priority,
+        })
+        .collect::<Vec<_>>();
     let list = freelens_kube::list_resources(
         client,
         &request.kind,
         &request.api_version,
+        &columns,
         request.namespace.as_deref(),
         request.limit,
         request.continue_token.as_deref(),

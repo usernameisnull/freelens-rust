@@ -94,6 +94,13 @@ export interface ResourceKindItem {
   plural: string;
   scope: string;
   namespaced: boolean;
+  columns: ResourceColumnItem[];
+}
+
+export interface ResourceColumnItem {
+  name: string;
+  jsonPath: string;
+  priority: number;
 }
 
 export interface KubernetesDiscoverResourcesResponse {
@@ -111,6 +118,7 @@ export interface KubernetesListResourcesRequest {
   context: string;
   kind: string;
   apiVersion: string;
+  columns: ResourceColumnItem[];
   namespace: string | null;
   limit: number | null;
   continueToken: string | null;

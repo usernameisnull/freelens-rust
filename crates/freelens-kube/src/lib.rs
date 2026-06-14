@@ -1,4 +1,5 @@
 use futures::{AsyncBufReadExt, StreamExt};
+use jsonpath_rust::JsonPath;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
@@ -81,6 +82,15 @@ pub struct ResourceKind {
     pub plural: String,
     pub scope: ResourceScope,
     pub namespaced: bool,
+    pub columns: Vec<ResourceColumn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceColumn {
+    pub name: String,
+    pub json_path: String,
+    pub priority: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -407,6 +417,51 @@ fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, St
     columns
 }
 
+fn custom_resource_columns(
+    data: &serde_json::Value,
+    definitions: &[ResourceColumn],
+) -> BTreeMap<String, String> {
+    definitions
+        .iter()
+        .filter(|column| column.priority == 0)
+        .map(|column| {
+            let query = if column.json_path.starts_with('$') {
+                column.json_path.clone()
+            } else {
+                format!("${}", column.json_path)
+            };
+            let value = JsonPath::try_from(query.as_str())
+                .map(|path| format_jsonpath_value(path.find(data)))
+                .unwrap_or_else(|_| "-".into());
+            (column.name.clone(), value)
+        })
+        .collect()
+}
+
+fn format_jsonpath_value(value: serde_json::Value) -> String {
+    let values = match value {
+        serde_json::Value::Array(values) => values,
+        serde_json::Value::Null => return "-".into(),
+        value => vec![value],
+    };
+    let rendered = values
+        .into_iter()
+        .filter_map(|value| match value {
+            serde_json::Value::Null => None,
+            serde_json::Value::String(value) => Some(value),
+            serde_json::Value::Bool(value) => Some(value.to_string()),
+            serde_json::Value::Number(value) => Some(value.to_string()),
+            value => serde_json::to_string(&value).ok(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if rendered.is_empty() {
+        "-".into()
+    } else {
+        rendered
+    }
+}
+
 fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
     match kind {
         "Pod" => Some(GroupVersionKind::gvk("", "v1", "Pod")),
@@ -582,6 +637,7 @@ fn append_discovered_resources(kinds: &mut Vec<ResourceKind>, group: &kube::disc
                     ResourceScope::Cluster
                 },
                 namespaced,
+                columns: Vec::new(),
             },
         );
     }
@@ -630,17 +686,39 @@ async fn append_registered_custom_resources(client: kube::Client, kinds: &mut Ve
                     ResourceScope::Cluster
                 },
                 namespaced,
+                columns: version
+                    .additional_printer_columns
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|column| !is_standard_resource_column(&column.name))
+                    .map(|column| ResourceColumn {
+                        name: column.name,
+                        json_path: column.json_path,
+                        priority: column.priority.unwrap_or(0),
+                    })
+                    .collect(),
             },
         );
     }
 }
 
+fn is_standard_resource_column(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "name" | "namespace" | "age"
+    )
+}
+
 fn push_resource_kind(kinds: &mut Vec<ResourceKind>, resource: ResourceKind) {
-    if kinds.iter().any(|item| {
+    if let Some(existing) = kinds.iter_mut().find(|item| {
         item.group == resource.group
             && item.version == resource.version
             && item.kind == resource.kind
     }) {
+        if existing.columns.is_empty() && !resource.columns.is_empty() {
+            existing.columns = resource.columns;
+        }
         return;
     }
     kinds.push(resource);
@@ -651,6 +729,7 @@ pub async fn list_resources(
     client: kube::Client,
     kind: &str,
     api_version: &str,
+    column_definitions: &[ResourceColumn],
     namespace: Option<&str>,
     limit: Option<u32>,
     continue_token: Option<&str>,
@@ -692,7 +771,11 @@ pub async fn list_resources(
                 .as_ref()
                 .map(|t| t.kind.clone())
                 .unwrap_or_else(|| kind.into());
-            let columns = resource_columns(&item_kind, &obj.data);
+            let columns = if column_definitions.is_empty() {
+                resource_columns(&item_kind, &obj.data)
+            } else {
+                custom_resource_columns(&obj.data, column_definitions)
+            };
             ResourceSummary {
                 kind: item_kind,
                 api_version: obj
@@ -1553,10 +1636,47 @@ mod tests {
             plural: "mysqlclusters".into(),
             scope: ResourceScope::Namespaced,
             namespaced: true,
+            columns: Vec::new(),
         };
         let mut kinds = Vec::new();
         push_resource_kind(&mut kinds, resource.clone());
         push_resource_kind(&mut kinds, resource);
         assert_eq!(kinds.len(), 1);
+    }
+
+    #[test]
+    fn custom_resource_columns_follow_printer_jsonpaths() {
+        let resource = serde_json::json!({
+            "spec": {"replicas": 2},
+            "status": {"conditions": [
+                {"type": "Ready", "status": "True"},
+                {"type": "Synced", "status": "True"}
+            ]}
+        });
+        let columns = custom_resource_columns(
+            &resource,
+            &[
+                ResourceColumn {
+                    name: "READY".into(),
+                    json_path: ".status.conditions[?(@.type == 'Ready')].status".into(),
+                    priority: 0,
+                },
+                ResourceColumn {
+                    name: "REPLICAS".into(),
+                    json_path: ".spec.replicas".into(),
+                    priority: 0,
+                },
+                ResourceColumn {
+                    name: "DETAIL".into(),
+                    json_path: ".status.detail".into(),
+                    priority: 1,
+                },
+            ],
+        );
+        assert_eq!(columns.get("READY").map(String::as_str), Some("True"));
+        assert_eq!(columns.get("REPLICAS").map(String::as_str), Some("2"));
+        assert!(!columns.contains_key("DETAIL"));
+        assert!(is_standard_resource_column("Age"));
+        assert!(!is_standard_resource_column("Ready"));
     }
 }

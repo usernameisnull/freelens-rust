@@ -877,6 +877,7 @@ name = "freelens-kube"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "jsonpath-rust",
  "k8s-openapi",
  "kube",
  "serde",

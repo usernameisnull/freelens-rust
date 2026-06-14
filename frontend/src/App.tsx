@@ -77,6 +77,7 @@ const FALLBACK_RESOURCE_KINDS: ResourceKindItem[] = RESOURCE_GROUPS.flatMap((gro
       plural: resourceKindLabel(kind).toLowerCase(),
       scope: kind === "PersistentVolume" ? "Cluster" : "Namespaced",
       namespaced: kind !== "PersistentVolume",
+      columns: [],
     };
   })
 );
@@ -187,6 +188,10 @@ export function App() {
   const [selectedResource, setSelectedResource] = useState<ResourceKindItem>(FALLBACK_RESOURCE_KINDS[0]);
   const selectedKind = selectedResource.kind;
   const selectedApiVersion = resourceApiVersion(selectedResource);
+  const selectedColumns = RESOURCE_COLUMNS[selectedKind]
+    ?? selectedResource.columns
+      .filter((column) => column.priority === 0)
+      .map((column) => ({ key: column.name, label: column.name }));
 
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const [resourcesLoading, setResourcesLoading] = useState(false);
@@ -395,6 +400,7 @@ export function App() {
         context,
         kind,
         apiVersion: selectedApiVersion,
+        columns: selectedResource.columns,
         namespace: namespace || null,
         limit: 50,
         continueToken: token,
@@ -859,7 +865,7 @@ export function App() {
                 <tr>
                   <th><button className="sort-button" onClick={() => changeSort("name")}>{sortLabel("name", "Name")}</button></th>
                   <th><button className="sort-button" onClick={() => changeSort("namespace")}>{sortLabel("namespace", "Namespace")}</button></th>
-                  {(RESOURCE_COLUMNS[selectedKind] ?? []).map((column) => (
+                  {selectedColumns.map((column) => (
                     <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
                   ))}
                   <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
@@ -871,7 +877,7 @@ export function App() {
                   <tr key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}>
                     <td>{item.name}</td>
                     <td>{item.namespace ?? "-"}</td>
-                    {(RESOURCE_COLUMNS[selectedKind] ?? []).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+                    {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
                     <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
                     <td className="actions">
                       <button onClick={() => openDetail(item)}>Details</button>

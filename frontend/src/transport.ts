@@ -254,19 +254,26 @@ class MockTransport implements Transport {
       requestId: request.meta.requestId,
       context: request.context,
       kinds: [
-        { group: "", version: "v1", kind: "Pod", plural: "pods", scope: "Namespaced", namespaced: true },
-        { group: "apps", version: "v1", kind: "Deployment", plural: "deployments", scope: "Namespaced", namespaced: true },
-        { group: "apps", version: "v1", kind: "StatefulSet", plural: "statefulsets", scope: "Namespaced", namespaced: true },
-        { group: "apps", version: "v1", kind: "DaemonSet", plural: "daemonsets", scope: "Namespaced", namespaced: true },
-        { group: "batch", version: "v1", kind: "Job", plural: "jobs", scope: "Namespaced", namespaced: true },
-        { group: "batch", version: "v1", kind: "CronJob", plural: "cronjobs", scope: "Namespaced", namespaced: true },
-        { group: "", version: "v1", kind: "Service", plural: "services", scope: "Namespaced", namespaced: true },
-        { group: "networking.k8s.io", version: "v1", kind: "Ingress", plural: "ingresses", scope: "Namespaced", namespaced: true },
-        { group: "", version: "v1", kind: "ConfigMap", plural: "configmaps", scope: "Namespaced", namespaced: true },
-        { group: "", version: "v1", kind: "Secret", plural: "secrets", scope: "Namespaced", namespaced: true },
-        { group: "", version: "v1", kind: "PersistentVolumeClaim", plural: "persistentvolumeclaims", scope: "Namespaced", namespaced: true },
-        { group: "", version: "v1", kind: "PersistentVolume", plural: "persistentvolumes", scope: "Cluster", namespaced: false },
-        { group: "example.freelens.dev", version: "v1alpha1", kind: "Widget", plural: "widgets", scope: "Namespaced", namespaced: true },
+        ...[
+          ["", "v1", "Pod", "pods", true], ["apps", "v1", "Deployment", "deployments", true],
+          ["apps", "v1", "StatefulSet", "statefulsets", true], ["apps", "v1", "DaemonSet", "daemonsets", true],
+          ["batch", "v1", "Job", "jobs", true], ["batch", "v1", "CronJob", "cronjobs", true],
+          ["", "v1", "Service", "services", true], ["networking.k8s.io", "v1", "Ingress", "ingresses", true],
+          ["", "v1", "ConfigMap", "configmaps", true], ["", "v1", "Secret", "secrets", true],
+          ["", "v1", "PersistentVolumeClaim", "persistentvolumeclaims", true],
+          ["", "v1", "PersistentVolume", "persistentvolumes", false],
+        ].map(([group, version, kind, plural, namespaced]) => ({
+          group: String(group), version: String(version), kind: String(kind), plural: String(plural),
+          scope: namespaced ? "Namespaced" : "Cluster", namespaced: Boolean(namespaced), columns: [],
+        })),
+        {
+          group: "example.freelens.dev", version: "v1alpha1", kind: "Widget", plural: "widgets",
+          scope: "Namespaced", namespaced: true,
+          columns: [
+            { name: "Ready", jsonPath: ".status.ready", priority: 0 },
+            { name: "Replicas", jsonPath: ".spec.replicas", priority: 0 },
+          ],
+        },
       ],
     };
   }
@@ -298,6 +305,7 @@ class MockTransport implements Transport {
           Secret: { type: "Opaque", data: "2" },
           PersistentVolumeClaim: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
           PersistentVolume: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
+          Widget: { Ready: "True", Replicas: "2" },
         };
         const apiVersions: Record<string, string> = {
           Deployment: "apps/v1", StatefulSet: "apps/v1", DaemonSet: "apps/v1",

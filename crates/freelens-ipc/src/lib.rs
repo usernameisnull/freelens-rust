@@ -130,6 +130,15 @@ pub struct ResourceKindItem {
     pub plural: String,
     pub scope: String,
     pub namespaced: bool,
+    pub columns: Vec<ResourceColumnItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceColumnItem {
+    pub name: String,
+    pub json_path: String,
+    pub priority: i32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -148,6 +157,7 @@ pub struct KubernetesListResourcesRequest {
     pub context: String,
     pub kind: String,
     pub api_version: String,
+    pub columns: Vec<ResourceColumnItem>,
     pub namespace: Option<String>,
     pub limit: Option<u32>,
     pub continue_token: Option<String>,
@@ -510,6 +520,11 @@ mod tests {
             context: "dev".into(),
             kind: "Widget".into(),
             api_version: "example.freelens.dev/v1alpha1".into(),
+            columns: vec![ResourceColumnItem {
+                name: "Ready".into(),
+                json_path: ".status.ready".into(),
+                priority: 0,
+            }],
             namespace: Some("default".into()),
             limit: Some(50),
             continue_token: None,
@@ -517,5 +532,6 @@ mod tests {
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["apiVersion"], "example.freelens.dev/v1alpha1");
         assert_eq!(json["kind"], "Widget");
+        assert_eq!(json["columns"][0]["jsonPath"], ".status.ready");
     }
 }
