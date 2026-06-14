@@ -293,6 +293,8 @@ export interface KubernetesStartPodTerminalRequest {
   namespace: string;
   pod: string;
   container: string;
+  rows: number;
+  cols: number;
 }
 
 export interface KubernetesStartPodTerminalResponse {
@@ -314,6 +316,13 @@ export interface KubernetesTerminalInputResponse {
   requestId: string;
   sessionId: string;
   output: string;
+}
+
+export interface KubernetesResizePodTerminalRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+  rows: number;
+  cols: number;
 }
 
 export interface KubernetesStopPodTerminalRequest {

@@ -491,10 +491,11 @@ input {
 }
 
 .exec-panel {
-  width: min(900px, 70vw);
+  width: min(1000px, 78vw);
 }
 
 .exec-controls {
+  align-items: center;
   border-top: none;
   border-bottom: 1px solid #26313a;
 }
@@ -503,24 +504,25 @@ input {
   min-width: 160px;
 }
 
-.exec-controls input {
-  flex: 1;
-  min-width: 0;
-  padding: 6px 8px;
-  border: 1px solid #26313a;
-  border-radius: 6px;
-  background: #0f1419;
-  color: #e8edf2;
+.terminal-hint {
+  color: #8b9aaa;
+  font-size: 0.85rem;
 }
 
 .exec-output {
   flex: 1;
   min-height: 0;
-  margin: 0;
-  overflow: auto;
-  padding: 16px;
-  color: #d7e0e8;
-  white-space: pre-wrap;
+  overflow: hidden;
+  padding: 8px;
+  background: #0f1419;
+}
+
+.exec-output .xterm {
+  height: 100%;
+}
+
+.exec-output .xterm-viewport {
+  overflow-y: auto;
 }
 
 .log-controls {

@@ -379,6 +379,8 @@ pub struct KubernetesStartPodTerminalRequest {
     pub namespace: String,
     pub pod: String,
     pub container: String,
+    pub rows: u16,
+    pub cols: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -406,6 +408,15 @@ pub struct KubernetesTerminalInputResponse {
     pub request_id: String,
     pub session_id: String,
     pub output: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesResizePodTerminalRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+    pub rows: u16,
+    pub cols: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -587,11 +598,15 @@ mod tests {
             namespace: "default".into(),
             pod: "web".into(),
             container: "app".into(),
+            rows: 24,
+            cols: 80,
         };
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["sessionId"], "session-1");
         assert_eq!(json["meta"]["requestId"], "r-terminal");
         assert_eq!(json["container"], "app");
+        assert_eq!(json["rows"], 24);
+        assert_eq!(json["cols"], 80);
     }
 
     #[test]

@@ -12,13 +12,13 @@ use freelens_ipc::{
     KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
     KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
     KubernetesListResourcesRequest, KubernetesListResourcesResponse,
-    KubernetesScaleDeploymentRequest, KubernetesStartPodTerminalRequest,
-    KubernetesStartPodTerminalResponse, KubernetesStartResourceWatchRequest,
-    KubernetesStopPodLogsRequest, KubernetesStopPodTerminalRequest,
-    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
-    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
-    KubernetesTerminalInputResponse, KubernetesVersionRequest, KubernetesVersionResponse,
-    NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    KubernetesResizePodTerminalRequest, KubernetesScaleDeploymentRequest,
+    KubernetesStartPodTerminalRequest, KubernetesStartPodTerminalResponse,
+    KubernetesStartResourceWatchRequest, KubernetesStopPodLogsRequest,
+    KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
+    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
+    KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
+    KubernetesVersionResponse, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -650,9 +650,7 @@ struct ResourceWatchManager {
 
 struct TerminalSession {
     input: tokio::sync::mpsc::Sender<String>,
-    output: std::sync::Arc<
-        tokio::sync::Mutex<tokio::sync::mpsc::Receiver<freelens_kube::TerminalOutput>>,
-    >,
+    resize: tokio::sync::mpsc::Sender<(u16, u16)>,
     abort: tokio::task::AbortHandle,
 }
 
@@ -668,20 +666,20 @@ impl TerminalSessionManager {
         }
     }
 
-    fn io(
-        &self,
-        id: &str,
-    ) -> Option<(
-        tokio::sync::mpsc::Sender<String>,
-        std::sync::Arc<
-            tokio::sync::Mutex<tokio::sync::mpsc::Receiver<freelens_kube::TerminalOutput>>,
-        >,
-    )> {
+    fn input(&self, id: &str) -> Option<tokio::sync::mpsc::Sender<String>> {
         self.sessions
             .lock()
             .unwrap()
             .get(id)
-            .map(|session| (session.input.clone(), session.output.clone()))
+            .map(|session| session.input.clone())
+    }
+
+    fn resize(&self, id: &str) -> Option<tokio::sync::mpsc::Sender<(u16, u16)>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|session| session.resize.clone())
     }
 
     fn stop(&self, id: &str) {
@@ -867,6 +865,7 @@ async fn kubernetes_start_pod_terminal(
     request: KubernetesStartPodTerminalRequest,
     cache: State<'_, freelens_kube::ClientCache>,
     sessions: State<'_, TerminalSessionManager>,
+    app: AppHandle,
 ) -> Result<KubernetesStartPodTerminalResponse, IpcError> {
     validate_ipc_version(request.meta.version)?;
     let client = cache
@@ -920,15 +919,36 @@ async fn kubernetes_start_pod_terminal(
     }
     if let Some(terminal) = selected_terminal {
         let input = terminal.input;
-        let output = std::sync::Arc::new(tokio::sync::Mutex::new(terminal.output));
+        let resize = terminal.resize;
+        let mut output = terminal.output;
+        let _ = resize.send((request.rows, request.cols)).await;
         sessions.insert(
             session_id.clone(),
             TerminalSession {
                 input,
-                output,
+                resize,
                 abort: terminal.abort,
             },
         );
+        let manager = sessions.inner().clone();
+        let event_session_id = session_id.clone();
+        tokio::spawn(async move {
+            while let Some(chunk) = output.recv().await {
+                let _ = app.emit(
+                    "kubernetes:terminal",
+                    serde_json::json!({
+                        "sessionId": &event_session_id,
+                        "stream": chunk.stream,
+                        "data": chunk.data,
+                    }),
+                );
+            }
+            manager.stop(&event_session_id);
+            let _ = app.emit(
+                "kubernetes:terminal:done",
+                serde_json::json!({ "sessionId": &event_session_id }),
+            );
+        });
     }
     Ok(KubernetesStartPodTerminalResponse {
         version: IPC_VERSION,
@@ -947,7 +967,7 @@ async fn kubernetes_terminal_input(
     validate_ipc_version(request.meta.version)?;
     let request_id = request.meta.request_id;
     let session_id = request.session_id;
-    let (input, output) = sessions.io(&session_id).ok_or_else(|| IpcError {
+    let input = sessions.input(&session_id).ok_or_else(|| IpcError {
         code: "kubernetes_terminal_not_found".into(),
         message: "terminal session is not active".into(),
     })?;
@@ -955,32 +975,33 @@ async fn kubernetes_terminal_input(
         code: "kubernetes_terminal_closed".into(),
         message: "terminal session is closed".into(),
     })?;
-    let mut receiver = output.lock().await;
-    let first = tokio::time::timeout(std::time::Duration::from_secs(30), receiver.recv())
-        .await
-        .map_err(|_| IpcError {
-            code: "kubernetes_terminal_timeout".into(),
-            message: "timed out waiting for terminal output".into(),
-        })?;
-    let Some(first) = first else {
-        sessions.stop(&session_id);
-        return Err(IpcError {
-            code: "kubernetes_terminal_closed".into(),
-            message: "terminal session is closed".into(),
-        });
-    };
-    let mut combined = first.data;
-    while let Ok(Some(chunk)) =
-        tokio::time::timeout(std::time::Duration::from_millis(300), receiver.recv()).await
-    {
-        combined.push_str(&chunk.data);
-    }
     Ok(KubernetesTerminalInputResponse {
         version: IPC_VERSION,
         request_id,
         session_id,
-        output: combined,
+        output: String::new(),
     })
+}
+
+#[tauri::command]
+async fn kubernetes_resize_pod_terminal(
+    request: KubernetesResizePodTerminalRequest,
+    sessions: State<'_, TerminalSessionManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let resize = sessions
+        .resize(&request.session_id)
+        .ok_or_else(|| IpcError {
+            code: "kubernetes_terminal_not_found".into(),
+            message: "terminal session is not active".into(),
+        })?;
+    resize
+        .send((request.rows.max(1), request.cols.max(1)))
+        .await
+        .map_err(|_| IpcError {
+            code: "kubernetes_terminal_closed".into(),
+            message: "terminal session is closed".into(),
+        })
 }
 
 #[tauri::command]
@@ -1032,6 +1053,7 @@ fn main() {
             kubernetes_exec_pod,
             kubernetes_start_pod_terminal,
             kubernetes_terminal_input,
+            kubernetes_resize_pod_terminal,
             kubernetes_stop_pod_terminal,
             kubernetes_start_resource_watch,
             kubernetes_stop_resource_watch,

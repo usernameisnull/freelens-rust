@@ -1,4 +1,4 @@
-use futures::{AsyncBufReadExt, StreamExt};
+use futures::{AsyncBufReadExt, SinkExt, StreamExt};
 use jsonpath_rust::JsonPath;
 use k8s_openapi::api::apps::v1::Deployment;
 use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
@@ -6,7 +6,7 @@ use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomRe
 use kube::ResourceExt;
 use kube::api::{
     Api, AttachParams, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
-    WatchEvent, WatchParams,
+    TerminalSize, WatchEvent, WatchParams,
 };
 use kube::config::KubeConfigOptions;
 use kube::core::{GroupVersion, GroupVersionKind};
@@ -217,6 +217,7 @@ pub struct TerminalOutput {
 
 pub struct PodTerminal {
     pub input: tokio::sync::mpsc::Sender<String>,
+    pub resize: tokio::sync::mpsc::Sender<(u16, u16)>,
     pub output: tokio::sync::mpsc::Receiver<TerminalOutput>,
     pub abort: tokio::task::AbortHandle,
 }
@@ -1483,7 +1484,11 @@ pub async fn start_pod_terminal(
         .stdout()
         .ok_or_else(|| KubernetesError::ExecPodFailed("stdout is unavailable".into()))?;
     let status = process.take_status();
+    let mut terminal_size = process
+        .terminal_size()
+        .ok_or_else(|| KubernetesError::ExecPodFailed("terminal resize is unavailable".into()))?;
     let (input_tx, mut input_rx) = tokio::sync::mpsc::channel::<String>(32);
+    let (resize_tx, mut resize_rx) = tokio::sync::mpsc::channel::<(u16, u16)>(8);
     let (output_tx, output_rx) = tokio::sync::mpsc::channel::<TerminalOutput>(128);
 
     let task = tokio::spawn(async move {
@@ -1511,6 +1516,17 @@ pub async fn start_pod_terminal(
                             break;
                         }
                         let _ = stdin.flush().await;
+                    }
+                    None => break,
+                },
+                size = resize_rx.recv() => match size {
+                    Some((rows, cols)) => {
+                        if terminal_size.send(TerminalSize {
+                            height: rows,
+                            width: cols,
+                        }).await.is_err() {
+                            break;
+                        }
                     }
                     None => break,
                 },
@@ -1561,6 +1577,7 @@ pub async fn start_pod_terminal(
 
     Ok(PodTerminal {
         input: input_tx,
+        resize: resize_tx,
         output: output_rx,
         abort: task.abort_handle(),
     })

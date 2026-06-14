@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FitAddon } from "@xterm/addon-fit";
+import { Terminal } from "@xterm/xterm";
 import {
   IPC_VERSION,
   KubeconfigContext,
@@ -11,6 +13,7 @@ import {
   ResourceKindItem,
 } from "./contracts";
 import { createTransport } from "./transport";
+import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
 const transport = createTransport();
@@ -30,13 +33,6 @@ function errorMessage(reason: unknown): string {
     }
   }
   return String(reason);
-}
-
-function cleanTerminalOutput(value: string): string {
-  return value
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r\n/g, "\n")
-    .replace(/\r/g, "\n");
 }
 
 const RESOURCE_GROUPS = [
@@ -240,14 +236,45 @@ export function App() {
   const [execResource, setExecResource] = useState<ResourceItem>();
   const [execContainers, setExecContainers] = useState<string[]>([]);
   const [execContainer, setExecContainer] = useState("");
-  const [execCommand, setExecCommand] = useState("");
-  const [execOutput, setExecOutput] = useState("");
   const [execLoading, setExecLoading] = useState(false);
   const [execError, setExecError] = useState<string>();
   const [terminalSessionId, setTerminalSessionId] = useState<string>();
   const terminalSessionIdRef = useRef<string | undefined>(undefined);
-  const terminalEndRef = useRef<HTMLDivElement>(null);
-  const terminalInputRef = useRef<HTMLInputElement>(null);
+  const terminalReadyRef = useRef(false);
+  const terminalInputQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const terminalHostRef = useRef<HTMLDivElement | null>(null);
+  const xtermRef = useRef<Terminal | null>(null);
+  const xtermFitRef = useRef<FitAddon | null>(null);
+
+  const writeTerminal = useCallback((data: string) => {
+    xtermRef.current?.write(data);
+  }, []);
+
+  const terminalSize = useCallback(() => {
+    const terminal = xtermRef.current;
+    const fit = xtermFitRef.current;
+    if (!terminal) return { cols: 80, rows: 24 };
+    try {
+      fit?.fit();
+    } catch {
+    }
+    return {
+      cols: Math.max(1, terminal.cols || 80),
+      rows: Math.max(1, terminal.rows || 24),
+    };
+  }, []);
+
+  const syncTerminalSize = useCallback(() => {
+    const sessionId = terminalSessionIdRef.current;
+    const { cols, rows } = terminalSize();
+    if (!sessionId || !terminalReadyRef.current) return;
+    void transport.kubernetesResizePodTerminal({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      sessionId,
+      cols,
+      rows,
+    }).catch((reason: unknown) => setExecError(errorMessage(reason)));
+  }, [terminalSize]);
 
   useEffect(() => {
     transport
@@ -301,7 +328,7 @@ export function App() {
 
     transport.onTerminalEvent((event) => {
       if (event.sessionId === terminalSessionIdRef.current) {
-        setExecOutput((current) => current + cleanTerminalOutput(event.data));
+        writeTerminal(event.data);
       }
     }).then((unlisten) => {
       unlistenTerminal = unlisten;
@@ -309,10 +336,11 @@ export function App() {
 
     transport.onTerminalDone((event) => {
       if (event.sessionId === terminalSessionIdRef.current) {
+        terminalReadyRef.current = false;
         terminalSessionIdRef.current = undefined;
         setTerminalSessionId(undefined);
         setExecError(undefined);
-        setExecOutput((current) => `${current}${current.endsWith("\n") || !current ? "" : "\n"}[Terminal session ended]\n`);
+        writeTerminal("\r\n[Terminal session ended]\r\n");
       }
     }).then((unlisten) => {
       unlistenTerminalDone = unlisten;
@@ -328,6 +356,7 @@ export function App() {
       }
       const sessionId = terminalSessionIdRef.current;
       if (sessionId) {
+        terminalReadyRef.current = false;
         void transport.kubernetesStopPodTerminal({
           meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
           sessionId,
@@ -343,8 +372,58 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    terminalEndRef.current?.scrollIntoView({ block: "end" });
-  }, [execOutput]);
+    const terminalElement = terminalHostRef.current;
+    if (!execResource || !terminalElement) return;
+    const terminal = new Terminal({
+      convertEol: true,
+      cursorBlink: true,
+      fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: 13,
+      scrollback: 5000,
+      theme: {
+        background: "#0f1419",
+        foreground: "#d7e0e8",
+        cursor: "#8ab4f8",
+      },
+    });
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(terminalElement);
+    xtermRef.current = terminal;
+    xtermFitRef.current = fit;
+    terminal.writeln("Select a container and start a terminal session.");
+    window.setTimeout(() => terminalSize(), 0);
+    const dataDisposable = terminal.onData((data) => {
+      const sessionId = terminalSessionIdRef.current;
+      if (!sessionId) return;
+      terminalInputQueueRef.current = terminalInputQueueRef.current
+        .then(async () => {
+          await transport.kubernetesTerminalInput({
+            meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+            sessionId,
+            input: data,
+          });
+        })
+        .catch((reason: unknown) => {
+          terminalReadyRef.current = false;
+          terminalSessionIdRef.current = undefined;
+          setTerminalSessionId(undefined);
+          setExecError(errorMessage(reason));
+          terminal.writeln("\r\n[Terminal session ended]");
+        });
+    });
+    const observer = new ResizeObserver(() => syncTerminalSize());
+    observer.observe(terminalElement);
+    window.addEventListener("resize", syncTerminalSize);
+    return () => {
+      dataDisposable.dispose();
+      observer.disconnect();
+      window.removeEventListener("resize", syncTerminalSize);
+      terminal.dispose();
+      xtermRef.current = null;
+      xtermFitRef.current = null;
+    };
+  }, [execResource, syncTerminalSize, terminalSize]);
 
   useEffect(() => {
     if (!selectedContext) return;
@@ -733,8 +812,6 @@ export function App() {
     setExecResource(item);
     setExecContainers([]);
     setExecContainer("");
-    setExecOutput("");
-    setExecCommand("");
     setExecError(undefined);
     setExecLoading(true);
     try {
@@ -746,6 +823,9 @@ export function App() {
       });
       setExecContainers(response.containers);
       setExecContainer(response.defaultContainer ?? response.containers[0] ?? "");
+      if (response.containers.length === 0) {
+        setExecError("Pod has no containers available for terminal sessions");
+      }
     } catch (reason) {
       setExecError(errorMessage(reason));
     } finally {
@@ -757,8 +837,12 @@ export function App() {
     if (!selectedContext || !execResource?.namespace || !execContainer) return;
     setExecLoading(true);
     setExecError(undefined);
-    setExecOutput("");
+    const terminal = xtermRef.current;
+    terminal?.clear();
+    terminal?.writeln(`Connecting to ${execResource.namespace}/${execResource.name} (${execContainer})...`);
+    const { cols, rows } = terminalSize();
     const sessionId = crypto.randomUUID();
+    terminalReadyRef.current = false;
     terminalSessionIdRef.current = sessionId;
     try {
       const response = await transport.kubernetesStartPodTerminal({
@@ -768,49 +852,37 @@ export function App() {
         namespace: execResource.namespace,
         pod: execResource.name,
         container: execContainer,
+        rows,
+        cols,
       });
-      setExecOutput(cleanTerminalOutput(response.initialOutput));
+      terminal?.clear();
+      if (response.initialOutput) writeTerminal(response.initialOutput);
       if (response.active) {
+        terminalReadyRef.current = true;
         setTerminalSessionId(sessionId);
-        window.setTimeout(() => terminalInputRef.current?.focus(), 0);
+        window.setTimeout(() => {
+          xtermRef.current?.focus();
+          syncTerminalSize();
+        }, 0);
       } else {
+        terminalReadyRef.current = false;
         terminalSessionIdRef.current = undefined;
+        setTerminalSessionId(undefined);
       }
     } catch (reason) {
+      terminalReadyRef.current = false;
       terminalSessionIdRef.current = undefined;
+      setTerminalSessionId(undefined);
+      terminal?.writeln("\r\n[Terminal session failed]");
       setExecError(errorMessage(reason));
     } finally {
       setExecLoading(false);
     }
   };
 
-  const sendTerminalInput = async () => {
-    const sessionId = terminalSessionIdRef.current;
-    if (!sessionId || !execCommand.trim()) return;
-    const input = execCommand;
-    setExecCommand("");
-    setExecError(undefined);
-    try {
-      const response = await transport.kubernetesTerminalInput({
-        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-        sessionId,
-        input: `${input}\r`,
-      });
-      setExecOutput((current) => current + cleanTerminalOutput(response.output));
-    } catch (reason) {
-      terminalSessionIdRef.current = undefined;
-      setTerminalSessionId(undefined);
-      const message = errorMessage(reason);
-      if (message.includes("kubernetes_terminal_not_found") || message.includes("kubernetes_terminal_closed")) {
-        setExecOutput((current) => `${current}${current.endsWith("\n") || !current ? "" : "\n"}[Terminal session ended]\n`);
-      } else {
-        setExecError(message);
-      }
-    }
-  };
-
   const stopTerminal = async () => {
     const sessionId = terminalSessionIdRef.current;
+    terminalReadyRef.current = false;
     terminalSessionIdRef.current = undefined;
     setTerminalSessionId(undefined);
     if (!sessionId) return;
@@ -1209,37 +1281,20 @@ export function App() {
                 <button onClick={closeTerminal}>Close</button>
               </div>
             </header>
-            <form
-              className="exec-controls"
-              onSubmit={(event) => {
-                event.preventDefault();
-                if (terminalSessionId) void sendTerminalInput();
-              }}
-            >
+            <div className="exec-controls">
               <select value={execContainer} onChange={(event) => setExecContainer(event.target.value)} disabled={execLoading || Boolean(terminalSessionId)}>
                 {execContainers.map((container) => <option key={container} value={container}>{container}</option>)}
               </select>
               {terminalSessionId ? (
-                <>
-                  <input
-                    ref={terminalInputRef}
-                    value={execCommand}
-                    onChange={(event) => setExecCommand(event.target.value)}
-                    placeholder="Enter a shell command"
-                  />
-                  <button type="submit" disabled={!execCommand.trim()}>Send</button>
-                </>
+                <span className="terminal-hint">Connected. Type directly in the terminal.</span>
               ) : (
-                <button type="button" onClick={() => void startTerminal()} disabled={execLoading || !execContainer}>
+                <button type="button" onClick={() => void startTerminal()} disabled={execLoading || !execContainer || execContainers.length === 0}>
                   {execLoading ? "Starting..." : "Start Terminal"}
                 </button>
               )}
-            </form>
+            </div>
             {execError && <p className="error-message">{execError}</p>}
-            <pre className="exec-output">
-              {execOutput || (terminalSessionId ? "Connected. Enter a command above." : "Start a terminal session to run commands.")}
-              <span ref={terminalEndRef} />
-            </pre>
+            <div ref={terminalHostRef} className="exec-output" />
           </div>
         </div>
       )}

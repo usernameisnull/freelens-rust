@@ -26,6 +26,7 @@ import {
   KubernetesListResourcesRequest,
   KubernetesListResourcesResponse,
   KubernetesScaleDeploymentRequest,
+  KubernetesResizePodTerminalRequest,
   KubernetesStartResourceWatchRequest,
   KubernetesStartPodTerminalRequest,
   KubernetesStartPodTerminalResponse,
@@ -80,6 +81,7 @@ export interface Transport {
   kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse>;
   kubernetesStartPodTerminal(request: KubernetesStartPodTerminalRequest): Promise<KubernetesStartPodTerminalResponse>;
   kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse>;
+  kubernetesResizePodTerminal(request: KubernetesResizePodTerminalRequest): Promise<void>;
   kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void>;
   onTerminalEvent(callback: (event: TerminalEvent) => void): Promise<UnlistenFn>;
   onTerminalDone(callback: (event: TerminalDoneEvent) => void): Promise<UnlistenFn>;
@@ -183,6 +185,10 @@ class TauriTransport implements Transport {
 
   kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse> {
     return invoke("kubernetes_terminal_input", { request });
+  }
+
+  kubernetesResizePodTerminal(request: KubernetesResizePodTerminalRequest): Promise<void> {
+    return invoke("kubernetes_resize_pod_terminal", { request });
   }
 
   kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void> {
@@ -471,13 +477,21 @@ class MockTransport implements Transport {
 
   async kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse> {
     if (request.sessionId !== this.terminalSessionId) throw new Error("terminal session is not active");
-    return {
+    const response = {
       version: IPC_VERSION,
       requestId: request.meta.requestId,
       sessionId: request.sessionId,
-      output: `${request.input.trim()}\r\nmock terminal output\r\n$ `,
+      output: "",
     };
+    queueMicrotask(() => this.terminalCallback?.({
+      sessionId: request.sessionId,
+      stream: "stdout",
+      data: request.input === "\r" ? "\r\nmock terminal output\r\n$ " : request.input,
+    }));
+    return response;
   }
+
+  async kubernetesResizePodTerminal(): Promise<void> {}
 
   async kubernetesStopPodTerminal(request: KubernetesStopPodTerminalRequest): Promise<void> {
     if (request.sessionId === this.terminalSessionId) {
