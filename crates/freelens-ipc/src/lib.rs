@@ -309,6 +309,26 @@ pub struct KubernetesApplyResourceResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesCreateResourceRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesCreateResourceResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub kind: String,
+    pub api_version: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub yaml: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesDeleteResourceRequest {
     pub meta: RequestMeta,
     pub context: String,

@@ -9,6 +9,8 @@ import {
   KubernetesApplyResourceRequest,
   KubernetesApplyResourceResponse,
   KubernetesDeleteResourceRequest,
+  KubernetesCreateResourceRequest,
+  KubernetesCreateResourceResponse,
   KubernetesDiscoverResourcesRequest,
   KubernetesDiscoverResourcesResponse,
   KubernetesExecPodRequest,
@@ -63,6 +65,9 @@ export interface Transport {
   kubernetesApplyResource(
     request: KubernetesApplyResourceRequest
   ): Promise<KubernetesApplyResourceResponse>;
+  kubernetesCreateResource(
+    request: KubernetesCreateResourceRequest
+  ): Promise<KubernetesCreateResourceResponse>;
   kubernetesDeleteResource(request: KubernetesDeleteResourceRequest): Promise<void>;
   kubernetesScaleDeployment(request: KubernetesScaleDeploymentRequest): Promise<void>;
   kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse>;
@@ -140,6 +145,12 @@ class TauriTransport implements Transport {
     request: KubernetesApplyResourceRequest
   ): Promise<KubernetesApplyResourceResponse> {
     return invoke("kubernetes_apply_resource", { request });
+  }
+
+  kubernetesCreateResource(
+    request: KubernetesCreateResourceRequest
+  ): Promise<KubernetesCreateResourceResponse> {
+    return invoke("kubernetes_create_resource", { request });
   }
 
   kubernetesDeleteResource(request: KubernetesDeleteResourceRequest): Promise<void> {
@@ -377,6 +388,24 @@ class MockTransport implements Transport {
     request: KubernetesApplyResourceRequest
   ): Promise<KubernetesApplyResourceResponse> {
     return { version: IPC_VERSION, requestId: request.meta.requestId, yaml: request.yaml };
+  }
+
+  async kubernetesCreateResource(
+    request: KubernetesCreateResourceRequest
+  ): Promise<KubernetesCreateResourceResponse> {
+    const apiVersion = request.yaml.match(/^apiVersion:\s*(\S+)/m)?.[1] ?? "v1";
+    const kind = request.yaml.match(/^kind:\s*(\S+)/m)?.[1] ?? "ConfigMap";
+    const name = request.yaml.match(/^\s*name:\s*(\S+)/m)?.[1] ?? "created-resource";
+    const namespace = request.yaml.match(/^\s*namespace:\s*(\S+)/m)?.[1] ?? null;
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      apiVersion,
+      kind,
+      name,
+      namespace,
+      yaml: request.yaml,
+    };
   }
 
   async kubernetesDeleteResource(): Promise<void> {}

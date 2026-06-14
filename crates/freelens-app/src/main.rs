@@ -4,6 +4,7 @@ use freelens_ipc::{
     ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem, HealthCheckRequest,
     HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError, KubeconfigListRequest,
     KubeconfigListResponse, KubernetesApplyResourceRequest, KubernetesApplyResourceResponse,
+    KubernetesCreateResourceRequest, KubernetesCreateResourceResponse,
     KubernetesDeleteResourceRequest, KubernetesDiscoverResourcesRequest,
     KubernetesDiscoverResourcesResponse, KubernetesExecPodRequest, KubernetesExecPodResponse,
     KubernetesGetPodContainersRequest, KubernetesGetPodContainersResponse,
@@ -482,6 +483,36 @@ async fn kubernetes_apply_resource(
 }
 
 #[tauri::command]
+async fn kubernetes_create_resource(
+    request: KubernetesCreateResourceRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesCreateResourceResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let applied = freelens_kube::create_resource_yaml(client, &request.yaml)
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    Ok(KubernetesCreateResourceResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        kind: applied.kind,
+        api_version: applied.api_version,
+        name: applied.name,
+        namespace: applied.namespace,
+        yaml: applied.yaml,
+    })
+}
+
+#[tauri::command]
 async fn kubernetes_delete_resource(
     request: KubernetesDeleteResourceRequest,
     cache: State<'_, freelens_kube::ClientCache>,
@@ -817,6 +848,7 @@ fn main() {
             kubernetes_get_resource_yaml,
             kubernetes_get_resource_detail,
             kubernetes_apply_resource,
+            kubernetes_create_resource,
             kubernetes_delete_resource,
             kubernetes_scale_deployment,
             kubernetes_exec_pod,

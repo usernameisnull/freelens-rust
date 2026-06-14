@@ -215,6 +215,10 @@ export function App() {
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
   const detailRequestRef = useRef(0);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createYaml, setCreateYaml] = useState("");
+  const [createLoading, setCreateLoading] = useState(false);
+  const [createError, setCreateError] = useState<string>();
 
   const [logOperationId, setLogOperationId] = useState<string>();
   const logOperationIdRef = useRef<string | undefined>(undefined);
@@ -386,12 +390,16 @@ export function App() {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [logs]);
 
-  const loadResources = (token: string | null = null) => {
-    if (!selectedContext || !selectedKind) return;
+  const loadResources = (
+    token: string | null = null,
+    resource: ResourceKindItem = selectedResource,
+    namespaceOverride: string = selectedNamespace,
+  ) => {
+    if (!selectedContext || !resource.kind) return;
     const requestNumber = ++resourceRequestRef.current;
     const context = selectedContext;
-    const kind = selectedKind;
-    const namespace = selectedNamespace;
+    const kind = resource.kind;
+    const namespace = namespaceOverride;
     setResourcesLoading(true);
     setResourcesError(undefined);
     transport
@@ -399,8 +407,8 @@ export function App() {
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context,
         kind,
-        apiVersion: selectedApiVersion,
-        columns: selectedResource.columns,
+        apiVersion: resourceApiVersion(resource),
+        columns: resource.columns,
         namespace: namespace || null,
         limit: 50,
         continueToken: token,
@@ -584,6 +592,43 @@ export function App() {
       setActionError(errorMessage(reason));
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const openCreate = () => {
+    const namespace = selectedNamespace || "default";
+    setCreateYaml(
+      `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: new-configmap\n  namespace: ${namespace}\ndata: {}\n`
+    );
+    setCreateError(undefined);
+    setCreateOpen(true);
+  };
+
+  const createResource = async () => {
+    if (!selectedContext || !createYaml.trim()) return;
+    setCreateLoading(true);
+    setCreateError(undefined);
+    try {
+      const response = await transport.kubernetesCreateResource({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        yaml: createYaml,
+      });
+      const resource = resourceKinds.find((item) =>
+        item.kind === response.kind && resourceApiVersion(item) === response.apiVersion
+      );
+      const targetResource = resource ?? selectedResource;
+      const targetNamespace = response.namespace ?? "";
+      if (resource) setSelectedResource(resource);
+      setSelectedNamespace(targetNamespace);
+      setResourceSearch(response.name);
+      setActionMessage(`${response.kind} ${response.name} applied successfully`);
+      setCreateOpen(false);
+      loadResources(null, targetResource, targetNamespace);
+    } catch (reason) {
+      setCreateError(errorMessage(reason));
+    } finally {
+      setCreateLoading(false);
     }
   };
 
@@ -851,6 +896,7 @@ export function App() {
             <button onClick={() => loadResources()} disabled={resourcesLoading}>
               Refresh
             </button>
+            <button onClick={openCreate}>Create Resource</button>
           </div>
         </header>
 
@@ -971,6 +1017,32 @@ export function App() {
                 )}
               </>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {createOpen && (
+        <div className="detail-panel-overlay" onClick={() => !createLoading && setCreateOpen(false)}>
+          <div className="detail-panel create-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <h3>Create Resource</h3>
+              <button onClick={() => setCreateOpen(false)} disabled={createLoading}>Close</button>
+            </header>
+            <p className="panel-hint">Apply one Kubernetes resource to {selectedContext}.</p>
+            {createError && <p className="inline-message error-message">{createError}</p>}
+            <div className="yaml-editor">
+              <textarea
+                value={createYaml}
+                onChange={(event) => setCreateYaml(event.target.value)}
+                spellCheck={false}
+                autoFocus
+              />
+              <div className="editor-actions">
+                <button onClick={() => void createResource()} disabled={createLoading || !createYaml.trim()}>
+                  {createLoading ? "Applying..." : "Apply Resource"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

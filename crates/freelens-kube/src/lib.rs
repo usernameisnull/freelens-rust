@@ -120,6 +120,24 @@ pub struct ResourceList {
     pub continue_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppliedResource {
+    pub kind: String,
+    pub api_version: String,
+    pub name: String,
+    pub namespace: Option<String>,
+    pub yaml: String,
+}
+
+#[derive(Debug)]
+struct ParsedResourceYaml {
+    object: DynamicObject,
+    kind: String,
+    api_version: String,
+    name: String,
+    namespace: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogStreamOptions {
@@ -1260,6 +1278,73 @@ pub async fn apply_resource_yaml(
         .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))
 }
 
+/// Create a resource from YAML using server-side apply and return its resolved identity.
+pub async fn create_resource_yaml(
+    client: kube::Client,
+    yaml: &str,
+) -> Result<AppliedResource, KubernetesError> {
+    let parsed = parse_resource_yaml(yaml)?;
+    let ParsedResourceYaml {
+        object,
+        kind,
+        api_version,
+        name,
+        namespace,
+    } = parsed;
+    let (api, scope) = dynamic_api(client, &kind, &api_version, namespace.as_deref()).await?;
+    if scope == kube::discovery::Scope::Namespaced && namespace.is_none() {
+        return Err(KubernetesError::ApplyResourceFailed(format!(
+            "{kind} metadata.namespace is required"
+        )));
+    }
+    if scope == kube::discovery::Scope::Cluster && namespace.is_some() {
+        return Err(KubernetesError::ApplyResourceFailed(format!(
+            "{kind} is cluster-scoped and cannot have metadata.namespace"
+        )));
+    }
+    let applied = api
+        .patch(
+            &name,
+            &PatchParams::apply("freelens-rust"),
+            &Patch::Apply(&object),
+        )
+        .await
+        .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
+    let yaml = serde_yaml_ng::to_string(&applied)
+        .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
+    Ok(AppliedResource {
+        kind,
+        api_version,
+        name,
+        namespace,
+        yaml,
+    })
+}
+
+fn parse_resource_yaml(yaml: &str) -> Result<ParsedResourceYaml, KubernetesError> {
+    let object: DynamicObject = serde_yaml_ng::from_str(yaml)
+        .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
+    let types = object.types.as_ref().ok_or_else(|| {
+        KubernetesError::ApplyResourceFailed("apiVersion and kind are required".into())
+    })?;
+    let kind = types.kind.clone();
+    let api_version = types.api_version.clone();
+    let name = object
+        .metadata
+        .name
+        .clone()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| KubernetesError::ApplyResourceFailed("metadata.name is required".into()))?;
+    let namespace = object.namespace();
+    Ok(ParsedResourceYaml {
+        object,
+        kind,
+        api_version,
+        name,
+        namespace,
+    })
+}
+
 /// Delete a supported namespaced resource.
 pub async fn delete_resource(
     client: kube::Client,
@@ -1678,5 +1763,24 @@ mod tests {
         assert!(!columns.contains_key("DETAIL"));
         assert!(is_standard_resource_column("Age"));
         assert!(!is_standard_resource_column("Ready"));
+    }
+
+    #[test]
+    fn create_yaml_identity_is_parsed() {
+        let parsed = parse_resource_yaml(
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: demo\n  namespace: default\n",
+        )
+        .unwrap();
+        assert_eq!(parsed.api_version, "v1");
+        assert_eq!(parsed.kind, "ConfigMap");
+        assert_eq!(parsed.name, "demo");
+        assert_eq!(parsed.namespace.as_deref(), Some("default"));
+    }
+
+    #[test]
+    fn create_yaml_requires_name() {
+        let error =
+            parse_resource_yaml("apiVersion: v1\nkind: ConfigMap\nmetadata: {}\n").unwrap_err();
+        assert!(error.to_string().contains("metadata.name is required"));
     }
 }

@@ -235,6 +235,22 @@ export interface KubernetesApplyResourceResponse {
   yaml: string;
 }
 
+export interface KubernetesCreateResourceRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  yaml: string;
+}
+
+export interface KubernetesCreateResourceResponse {
+  version: number;
+  requestId: string;
+  kind: string;
+  apiVersion: string;
+  name: string;
+  namespace: string | null;
+  yaml: string;
+}
+
 export interface KubernetesDeleteResourceRequest {
   meta: { version: number; requestId: string };
   context: string;

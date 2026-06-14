@@ -426,6 +426,17 @@ input {
   background: #0f1419;
 }
 
+.create-panel {
+  width: min(760px, 90vw);
+}
+
+.panel-hint {
+  margin: 0;
+  padding: 12px 20px;
+  color: #9eabb8;
+  border-bottom: 1px solid #26313a;
+}
+
 .yaml-editor {
   flex: 1;
   min-height: 0;
