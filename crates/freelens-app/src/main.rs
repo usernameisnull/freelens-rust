@@ -651,6 +651,9 @@ struct ResourceWatchManager {
 struct TerminalSession {
     input: tokio::sync::mpsc::Sender<String>,
     resize: tokio::sync::mpsc::Sender<(u16, u16)>,
+    output: std::sync::Arc<
+        tokio::sync::Mutex<tokio::sync::mpsc::Receiver<freelens_kube::TerminalOutput>>,
+    >,
     abort: tokio::task::AbortHandle,
 }
 
@@ -680,6 +683,21 @@ impl TerminalSessionManager {
             .unwrap()
             .get(id)
             .map(|session| session.resize.clone())
+    }
+
+    fn output(
+        &self,
+        id: &str,
+    ) -> Option<
+        std::sync::Arc<
+            tokio::sync::Mutex<tokio::sync::mpsc::Receiver<freelens_kube::TerminalOutput>>,
+        >,
+    > {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|session| session.output.clone())
     }
 
     fn stop(&self, id: &str) {
@@ -865,7 +883,6 @@ async fn kubernetes_start_pod_terminal(
     request: KubernetesStartPodTerminalRequest,
     cache: State<'_, freelens_kube::ClientCache>,
     sessions: State<'_, TerminalSessionManager>,
-    app: AppHandle,
 ) -> Result<KubernetesStartPodTerminalResponse, IpcError> {
     validate_ipc_version(request.meta.version)?;
     let client = cache
@@ -920,35 +937,17 @@ async fn kubernetes_start_pod_terminal(
     if let Some(terminal) = selected_terminal {
         let input = terminal.input;
         let resize = terminal.resize;
-        let mut output = terminal.output;
+        let output = std::sync::Arc::new(tokio::sync::Mutex::new(terminal.output));
         let _ = resize.send((request.rows, request.cols)).await;
         sessions.insert(
             session_id.clone(),
             TerminalSession {
                 input,
                 resize,
+                output,
                 abort: terminal.abort,
             },
         );
-        let manager = sessions.inner().clone();
-        let event_session_id = session_id.clone();
-        tokio::spawn(async move {
-            while let Some(chunk) = output.recv().await {
-                let _ = app.emit(
-                    "kubernetes:terminal",
-                    serde_json::json!({
-                        "sessionId": &event_session_id,
-                        "stream": chunk.stream,
-                        "data": chunk.data,
-                    }),
-                );
-            }
-            manager.stop(&event_session_id);
-            let _ = app.emit(
-                "kubernetes:terminal:done",
-                serde_json::json!({ "sessionId": &event_session_id }),
-            );
-        });
     }
     Ok(KubernetesStartPodTerminalResponse {
         version: IPC_VERSION,
@@ -971,15 +970,34 @@ async fn kubernetes_terminal_input(
         code: "kubernetes_terminal_not_found".into(),
         message: "terminal session is not active".into(),
     })?;
-    input.send(request.input).await.map_err(|_| IpcError {
-        code: "kubernetes_terminal_closed".into(),
-        message: "terminal session is closed".into(),
+    if !request.input.is_empty() {
+        input.send(request.input).await.map_err(|_| IpcError {
+            code: "kubernetes_terminal_closed".into(),
+            message: "terminal session is closed".into(),
+        })?;
+        tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+    }
+    let output = sessions.output(&session_id).ok_or_else(|| IpcError {
+        code: "kubernetes_terminal_not_found".into(),
+        message: "terminal session is not active".into(),
     })?;
+    let mut receiver = output.lock().await;
+    let mut combined = String::new();
+    loop {
+        match receiver.try_recv() {
+            Ok(chunk) => combined.push_str(&chunk.data),
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => break,
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                sessions.stop(&session_id);
+                break;
+            }
+        }
+    }
     Ok(KubernetesTerminalInputResponse {
         version: IPC_VERSION,
         request_id,
         session_id,
-        output: String::new(),
+        output: combined,
     })
 }
 

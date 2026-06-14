@@ -515,6 +515,13 @@ input {
   overflow: hidden;
   padding: 8px;
   background: #0f1419;
+  cursor: text;
+  outline: none;
+}
+
+.exec-output:focus-within,
+.exec-output:focus {
+  box-shadow: inset 0 0 0 1px #3d6b8f;
 }
 
 .exec-output .xterm {

@@ -250,6 +250,11 @@ export function App() {
     xtermRef.current?.write(data);
   }, []);
 
+  const focusTerminal = useCallback(() => {
+    if (!terminalReadyRef.current) return;
+    xtermRef.current?.focus();
+  }, []);
+
   const terminalSize = useCallback(() => {
     const terminal = xtermRef.current;
     const fit = xtermFitRef.current;
@@ -398,11 +403,12 @@ export function App() {
       if (!sessionId) return;
       terminalInputQueueRef.current = terminalInputQueueRef.current
         .then(async () => {
-          await transport.kubernetesTerminalInput({
+          const response = await transport.kubernetesTerminalInput({
             meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
             sessionId,
             input: data,
           });
+          if (response.output) terminal.write(response.output);
         })
         .catch((reason: unknown) => {
           terminalReadyRef.current = false;
@@ -412,11 +418,32 @@ export function App() {
           terminal.writeln("\r\n[Terminal session ended]");
         });
     });
+    const pollTimer = window.setInterval(() => {
+      const sessionId = terminalSessionIdRef.current;
+      if (!sessionId || !terminalReadyRef.current) return;
+      terminalInputQueueRef.current = terminalInputQueueRef.current
+        .then(async () => {
+          const response = await transport.kubernetesTerminalInput({
+            meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+            sessionId,
+            input: "",
+          });
+          if (response.output) terminal.write(response.output);
+        })
+        .catch((reason: unknown) => {
+          terminalReadyRef.current = false;
+          terminalSessionIdRef.current = undefined;
+          setTerminalSessionId(undefined);
+          setExecError(errorMessage(reason));
+          terminal.writeln("\r\n[Terminal session ended]");
+        });
+    }, 50);
     const observer = new ResizeObserver(() => syncTerminalSize());
     observer.observe(terminalElement);
     window.addEventListener("resize", syncTerminalSize);
     return () => {
       dataDisposable.dispose();
+      window.clearInterval(pollTimer);
       observer.disconnect();
       window.removeEventListener("resize", syncTerminalSize);
       terminal.dispose();
@@ -1294,7 +1321,15 @@ export function App() {
               )}
             </div>
             {execError && <p className="error-message">{execError}</p>}
-            <div ref={terminalHostRef} className="exec-output" />
+            <div
+              ref={terminalHostRef}
+              className="exec-output"
+              role="application"
+              aria-label="Pod terminal"
+              tabIndex={0}
+              onClick={focusTerminal}
+              onDoubleClick={focusTerminal}
+            />
           </div>
         </div>
       )}
