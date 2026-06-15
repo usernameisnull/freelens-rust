@@ -508,7 +508,11 @@ class MockTransport implements Transport {
           Secret: { type: "Opaque", data: "2" },
           PersistentVolumeClaim: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
           PersistentVolume: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
-          Node: { status: "Ready", version: "v1.mock.0", os: "Mock Linux" },
+          Node: {
+            status: "Ready", roles: index === 0 ? "control-plane" : "<none>",
+            version: "v1.mock.0", internalIP: `10.0.0.${index + 10}`, externalIP: "<none>",
+            osImage: "Mock Linux", kernelVersion: "6.8.0-mock", containerRuntime: "containerd://2.0.0",
+          },
           Widget: { Ready: "True", Replicas: "2" },
         };
         const apiVersions: Record<string, string> = {

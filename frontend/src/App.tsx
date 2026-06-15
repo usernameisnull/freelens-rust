@@ -220,8 +220,13 @@ const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = 
   ],
   Node: [
     { key: "status", label: "Status" },
+    { key: "roles", label: "Roles" },
     { key: "version", label: "Version" },
-    { key: "os", label: "OS" },
+    { key: "internalIP", label: "Internal IP" },
+    { key: "externalIP", label: "External IP" },
+    { key: "osImage", label: "OS Image" },
+    { key: "kernelVersion", label: "Kernel Version" },
+    { key: "containerRuntime", label: "Container Runtime" },
   ],
 };
 
@@ -1976,13 +1981,23 @@ export function App() {
               <thead>
                 <tr>
                   <th><button className="sort-button" onClick={() => changeSort("name")}>{sortLabel("name", "Name")}</button></th>
-                  <th><button className="sort-button" onClick={() => changeSort("namespace")}>{sortLabel("namespace", "Namespace")}</button></th>
-                  {selectedColumns.map((column) => (
-                    <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
-                  ))}
-                  {(selectedKind === "Pod" || selectedKind === "Node") && <th>CPU</th>}
-                  {(selectedKind === "Pod" || selectedKind === "Node") && <th>Memory</th>}
-                  <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
+                  {selectedKind === "Node" ? <>
+                    {selectedColumns.slice(0, 2).map((column) => (
+                      <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                    ))}
+                    <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
+                    {selectedColumns.slice(2).map((column) => (
+                      <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                    ))}
+                    <th>CPU</th><th>Memory</th>
+                  </> : <>
+                    <th><button className="sort-button" onClick={() => changeSort("namespace")}>{sortLabel("namespace", "Namespace")}</button></th>
+                    {selectedColumns.map((column) => (
+                      <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                    ))}
+                    {selectedKind === "Pod" && <><th>CPU</th><th>Memory</th></>}
+                    <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
+                  </>}
                   <th>Actions</th>
                 </tr>
               </thead>
@@ -1990,15 +2005,21 @@ export function App() {
                 {visibleResources.map((item: ResourceItem) => (
                   <tr key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}>
                     <td>{item.name}</td>
-                    <td>{item.namespace ?? "-"}</td>
-                    {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
-                    {(selectedKind === "Pod" || selectedKind === "Node") && (
-                      <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
-                    )}
-                    {(selectedKind === "Pod" || selectedKind === "Node") && (
-                      <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
-                    )}
-                    <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+                    {selectedKind === "Node" ? <>
+                      {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+                      <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+                      {selectedColumns.slice(2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+                      <td>{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
+                      <td>{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
+                    </> : <>
+                      <td>{item.namespace ?? "-"}</td>
+                      {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+                      {selectedKind === "Pod" && <>
+                        <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
+                        <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
+                      </>}
+                      <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+                    </>}
                     <td className="actions">
                       <button onClick={() => openDetail(item)}>Details</button>
                       {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (

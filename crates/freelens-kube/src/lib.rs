@@ -358,17 +358,72 @@ fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, St
                 .and_then(|condition| condition.get("status"))
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("Unknown");
-            columns.insert(
-                "status".into(),
-                if ready == "True" { "Ready" } else { "NotReady" }.into(),
-            );
+            let mut status = if ready == "True" { "Ready" } else { "NotReady" }.to_string();
+            if data
+                .pointer("/spec/unschedulable")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                status.push_str(",SchedulingDisabled");
+            }
+            columns.insert("status".into(), status);
             columns.insert(
                 "version".into(),
                 json_string(data, &["status", "nodeInfo", "kubeletVersion"]),
             );
+            let roles = data
+                .pointer("/metadata/labels")
+                .and_then(serde_json::Value::as_object)
+                .map(|labels| {
+                    let mut roles = labels
+                        .keys()
+                        .filter_map(|label| label.strip_prefix("node-role.kubernetes.io/"))
+                        .filter(|role| !role.is_empty())
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>();
+                    if let Some(role) = labels
+                        .get("kubernetes.io/role")
+                        .and_then(serde_json::Value::as_str)
+                    {
+                        if !role.is_empty() && !roles.iter().any(|value| value == role) {
+                            roles.push(role.into());
+                        }
+                    }
+                    roles.sort();
+                    roles.join(",")
+                })
+                .filter(|roles| !roles.is_empty())
+                .unwrap_or_else(|| "<none>".into());
+            columns.insert("roles".into(), roles);
+            let addresses = data
+                .pointer("/status/addresses")
+                .and_then(serde_json::Value::as_array);
+            let address = |address_type: &str| {
+                addresses
+                    .into_iter()
+                    .flatten()
+                    .find(|address| {
+                        address.get("type").and_then(serde_json::Value::as_str)
+                            == Some(address_type)
+                    })
+                    .and_then(|address| address.get("address"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<none>")
+                    .to_string()
+            };
+            columns.insert("internalIP".into(), address("InternalIP"));
+            columns.insert("externalIP".into(), address("ExternalIP"));
             columns.insert(
-                "os".into(),
+                "osImage".into(),
                 json_string(data, &["status", "nodeInfo", "osImage"]),
+            );
+            columns.insert(
+                "kernelVersion".into(),
+                json_string(data, &["status", "nodeInfo", "kernelVersion"]),
+            );
+            columns.insert(
+                "containerRuntime".into(),
+                json_string(data, &["status", "nodeInfo", "containerRuntimeVersion"]),
             );
         }
         "Deployment" | "StatefulSet" => {
@@ -2354,6 +2409,35 @@ mod tests {
         assert_eq!(columns.get("type").map(String::as_str), Some("Opaque"));
         assert_eq!(columns.get("data").map(String::as_str), Some("2"));
         assert!(!columns.values().any(|value| value.contains("c2VjcmV0")));
+    }
+
+    #[test]
+    fn node_columns_match_kubectl_wide_fields() {
+        let node = serde_json::json!({
+            "metadata": { "labels": { "node-role.kubernetes.io/control-plane": "" } },
+            "spec": { "unschedulable": false },
+            "status": {
+                "conditions": [{ "type": "Ready", "status": "True" }],
+                "addresses": [
+                    { "type": "InternalIP", "address": "10.6.178.178" }
+                ],
+                "nodeInfo": {
+                    "kubeletVersion": "v1.30.14",
+                    "osImage": "Ubuntu 22.04.5 LTS",
+                    "kernelVersion": "5.15.0-168-generic",
+                    "containerRuntimeVersion": "docker://28.3.3"
+                }
+            }
+        });
+        let columns = resource_columns("Node", &node);
+        assert_eq!(columns["status"], "Ready");
+        assert_eq!(columns["roles"], "control-plane");
+        assert_eq!(columns["version"], "v1.30.14");
+        assert_eq!(columns["internalIP"], "10.6.178.178");
+        assert_eq!(columns["externalIP"], "<none>");
+        assert_eq!(columns["osImage"], "Ubuntu 22.04.5 LTS");
+        assert_eq!(columns["kernelVersion"], "5.15.0-168-generic");
+        assert_eq!(columns["containerRuntime"], "docker://28.3.3");
     }
 
     #[test]
