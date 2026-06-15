@@ -286,6 +286,12 @@ input {
   cursor: not-allowed;
 }
 
+.pagination-status {
+  margin: 14px 0 0;
+  color: #71808e;
+  font-size: 0.82rem;
+}
+
 .error-message {
   padding: 16px 20px;
   color: #ff8a8a;

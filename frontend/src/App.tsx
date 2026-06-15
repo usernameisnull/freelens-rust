@@ -235,6 +235,10 @@ export function App() {
   const [continueToken, setContinueToken] = useState<string | null>(null);
   const resourceRequestRef = useRef(0);
   const [resourceSearch, setResourceSearch] = useState("");
+  const searchPaginationRef = useRef<{ key: string; tokens: Set<string> }>({
+    key: "",
+    tokens: new Set(),
+  });
   const [sortKey, setSortKey] = useState("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const [refreshSeconds, setRefreshSeconds] = useState(0);
@@ -776,6 +780,7 @@ export function App() {
     namespaceOverride: string = selectedNamespace,
   ) => {
     if (!selectedContext || !resource.kind) return;
+    if (!token) searchPaginationRef.current = { key: "", tokens: new Set() };
     const requestNumber = ++resourceRequestRef.current;
     const context = selectedContext;
     const kind = resource.kind;
@@ -813,6 +818,36 @@ export function App() {
         }
       });
   };
+
+  useEffect(() => {
+    const query = resourceSearch.trim().toLowerCase();
+    if (!query) {
+      searchPaginationRef.current = { key: "", tokens: new Set() };
+      return;
+    }
+    if (resourcesLoading || !continueToken) return;
+
+    const searchKey = [
+      selectedContext,
+      resourceKey(selectedResource),
+      selectedNamespace,
+      query,
+    ].join("|");
+    if (searchPaginationRef.current.key !== searchKey) {
+      searchPaginationRef.current = { key: searchKey, tokens: new Set() };
+    }
+    if (searchPaginationRef.current.tokens.has(continueToken)) return;
+    searchPaginationRef.current.tokens.add(continueToken);
+    loadResources(continueToken);
+  }, [
+    continueToken,
+    resourceSearch,
+    resources,
+    resourcesLoading,
+    selectedContext,
+    selectedNamespace,
+    selectedResource,
+  ]);
 
   const openDetail = (item: ResourceItem) => {
     if (!selectedContext) return;
@@ -1540,7 +1575,7 @@ export function App() {
                 ))}
               </tbody>
             </table>
-            {continueToken && (
+            {continueToken && !resourceSearch.trim() && (
               <button
                 className="load-more"
                 onClick={() => loadResources(continueToken)}
@@ -1548,6 +1583,11 @@ export function App() {
               >
                 Load more
               </button>
+            )}
+            {resourceSearch.trim() && continueToken && (
+              <p className="pagination-status">
+                {resourcesLoading ? "Searching remaining pages..." : "Preparing next search page..."}
+              </p>
             )}
             {resourcesLoading && resources.length === 0 && <p>Loading…</p>}
           </section>
