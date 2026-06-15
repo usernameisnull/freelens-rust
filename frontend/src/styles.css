@@ -286,7 +286,6 @@ body.resizing-sidebar {
 .resource-list {
   flex: 1;
   overflow: auto;
-  padding: 16px 20px;
 }
 
 .dashboard {
@@ -372,17 +371,35 @@ button.dashboard-card:hover {
 
 .resource-list th,
 .resource-list td {
-  padding: 10px 12px;
+  padding: 10px 20px;
   text-align: left;
   border-bottom: 1px solid #26313a;
 }
 
+.resource-list thead {
+  background: #0f1419;
+}
+
 .resource-list th {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   color: #71808e;
   font-weight: 600;
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  background: #0f1419;
+}
+
+.resource-list th::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: #26313a;
 }
 
 .sort-button {
