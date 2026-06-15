@@ -207,6 +207,10 @@ function formatAge(created: string | null): string {
 }
 
 export function App() {
+  const [settingsReady, setSettingsReady] = useState(false);
+  const settingsRestorePendingRef = useRef(0);
+  const preferredNamespaceRef = useRef("");
+  const preferredResourceRef = useRef("");
   const [kubeconfig, setKubeconfig] = useState<KubeconfigListResponse>();
   const [kubeconfigError, setKubeconfigError] = useState<string>();
   const [selectedContext, setSelectedContext] = useState<string>("");
@@ -214,6 +218,11 @@ export function App() {
   const setSelectedContextAndRef = (value: string) => {
     selectedContextRef.current = value;
     setSelectedContext(value);
+  };
+  const finishSettingsRestore = () => {
+    if (settingsRestorePendingRef.current === 0) return;
+    settingsRestorePendingRef.current -= 1;
+    if (settingsRestorePendingRef.current === 0) setSettingsReady(true);
   };
 
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
@@ -374,14 +383,46 @@ export function App() {
   }, [localTerminalSize]);
 
   useEffect(() => {
-    transport
-      .kubeconfigList({
+    Promise.all([
+      transport.kubeconfigList({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-      })
-      .then((response) => {
+      }),
+      transport.settingsLoad({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      }).catch((reason: unknown) => {
+        setActionError(errorMessage(reason));
+        return {
+          version: IPC_VERSION,
+          requestId: "settings-fallback",
+          settings: {
+            context: null,
+            namespace: null,
+            resourceKind: null,
+            resourceApiVersion: null,
+            refreshSeconds: 0,
+          },
+        };
+      }),
+    ])
+      .then(([response, saved]) => {
         setKubeconfig(response);
-        const fallback = response.contexts[0]?.name ?? "";
-        setSelectedContextAndRef(response.currentContext ?? fallback);
+        const savedContext = saved.settings.context;
+        const context = response.contexts.some((item) => item.name === savedContext)
+          ? savedContext ?? ""
+          : response.currentContext ?? response.contexts[0]?.name ?? "";
+        preferredNamespaceRef.current = saved.settings.namespace ?? "";
+        preferredResourceRef.current = saved.settings.resourceKind && saved.settings.resourceApiVersion
+          ? `${saved.settings.resourceApiVersion}:${saved.settings.resourceKind}`
+          : "";
+        setRefreshSeconds([0, 5, 15, 30].includes(saved.settings.refreshSeconds)
+          ? saved.settings.refreshSeconds
+          : 0);
+        settingsRestorePendingRef.current = 2;
+        setSelectedContextAndRef(context);
+        if (!context) {
+          settingsRestorePendingRef.current = 0;
+          setSettingsReady(true);
+        }
       })
       .catch((reason: unknown) => {
         setKubeconfigError(errorMessage(reason));
@@ -505,6 +546,23 @@ export function App() {
       if (resourceWatchRefreshRef.current) window.clearTimeout(resourceWatchRefreshRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!settingsReady || !selectedContext) return;
+    const timer = window.setTimeout(() => {
+      void transport.settingsSave({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        settings: {
+          context: selectedContext,
+          namespace: selectedNamespace || null,
+          resourceKind: selectedResource.kind || null,
+          resourceApiVersion: resourceApiVersion(selectedResource) || null,
+          refreshSeconds,
+        },
+      }).catch((reason) => setActionError(errorMessage(reason)));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [settingsReady, selectedContext, selectedNamespace, selectedResource, refreshSeconds]);
 
   useEffect(() => {
     const terminalElement = terminalHostRef.current;
@@ -697,16 +755,21 @@ export function App() {
         if (selectedContextRef.current !== selectedContext) return;
         const discovered = response.kinds.length > 0 ? response.kinds : FALLBACK_RESOURCE_KINDS;
         setResourceKinds(discovered);
-        setSelectedResource((current) =>
-          discovered.find((item) => resourceKey(item) === resourceKey(current))
-          ?? discovered.find((item) => item.kind === "Pod" && resourceApiVersion(item) === "v1")
-          ?? discovered[0]
-        );
+        setSelectedResource((current) => {
+          const preferred = preferredResourceRef.current;
+          preferredResourceRef.current = "";
+          return discovered.find((item) => resourceKey(item) === preferred)
+            ?? discovered.find((item) => resourceKey(item) === resourceKey(current))
+            ?? discovered.find((item) => item.kind === "Pod" && resourceApiVersion(item) === "v1")
+            ?? discovered[0];
+        });
+        finishSettingsRestore();
       })
       .catch((reason: unknown) => {
         if (selectedContextRef.current !== selectedContext) return;
         setResourceKinds(FALLBACK_RESOURCE_KINDS);
         setResourceDiscoveryError(errorMessage(reason));
+        finishSettingsRestore();
       });
     transport
       .kubernetesListNamespaces({
@@ -715,8 +778,16 @@ export function App() {
       })
       .then((response: KubernetesListNamespacesResponse) => {
         setNamespaces(response.namespaces);
+        const preferred = preferredNamespaceRef.current;
+        preferredNamespaceRef.current = "";
+        setSelectedNamespace(response.namespaces.some((item) => item.name === preferred) ? preferred : "");
+        finishSettingsRestore();
       })
-      .catch(() => setNamespaces([]));
+      .catch(() => {
+        setNamespaces([]);
+        preferredNamespaceRef.current = "";
+        finishSettingsRestore();
+      });
   }, [selectedContext]);
 
   useEffect(() => {

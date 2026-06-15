@@ -22,6 +22,29 @@ export interface SystemInfoResponse {
   logDir: string;
 }
 
+export interface AppSettings {
+  context: string | null;
+  namespace: string | null;
+  resourceKind: string | null;
+  resourceApiVersion: string | null;
+  refreshSeconds: number;
+}
+
+export interface SettingsLoadRequest {
+  meta: { version: number; requestId: string };
+}
+
+export interface SettingsLoadResponse {
+  version: number;
+  requestId: string;
+  settings: AppSettings;
+}
+
+export interface SettingsSaveRequest {
+  meta: { version: number; requestId: string };
+  settings: AppSettings;
+}
+
 export interface KubeconfigListRequest {
   meta: {
     version: number;

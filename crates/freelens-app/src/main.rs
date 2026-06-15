@@ -1,29 +1,31 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use freelens_ipc::{
-    ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem, HealthCheckRequest,
-    HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError, KubeconfigListRequest,
-    KubeconfigListResponse, KubectlCancelRequest, KubectlInfoRequest, KubectlInfoResponse,
-    KubectlInstallation, KubectlRunRequest, KubectlRunResponse, KubernetesApplyResourceRequest,
-    KubernetesApplyResourceResponse, KubernetesCreateResourceRequest,
-    KubernetesCreateResourceResponse, KubernetesDeleteResourceRequest,
-    KubernetesDiscoverResourcesRequest, KubernetesDiscoverResourcesResponse,
-    KubernetesExecPodRequest, KubernetesExecPodResponse, KubernetesGetPodContainersRequest,
-    KubernetesGetPodContainersResponse, KubernetesGetResourceDetailRequest,
-    KubernetesGetResourceDetailResponse, KubernetesGetResourceYamlRequest,
-    KubernetesGetResourceYamlResponse, KubernetesListNamespacesRequest,
-    KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
-    KubernetesListResourcesResponse, KubernetesResizePodTerminalRequest,
-    KubernetesScaleDeploymentRequest, KubernetesStartPodPortForwardRequest,
-    KubernetesStartPodPortForwardResponse, KubernetesStartPodTerminalRequest,
-    KubernetesStartPodTerminalResponse, KubernetesStartResourceWatchRequest,
-    KubernetesStopPodLogsRequest, KubernetesStopPodPortForwardRequest,
-    KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
-    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
-    KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
-    KubernetesVersionResponse, LocalTerminalInputRequest, LocalTerminalInputResponse,
-    LocalTerminalResizeRequest, LocalTerminalStartRequest, LocalTerminalStartResponse,
-    LocalTerminalStopRequest, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    AppSettings, ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem,
+    HealthCheckRequest, HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError,
+    KubeconfigListRequest, KubeconfigListResponse, KubectlCancelRequest, KubectlInfoRequest,
+    KubectlInfoResponse, KubectlInstallation, KubectlRunRequest, KubectlRunResponse,
+    KubernetesApplyResourceRequest, KubernetesApplyResourceResponse,
+    KubernetesCreateResourceRequest, KubernetesCreateResourceResponse,
+    KubernetesDeleteResourceRequest, KubernetesDiscoverResourcesRequest,
+    KubernetesDiscoverResourcesResponse, KubernetesExecPodRequest, KubernetesExecPodResponse,
+    KubernetesGetPodContainersRequest, KubernetesGetPodContainersResponse,
+    KubernetesGetResourceDetailRequest, KubernetesGetResourceDetailResponse,
+    KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
+    KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
+    KubernetesListResourcesRequest, KubernetesListResourcesResponse,
+    KubernetesResizePodTerminalRequest, KubernetesScaleDeploymentRequest,
+    KubernetesStartPodPortForwardRequest, KubernetesStartPodPortForwardResponse,
+    KubernetesStartPodTerminalRequest, KubernetesStartPodTerminalResponse,
+    KubernetesStartResourceWatchRequest, KubernetesStopPodLogsRequest,
+    KubernetesStopPodPortForwardRequest, KubernetesStopPodTerminalRequest,
+    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
+    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
+    KubernetesTerminalInputResponse, KubernetesVersionRequest, KubernetesVersionResponse,
+    LocalTerminalInputRequest, LocalTerminalInputResponse, LocalTerminalResizeRequest,
+    LocalTerminalStartRequest, LocalTerminalStartResponse, LocalTerminalStopRequest, NamespaceItem,
+    ResourceItem, ResourceKindItem, SettingsLoadRequest, SettingsLoadResponse, SettingsSaveRequest,
+    SystemInfoResponse,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
@@ -87,6 +89,112 @@ fn path_error(error: tauri::Error) -> IpcError {
         code: "path_discovery_failed".into(),
         message: error.to_string(),
     }
+}
+
+const SETTINGS_FILE_VERSION: u16 = 1;
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredSettings {
+    version: u16,
+    settings: AppSettings,
+}
+
+fn settings_path(app: &AppHandle) -> Result<PathBuf, IpcError> {
+    app.path()
+        .resolve("settings.json", BaseDirectory::AppData)
+        .map_err(path_error)
+}
+
+#[tauri::command]
+fn settings_load(
+    request: SettingsLoadRequest,
+    app: AppHandle,
+) -> Result<SettingsLoadResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let path = settings_path(&app)?;
+    let settings = match std::fs::read(&path) {
+        Ok(data) => {
+            let stored: StoredSettings =
+                serde_json::from_slice(&data).map_err(|error| IpcError {
+                    code: "settings_parse_failed".into(),
+                    message: format!("failed to parse {}: {error}", path.display()),
+                })?;
+            if stored.version != SETTINGS_FILE_VERSION {
+                return Err(IpcError {
+                    code: "settings_version_unsupported".into(),
+                    message: format!(
+                        "settings version {} is not supported; expected {}",
+                        stored.version, SETTINGS_FILE_VERSION
+                    ),
+                });
+            }
+            stored.settings
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => AppSettings::default(),
+        Err(error) => {
+            return Err(IpcError {
+                code: "settings_read_failed".into(),
+                message: error.to_string(),
+            });
+        }
+    };
+    Ok(SettingsLoadResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        settings,
+    })
+}
+
+#[tauri::command]
+fn settings_save(request: SettingsSaveRequest, app: AppHandle) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let path = settings_path(&app)?;
+    let parent = path.parent().ok_or_else(|| IpcError {
+        code: "settings_path_invalid".into(),
+        message: "settings path has no parent directory".into(),
+    })?;
+    std::fs::create_dir_all(parent).map_err(|error| IpcError {
+        code: "settings_write_failed".into(),
+        message: error.to_string(),
+    })?;
+    let data = serde_json::to_vec_pretty(&StoredSettings {
+        version: SETTINGS_FILE_VERSION,
+        settings: request.settings,
+    })
+    .map_err(|error| IpcError {
+        code: "settings_serialize_failed".into(),
+        message: error.to_string(),
+    })?;
+    let temporary = path.with_extension("json.tmp");
+    std::fs::write(&temporary, data).map_err(|error| IpcError {
+        code: "settings_write_failed".into(),
+        message: error.to_string(),
+    })?;
+    let backup = path.with_extension("json.bak");
+    let had_existing = path.exists();
+    if backup.exists() {
+        let _ = std::fs::remove_file(&backup);
+    }
+    if had_existing {
+        std::fs::rename(&path, &backup).map_err(|error| IpcError {
+            code: "settings_write_failed".into(),
+            message: error.to_string(),
+        })?;
+    }
+    if let Err(error) = std::fs::rename(&temporary, &path) {
+        if had_existing {
+            let _ = std::fs::rename(&backup, &path);
+        }
+        return Err(IpcError {
+            code: "settings_write_failed".into(),
+            message: error.to_string(),
+        });
+    }
+    if had_existing {
+        let _ = std::fs::remove_file(&backup);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1630,6 +1738,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
+            settings_load,
+            settings_save,
             kubeconfig_list,
             kubernetes_version,
             kubernetes_list_namespaces,

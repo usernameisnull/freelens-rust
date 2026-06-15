@@ -50,6 +50,37 @@ pub struct SystemInfoResponse {
     pub log_dir: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    pub context: Option<String>,
+    pub namespace: Option<String>,
+    pub resource_kind: Option<String>,
+    pub resource_api_version: Option<String>,
+    pub refresh_seconds: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsLoadRequest {
+    pub meta: RequestMeta,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsLoadResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub settings: AppSettings,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettingsSaveRequest {
+    pub meta: RequestMeta,
+    pub settings: AppSettings,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct KubeconfigListRequest {
@@ -635,6 +666,24 @@ mod tests {
     #[test]
     fn health_status_serializes_as_lowercase() {
         assert_eq!(serde_json::to_string(&HealthStatus::Ok).unwrap(), "\"ok\"");
+    }
+
+    #[test]
+    fn settings_serialize_stable_resource_selection() {
+        let request = SettingsSaveRequest {
+            meta: RequestMeta::new("settings-1"),
+            settings: AppSettings {
+                context: Some("dev".into()),
+                namespace: Some("default".into()),
+                resource_kind: Some("Deployment".into()),
+                resource_api_version: Some("apps/v1".into()),
+                refresh_seconds: 15,
+            },
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["settings"]["resourceKind"], "Deployment");
+        assert_eq!(json["settings"]["resourceApiVersion"], "apps/v1");
+        assert_eq!(json["settings"]["refreshSeconds"], 15);
     }
 
     #[test]

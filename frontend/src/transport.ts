@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import {
+  AppSettings,
   HealthCheckRequest,
   HealthCheckResponse,
   IPC_VERSION,
@@ -58,6 +59,9 @@ import {
   LocalTerminalStartResponse,
   LocalTerminalStopRequest,
   ResourceWatchEvent,
+  SettingsLoadRequest,
+  SettingsLoadResponse,
+  SettingsSaveRequest,
   TerminalDoneEvent,
   TerminalEvent,
   SystemInfoResponse,
@@ -66,6 +70,8 @@ import {
 export interface Transport {
   healthCheck(request: HealthCheckRequest): Promise<HealthCheckResponse>;
   systemInfo(): Promise<SystemInfoResponse>;
+  settingsLoad(request: SettingsLoadRequest): Promise<SettingsLoadResponse>;
+  settingsSave(request: SettingsSaveRequest): Promise<void>;
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse>;
   kubectlInfo(request: KubectlInfoRequest): Promise<KubectlInfoResponse>;
   kubectlRun(request: KubectlRunRequest): Promise<KubectlRunResponse>;
@@ -130,6 +136,14 @@ class TauriTransport implements Transport {
 
   systemInfo(): Promise<SystemInfoResponse> {
     return invoke("system_info");
+  }
+
+  settingsLoad(request: SettingsLoadRequest): Promise<SettingsLoadResponse> {
+    return invoke("settings_load", { request });
+  }
+
+  settingsSave(request: SettingsSaveRequest): Promise<void> {
+    return invoke("settings_save", { request });
   }
 
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
@@ -300,6 +314,13 @@ class TauriTransport implements Transport {
 }
 
 class MockTransport implements Transport {
+  private settings: AppSettings = {
+    context: null,
+    namespace: null,
+    resourceKind: null,
+    resourceApiVersion: null,
+    refreshSeconds: 0,
+  };
   private terminalSessionId?: string;
   private terminalCallback?: (event: TerminalEvent) => void;
   private terminalDoneCallback?: (event: TerminalDoneEvent) => void;
@@ -323,6 +344,14 @@ class MockTransport implements Transport {
       appDataDir: "Available in the Tauri desktop shell",
       logDir: "Available in the Tauri desktop shell",
     };
+  }
+
+  async settingsLoad(request: SettingsLoadRequest): Promise<SettingsLoadResponse> {
+    return { version: IPC_VERSION, requestId: request.meta.requestId, settings: this.settings };
+  }
+
+  async settingsSave(request: SettingsSaveRequest): Promise<void> {
+    this.settings = request.settings;
   }
 
   async kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
