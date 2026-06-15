@@ -31,8 +31,10 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager, State, path::BaseDirectory};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 
@@ -831,6 +833,13 @@ impl LocalTerminalManager {
             let _ = session.commands.send(LocalTerminalCommand::Stop);
         }
     }
+
+    fn stop_all(&self) {
+        let sessions = std::mem::take(&mut *self.sessions.lock().unwrap());
+        for session in sessions.into_values() {
+            let _ = session.commands.send(LocalTerminalCommand::Stop);
+        }
+    }
 }
 
 impl KubectlProcessManager {
@@ -849,6 +858,13 @@ impl KubectlProcessManager {
             process.abort();
         }
     }
+
+    fn cancel_all(&self) {
+        let processes = std::mem::take(&mut *self.processes.lock().unwrap());
+        for process in processes.into_values() {
+            process.abort();
+        }
+    }
 }
 
 impl PortForwardManager {
@@ -861,6 +877,13 @@ impl PortForwardManager {
     fn stop(&self, id: &str) {
         if let Some(abort) = self.forwards.lock().unwrap().remove(id) {
             abort.abort();
+        }
+    }
+
+    fn stop_all(&self) {
+        let forwards = std::mem::take(&mut *self.forwards.lock().unwrap());
+        for forward in forwards.into_values() {
+            forward.abort();
         }
     }
 }
@@ -922,6 +945,13 @@ impl TerminalSessionManager {
             session.abort.abort();
         }
     }
+
+    fn stop_all(&self) {
+        let sessions = std::mem::take(&mut *self.sessions.lock().unwrap());
+        for session in sessions.into_values() {
+            session.abort.abort();
+        }
+    }
 }
 
 impl ResourceWatchManager {
@@ -936,6 +966,13 @@ impl ResourceWatchManager {
             handle.abort();
         }
     }
+
+    fn stop_all(&self) {
+        let watches = std::mem::take(&mut *self.watches.lock().unwrap());
+        for watch in watches.into_values() {
+            watch.abort();
+        }
+    }
 }
 
 impl LogStreamManager {
@@ -946,6 +983,13 @@ impl LogStreamManager {
     fn stop(&self, id: &str) {
         if let Some(handle) = self.streams.lock().unwrap().remove(id) {
             handle.abort();
+        }
+    }
+
+    fn stop_all(&self) {
+        let streams = std::mem::take(&mut *self.streams.lock().unwrap());
+        for stream in streams.into_values() {
+            stream.abort();
         }
     }
 }
@@ -1710,6 +1754,16 @@ fn local_terminal_stop(
     Ok(())
 }
 
+fn cleanup_background_tasks(app: &AppHandle) {
+    app.state::<LogStreamManager>().stop_all();
+    app.state::<ResourceWatchManager>().stop_all();
+    app.state::<TerminalSessionManager>().stop_all();
+    app.state::<PortForwardManager>().stop_all();
+    app.state::<KubectlProcessManager>().cancel_all();
+    app.state::<LocalTerminalManager>().stop_all();
+    tracing::info!("background tasks stopped");
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1718,14 +1772,44 @@ fn main() {
         )
         .init();
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             tracing::info!(
                 version = env!("CARGO_PKG_VERSION"),
                 "Freelens prototype starting"
             );
-            app.get_webview_window("main")
+            let window = app
+                .get_webview_window("main")
                 .expect("main window must exist");
+            let revision = Arc::new(AtomicU64::new(0));
+            let app_handle = app.handle().clone();
+            window.on_window_event(move |event| {
+                if !matches!(
+                    event,
+                    tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+                ) {
+                    return;
+                }
+                let current = revision.fetch_add(1, Ordering::Relaxed) + 1;
+                let revision = revision.clone();
+                let app_handle = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    if revision.load(Ordering::Relaxed) == current
+                        && let Err(error) = app_handle.save_window_state(StateFlags::all())
+                    {
+                        tracing::warn!(%error, "failed to persist window state");
+                    }
+                });
+            });
             Ok(())
         })
         .manage(freelens_kube::ClientCache::new())
@@ -1771,14 +1855,47 @@ fn main() {
             kubernetes_stream_pod_logs,
             kubernetes_stop_pod_logs
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Freelens prototype");
+        .build(tauri::generate_context!())
+        .expect("failed to build Freelens prototype");
+
+    app.run(|app, event| {
+        if matches!(event, tauri::RunEvent::ExitRequested { .. }) {
+            cleanup_background_tasks(app);
+        }
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use freelens_ipc::RequestMeta;
+
+    #[test]
+    fn abort_managers_clear_all_registered_tasks() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let forwards = PortForwardManager::default();
+        let task = runtime.spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let abort = task.abort_handle();
+        forwards.insert("forward-1".into(), abort);
+        forwards.stop_all();
+        assert!(runtime.block_on(task).unwrap_err().is_cancelled());
+        assert!(forwards.forwards.lock().unwrap().is_empty());
+
+        let processes = KubectlProcessManager::default();
+        let task = runtime.spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let abort = task.abort_handle();
+        processes.insert("kubectl-1".into(), abort);
+        processes.cancel_all();
+        assert!(runtime.block_on(task).unwrap_err().is_cancelled());
+        assert!(processes.processes.lock().unwrap().is_empty());
+    }
 
     #[test]
     fn display_path_removes_windows_verbatim_prefix() {
