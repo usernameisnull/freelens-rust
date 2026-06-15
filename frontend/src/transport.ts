@@ -49,6 +49,14 @@ import {
   KubernetesVersionResponse,
   LogDoneEvent,
   LogEvent,
+  LocalTerminalDoneEvent,
+  LocalTerminalInputRequest,
+  LocalTerminalInputResponse,
+  LocalTerminalOutputEvent,
+  LocalTerminalResizeRequest,
+  LocalTerminalStartRequest,
+  LocalTerminalStartResponse,
+  LocalTerminalStopRequest,
   ResourceWatchEvent,
   TerminalDoneEvent,
   TerminalEvent,
@@ -107,6 +115,12 @@ export interface Transport {
   kubernetesStopPodLogs(request: KubernetesStopPodLogsRequest): Promise<void>;
   onLogEvent(callback: (event: LogEvent) => void): Promise<UnlistenFn>;
   onLogDone(callback: (event: LogDoneEvent) => void): Promise<UnlistenFn>;
+  localTerminalStart(request: LocalTerminalStartRequest): Promise<LocalTerminalStartResponse>;
+  localTerminalInput(request: LocalTerminalInputRequest): Promise<LocalTerminalInputResponse>;
+  localTerminalResize(request: LocalTerminalResizeRequest): Promise<void>;
+  localTerminalStop(request: LocalTerminalStopRequest): Promise<void>;
+  onLocalTerminalOutput(callback: (event: LocalTerminalOutputEvent) => void): Promise<UnlistenFn>;
+  onLocalTerminalDone(callback: (event: LocalTerminalDoneEvent) => void): Promise<UnlistenFn>;
 }
 
 class TauriTransport implements Transport {
@@ -259,12 +273,39 @@ class TauriTransport implements Transport {
   onLogDone(callback: (event: LogDoneEvent) => void): Promise<UnlistenFn> {
     return listen<LogDoneEvent>("kubernetes:log:done", (event) => callback(event.payload));
   }
+
+  localTerminalStart(request: LocalTerminalStartRequest): Promise<LocalTerminalStartResponse> {
+    return invoke("local_terminal_start", { request });
+  }
+
+  localTerminalInput(request: LocalTerminalInputRequest): Promise<LocalTerminalInputResponse> {
+    return invoke("local_terminal_input", { request });
+  }
+
+  localTerminalResize(request: LocalTerminalResizeRequest): Promise<void> {
+    return invoke("local_terminal_resize", { request });
+  }
+
+  localTerminalStop(request: LocalTerminalStopRequest): Promise<void> {
+    return invoke("local_terminal_stop", { request });
+  }
+
+  onLocalTerminalOutput(callback: (event: LocalTerminalOutputEvent) => void): Promise<UnlistenFn> {
+    return listen<LocalTerminalOutputEvent>("local-terminal:output", (event) => callback(event.payload));
+  }
+
+  onLocalTerminalDone(callback: (event: LocalTerminalDoneEvent) => void): Promise<UnlistenFn> {
+    return listen<LocalTerminalDoneEvent>("local-terminal:done", (event) => callback(event.payload));
+  }
 }
 
 class MockTransport implements Transport {
   private terminalSessionId?: string;
   private terminalCallback?: (event: TerminalEvent) => void;
   private terminalDoneCallback?: (event: TerminalDoneEvent) => void;
+  private localTerminalSessionId?: string;
+  private localTerminalOutputCallback?: (event: LocalTerminalOutputEvent) => void;
+  private localTerminalDoneCallback?: (event: LocalTerminalDoneEvent) => void;
   async healthCheck(request: HealthCheckRequest): Promise<HealthCheckResponse> {
     return {
       version: IPC_VERSION,
@@ -612,6 +653,50 @@ class MockTransport implements Transport {
 
   async onLogDone(): Promise<UnlistenFn> {
     return () => {};
+  }
+
+  async localTerminalStart(request: LocalTerminalStartRequest): Promise<LocalTerminalStartResponse> {
+    this.localTerminalSessionId = request.sessionId;
+    queueMicrotask(() => this.localTerminalOutputCallback?.({
+      sessionId: request.sessionId,
+      data: `PowerShell mock\r\nFREELENS_CONTEXT=${request.context}\r\nPS> `,
+    }));
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      sessionId: request.sessionId,
+      shell: "pwsh.exe",
+    };
+  }
+
+  async localTerminalInput(request: LocalTerminalInputRequest): Promise<LocalTerminalInputResponse> {
+    if (request.sessionId !== this.localTerminalSessionId) throw new Error("local terminal session is not active");
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      sessionId: request.sessionId,
+      output: request.input,
+      active: true,
+    };
+  }
+
+  async localTerminalResize(): Promise<void> {}
+
+  async localTerminalStop(request: LocalTerminalStopRequest): Promise<void> {
+    if (request.sessionId === this.localTerminalSessionId) {
+      this.localTerminalSessionId = undefined;
+      this.localTerminalDoneCallback?.({ sessionId: request.sessionId });
+    }
+  }
+
+  async onLocalTerminalOutput(callback: (event: LocalTerminalOutputEvent) => void): Promise<UnlistenFn> {
+    this.localTerminalOutputCallback = callback;
+    return () => { this.localTerminalOutputCallback = undefined; };
+  }
+
+  async onLocalTerminalDone(callback: (event: LocalTerminalDoneEvent) => void): Promise<UnlistenFn> {
+    this.localTerminalDoneCallback = callback;
+    return () => { this.localTerminalDoneCallback = undefined; };
   }
 }
 

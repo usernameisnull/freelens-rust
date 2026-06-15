@@ -498,6 +498,25 @@ input {
   width: min(1000px, 78vw);
 }
 
+.local-terminal-panel {
+  width: min(1100px, 84vw);
+}
+
+.local-terminal-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 9px 16px;
+  border-bottom: 1px solid #26313a;
+  color: #8b9aaa;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.76rem;
+}
+
+.local-terminal-output {
+  padding: 10px;
+}
+
 .kubectl-controls {
   display: flex;
   flex-direction: column;

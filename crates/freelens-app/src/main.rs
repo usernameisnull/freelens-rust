@@ -21,9 +21,13 @@ use freelens_ipc::{
     KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
     KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
     KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
-    KubernetesVersionResponse, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
+    KubernetesVersionResponse, LocalTerminalInputRequest, LocalTerminalInputResponse,
+    LocalTerminalResizeRequest, LocalTerminalStartRequest, LocalTerminalStartResponse,
+    LocalTerminalStopRequest, NamespaceItem, ResourceItem, ResourceKindItem, SystemInfoResponse,
 };
+use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State, path::BaseDirectory};
@@ -662,6 +666,63 @@ struct PortForwardManager {
 #[derive(Default, Clone)]
 struct KubectlProcessManager {
     processes: std::sync::Arc<Mutex<HashMap<String, tokio::task::AbortHandle>>>,
+}
+
+enum LocalTerminalCommand {
+    Input(Vec<u8>),
+    Resize(PtySize),
+    Stop,
+}
+
+#[derive(Default, Clone)]
+struct LocalTerminalManager {
+    sessions: std::sync::Arc<Mutex<HashMap<String, LocalTerminalSession>>>,
+}
+
+struct LocalTerminalSession {
+    commands: std::sync::mpsc::Sender<LocalTerminalCommand>,
+    output: std::sync::Arc<Mutex<std::sync::mpsc::Receiver<String>>>,
+}
+
+impl LocalTerminalManager {
+    fn insert(&self, id: String, session: LocalTerminalSession) {
+        if let Some(previous) = self.sessions.lock().unwrap().insert(id, session) {
+            let _ = previous.commands.send(LocalTerminalCommand::Stop);
+        }
+    }
+
+    fn send(&self, id: &str, command: LocalTerminalCommand) -> Result<(), IpcError> {
+        let sender = self
+            .sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|session| session.commands.clone());
+        sender
+            .ok_or_else(|| IpcError {
+                code: "local_terminal_not_found".into(),
+                message: "local terminal session is not active".into(),
+            })?
+            .send(command)
+            .map_err(|_| IpcError {
+                code: "local_terminal_closed".into(),
+                message: "local terminal session is closed".into(),
+            })
+    }
+
+    fn output(&self, id: &str) -> Option<std::sync::Arc<Mutex<std::sync::mpsc::Receiver<String>>>> {
+        self.sessions
+            .lock()
+            .unwrap()
+            .get(id)
+            .map(|session| session.output.clone())
+    }
+
+    fn stop(&self, id: &str) {
+        if let Some(session) = self.sessions.lock().unwrap().remove(id) {
+            let _ = session.commands.send(LocalTerminalCommand::Stop);
+        }
+    }
 }
 
 impl KubectlProcessManager {
@@ -1345,6 +1406,202 @@ fn kubectl_cancel(
     Ok(())
 }
 
+fn find_on_path(names: &[&str]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for name in names {
+        for directory in std::env::split_paths(&path) {
+            let candidate = directory.join(name);
+            if candidate.is_file() {
+                return Some(display_path(&candidate.canonicalize().unwrap_or(candidate)));
+            }
+        }
+    }
+    None
+}
+
+#[tauri::command]
+fn local_terminal_start(
+    request: LocalTerminalStartRequest,
+    sessions: State<'_, LocalTerminalManager>,
+    app: AppHandle,
+) -> Result<LocalTerminalStartResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let shell = find_on_path(&["pwsh.exe", "powershell.exe"]).ok_or_else(|| IpcError {
+        code: "local_terminal_shell_not_found".into(),
+        message: "Neither pwsh.exe nor powershell.exe was found on PATH".into(),
+    })?;
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows: request.rows.max(1),
+            cols: request.cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|error| IpcError {
+            code: "local_terminal_start_failed".into(),
+            message: error.to_string(),
+        })?;
+    let mut command = CommandBuilder::new(&shell);
+    command.arg("-NoLogo");
+    command.env("FREELENS_CONTEXT", &request.context);
+    command.env(
+        "FREELENS_NAMESPACE",
+        request.namespace.as_deref().unwrap_or(""),
+    );
+    let mut child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|error| IpcError {
+            code: "local_terminal_start_failed".into(),
+            message: error.to_string(),
+        })?;
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().map_err(|error| IpcError {
+        code: "local_terminal_start_failed".into(),
+        message: error.to_string(),
+    })?;
+    let mut writer = pair.master.take_writer().map_err(|error| IpcError {
+        code: "local_terminal_start_failed".into(),
+        message: error.to_string(),
+    })?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let (output_sender, output_receiver) = std::sync::mpsc::channel();
+    let session_id = request.session_id.clone();
+    sessions.insert(
+        session_id.clone(),
+        LocalTerminalSession {
+            commands: sender.clone(),
+            output: std::sync::Arc::new(Mutex::new(output_receiver)),
+        },
+    );
+
+    let control_session_id = session_id.clone();
+    std::thread::spawn(move || {
+        while let Ok(command) = receiver.recv() {
+            let result = match command {
+                LocalTerminalCommand::Input(data) => {
+                    writer.write_all(&data).and_then(|_| writer.flush())
+                }
+                LocalTerminalCommand::Resize(size) => {
+                    pair.master.resize(size).map_err(std::io::Error::other)
+                }
+                LocalTerminalCommand::Stop => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break;
+                }
+            };
+            if let Err(error) = result {
+                tracing::warn!(%error, session_id = %control_session_id, "local terminal control failed");
+                let _ = child.kill();
+                break;
+            }
+        }
+    });
+
+    let output_session_id = session_id.clone();
+    std::thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(read) => {
+                    let _ =
+                        output_sender.send(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                }
+                Err(error) => {
+                    tracing::debug!(%error, session_id = %output_session_id, "local terminal output ended");
+                    break;
+                }
+            }
+        }
+        let _ = sender.send(LocalTerminalCommand::Stop);
+        let _ = app.emit(
+            "local-terminal:done",
+            serde_json::json!({ "sessionId": output_session_id }),
+        );
+    });
+
+    Ok(LocalTerminalStartResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        session_id,
+        shell: shell.display().to_string(),
+    })
+}
+
+#[tauri::command]
+fn local_terminal_input(
+    request: LocalTerminalInputRequest,
+    sessions: State<'_, LocalTerminalManager>,
+) -> Result<LocalTerminalInputResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let request_id = request.meta.request_id;
+    let session_id = request.session_id;
+    if !request.input.is_empty() {
+        sessions.send(
+            &session_id,
+            LocalTerminalCommand::Input(request.input.into_bytes()),
+        )?;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = sessions.output(&session_id).ok_or_else(|| IpcError {
+        code: "local_terminal_not_found".into(),
+        message: "local terminal session is not active".into(),
+    })?;
+    let receiver = output.lock().unwrap();
+    let mut combined = String::new();
+    let mut active = true;
+    loop {
+        match receiver.try_recv() {
+            Ok(chunk) => combined.push_str(&chunk),
+            Err(std::sync::mpsc::TryRecvError::Empty) => break,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                active = false;
+                break;
+            }
+        }
+    }
+    if !active {
+        sessions.stop(&session_id);
+    }
+    Ok(LocalTerminalInputResponse {
+        version: IPC_VERSION,
+        request_id,
+        session_id,
+        output: combined,
+        active,
+    })
+}
+
+#[tauri::command]
+fn local_terminal_resize(
+    request: LocalTerminalResizeRequest,
+    sessions: State<'_, LocalTerminalManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    sessions.send(
+        &request.session_id,
+        LocalTerminalCommand::Resize(PtySize {
+            rows: request.rows.max(1),
+            cols: request.cols.max(1),
+            pixel_width: 0,
+            pixel_height: 0,
+        }),
+    )
+}
+
+#[tauri::command]
+fn local_terminal_stop(
+    request: LocalTerminalStopRequest,
+    sessions: State<'_, LocalTerminalManager>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    sessions.stop(&request.session_id);
+    Ok(())
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -1369,6 +1626,7 @@ fn main() {
         .manage(TerminalSessionManager::default())
         .manage(PortForwardManager::default())
         .manage(KubectlProcessManager::default())
+        .manage(LocalTerminalManager::default())
         .invoke_handler(tauri::generate_handler![
             health_check,
             system_info,
@@ -1393,6 +1651,10 @@ fn main() {
             kubectl_info,
             kubectl_run,
             kubectl_cancel,
+            local_terminal_start,
+            local_terminal_input,
+            local_terminal_resize,
+            local_terminal_stop,
             kubernetes_start_resource_watch,
             kubernetes_stop_resource_watch,
             kubernetes_get_pod_containers,

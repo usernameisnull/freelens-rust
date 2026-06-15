@@ -402,6 +402,57 @@ export interface TerminalDoneEvent {
   sessionId: string;
 }
 
+export interface LocalTerminalStartRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+  context: string;
+  namespace: string | null;
+  rows: number;
+  cols: number;
+}
+
+export interface LocalTerminalStartResponse {
+  version: number;
+  requestId: string;
+  sessionId: string;
+  shell: string;
+}
+
+export interface LocalTerminalInputRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+  input: string;
+}
+
+export interface LocalTerminalInputResponse {
+  version: number;
+  requestId: string;
+  sessionId: string;
+  output: string;
+  active: boolean;
+}
+
+export interface LocalTerminalResizeRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+  rows: number;
+  cols: number;
+}
+
+export interface LocalTerminalStopRequest {
+  meta: { version: number; requestId: string };
+  sessionId: string;
+}
+
+export interface LocalTerminalOutputEvent {
+  sessionId: string;
+  data: string;
+}
+
+export interface LocalTerminalDoneEvent {
+  sessionId: string;
+}
+
 export interface KubernetesGetPodContainersRequest {
   meta: {
     version: number;

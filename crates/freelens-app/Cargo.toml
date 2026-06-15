@@ -13,6 +13,7 @@ freelens-kube = { path = "../freelens-kube" }
 freelens-kubeconfig = { path = "../freelens-kubeconfig" }
 kube = { version = "0.98", features = ["client", "config", "rustls-tls", "ws"] }
 k8s-openapi = { version = "0.24", features = ["latest"] }
+portable-pty = "0.9"
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2", features = [] }

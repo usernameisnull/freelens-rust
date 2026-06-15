@@ -293,6 +293,15 @@ export function App() {
   const [kubectlResult, setKubectlResult] = useState<KubectlRunResponse>();
   const [kubectlError, setKubectlError] = useState<string>();
   const [kubectlLoading, setKubectlLoading] = useState(false);
+  const [localTerminalOpen, setLocalTerminalOpen] = useState(false);
+  const [localTerminalSessionId, setLocalTerminalSessionId] = useState<string>();
+  const localTerminalSessionIdRef = useRef<string | undefined>(undefined);
+  const [localTerminalShell, setLocalTerminalShell] = useState("");
+  const [localTerminalError, setLocalTerminalError] = useState<string>();
+  const localTerminalHostRef = useRef<HTMLDivElement | null>(null);
+  const localXtermRef = useRef<Terminal | null>(null);
+  const localXtermFitRef = useRef<FitAddon | null>(null);
+  const localTerminalInputQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const updatePortForwards = useCallback((next: Record<string, {
     operationId: string;
@@ -338,6 +347,28 @@ export function App() {
     }).catch((reason: unknown) => setExecError(errorMessage(reason)));
   }, [terminalSize]);
 
+  const localTerminalSize = useCallback(() => {
+    const terminal = localXtermRef.current;
+    if (!terminal) return { cols: 80, rows: 24 };
+    try {
+      localXtermFitRef.current?.fit();
+    } catch {
+    }
+    return { cols: Math.max(1, terminal.cols), rows: Math.max(1, terminal.rows) };
+  }, []);
+
+  const syncLocalTerminalSize = useCallback(() => {
+    const sessionId = localTerminalSessionIdRef.current;
+    if (!sessionId) return;
+    const { rows, cols } = localTerminalSize();
+    void transport.localTerminalResize({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      sessionId,
+      rows,
+      cols,
+    }).catch((reason) => setLocalTerminalError(errorMessage(reason)));
+  }, [localTerminalSize]);
+
   useEffect(() => {
     transport
       .kubeconfigList({
@@ -357,6 +388,8 @@ export function App() {
     let unlistenResourceWatch: (() => void) | undefined;
     let unlistenTerminal: (() => void) | undefined;
     let unlistenTerminalDone: (() => void) | undefined;
+    let unlistenLocalTerminalOutput: (() => void) | undefined;
+    let unlistenLocalTerminalDone: (() => void) | undefined;
 
     transport.onLogEvent((event) => {
       if (event.operationId === logOperationIdRef.current) {
@@ -408,6 +441,20 @@ export function App() {
       unlistenTerminalDone = unlisten;
     });
 
+    transport.onLocalTerminalOutput(() => {}).then((unlisten) => {
+      unlistenLocalTerminalOutput = unlisten;
+    });
+
+    transport.onLocalTerminalDone((event) => {
+      if (event.sessionId === localTerminalSessionIdRef.current) {
+        localTerminalSessionIdRef.current = undefined;
+        setLocalTerminalSessionId(undefined);
+        localXtermRef.current?.writeln("\r\n[PowerShell session ended]");
+      }
+    }).then((unlisten) => {
+      unlistenLocalTerminalDone = unlisten;
+    });
+
     return () => {
       const operationId = logOperationIdRef.current;
       if (operationId) {
@@ -437,11 +484,20 @@ export function App() {
           operationId: kubectlId,
         });
       }
+      const localSessionId = localTerminalSessionIdRef.current;
+      if (localSessionId) {
+        void transport.localTerminalStop({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          sessionId: localSessionId,
+        });
+      }
       unlistenLog?.();
       unlistenDone?.();
       unlistenResourceWatch?.();
       unlistenTerminal?.();
       unlistenTerminalDone?.();
+      unlistenLocalTerminalOutput?.();
+      unlistenLocalTerminalDone?.();
       if (resourceWatchRefreshRef.current) window.clearTimeout(resourceWatchRefreshRef.current);
     };
   }, []);
@@ -521,6 +577,109 @@ export function App() {
       xtermFitRef.current = null;
     };
   }, [execResource, syncTerminalSize, terminalSize]);
+
+  useEffect(() => {
+    const terminalElement = localTerminalHostRef.current;
+    if (!localTerminalOpen || !terminalElement || !selectedContext) return;
+    const terminal = new Terminal({
+      convertEol: false,
+      cursorBlink: true,
+      fontFamily: "JetBrains Mono, ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+      fontSize: 13,
+      scrollback: 5000,
+      theme: {
+        background: "#0f1419",
+        foreground: "#d7e0e8",
+        cursor: "#8ab4f8",
+      },
+    });
+    const fit = new FitAddon();
+    terminal.loadAddon(fit);
+    terminal.open(terminalElement);
+    localXtermRef.current = terminal;
+    localXtermFitRef.current = fit;
+    setLocalTerminalError(undefined);
+    setLocalTerminalShell("");
+    const sessionId = crypto.randomUUID();
+    localTerminalSessionIdRef.current = sessionId;
+    setLocalTerminalSessionId(sessionId);
+    const start = async () => {
+      const { rows, cols } = localTerminalSize();
+      try {
+        const response = await transport.localTerminalStart({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          sessionId,
+          context: selectedContext,
+          namespace: selectedNamespace || null,
+          rows,
+          cols,
+        });
+        setLocalTerminalShell(response.shell);
+        terminal.focus();
+      } catch (reason) {
+        if (localTerminalSessionIdRef.current === sessionId) {
+          localTerminalSessionIdRef.current = undefined;
+          setLocalTerminalSessionId(undefined);
+          setLocalTerminalError(errorMessage(reason));
+          terminal.writeln("\r\n[Failed to start PowerShell]");
+        }
+      }
+    };
+    void start();
+    const dataDisposable = terminal.onData((data) => {
+      if (localTerminalSessionIdRef.current !== sessionId) return;
+      localTerminalInputQueueRef.current = localTerminalInputQueueRef.current
+        .then(async () => {
+          const response = await transport.localTerminalInput({
+            meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+            sessionId,
+            input: data,
+          });
+          if (response.output) terminal.write(response.output);
+          if (!response.active) localTerminalSessionIdRef.current = undefined;
+        })
+        .catch((reason) => setLocalTerminalError(errorMessage(reason)));
+    });
+    const pollTimer = window.setInterval(() => {
+      if (localTerminalSessionIdRef.current !== sessionId) return;
+      localTerminalInputQueueRef.current = localTerminalInputQueueRef.current
+        .then(async () => {
+          const response = await transport.localTerminalInput({
+            meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+            sessionId,
+            input: "",
+          });
+          if (response.output) terminal.write(response.output);
+          if (!response.active) {
+            localTerminalSessionIdRef.current = undefined;
+            setLocalTerminalSessionId(undefined);
+          }
+        })
+        .catch((reason) => {
+          if (localTerminalSessionIdRef.current === sessionId) setLocalTerminalError(errorMessage(reason));
+        });
+    }, 50);
+    const observer = new ResizeObserver(() => syncLocalTerminalSize());
+    observer.observe(terminalElement);
+    window.addEventListener("resize", syncLocalTerminalSize);
+    return () => {
+      dataDisposable.dispose();
+      window.clearInterval(pollTimer);
+      observer.disconnect();
+      window.removeEventListener("resize", syncLocalTerminalSize);
+      if (localTerminalSessionIdRef.current === sessionId) {
+        localTerminalSessionIdRef.current = undefined;
+        void transport.localTerminalStop({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          sessionId,
+        });
+      }
+      setLocalTerminalSessionId(undefined);
+      terminal.dispose();
+      localXtermRef.current = null;
+      localXtermFitRef.current = null;
+    };
+  }, [localTerminalOpen, localTerminalSize, selectedContext, selectedNamespace, syncLocalTerminalSize]);
 
   useEffect(() => {
     if (!selectedContext) return;
@@ -1133,6 +1292,23 @@ export function App() {
     setKubectlOpen(false);
   };
 
+  const stopLocalTerminal = async () => {
+    const sessionId = localTerminalSessionIdRef.current;
+    if (!sessionId) return;
+    localTerminalSessionIdRef.current = undefined;
+    setLocalTerminalSessionId(undefined);
+    await transport.localTerminalStop({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      sessionId,
+    }).catch((reason) => setLocalTerminalError(errorMessage(reason)));
+    localXtermRef.current?.writeln("\r\n[PowerShell session stopped]");
+  };
+
+  const closeLocalTerminal = () => {
+    void stopLocalTerminal();
+    setLocalTerminalOpen(false);
+  };
+
   const visibleResources = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     const filtered = query
@@ -1204,6 +1380,7 @@ export function App() {
               value={selectedContext}
               onChange={(event) => {
                 void cancelKubectl();
+                closeLocalTerminal();
                 for (const forward of Object.values(portForwardsRef.current)) {
                   void transport.kubernetesStopPodPortForward({
                     meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -1311,6 +1488,7 @@ export function App() {
             </button>
             <button onClick={openCreate}>Create Resource</button>
             <button onClick={() => void openKubectl()}>Kubectl</button>
+            <button onClick={() => setLocalTerminalOpen(true)}>Shell</button>
           </div>
         </header>
 
@@ -1464,6 +1642,34 @@ export function App() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {localTerminalOpen && (
+        <div className="detail-panel-overlay" onClick={closeLocalTerminal}>
+          <div className="detail-panel local-terminal-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <h3>PowerShell: {selectedContext}</h3>
+              <div>
+                {localTerminalSessionId && <button onClick={() => void stopLocalTerminal()}>Stop</button>}
+                <button onClick={closeLocalTerminal}>Close</button>
+              </div>
+            </header>
+            <div className="local-terminal-status">
+              <span>{localTerminalShell || "Starting PowerShell..."}</span>
+              <span>FREELENS_CONTEXT={selectedContext}</span>
+              {selectedNamespace && <span>FREELENS_NAMESPACE={selectedNamespace}</span>}
+            </div>
+            {localTerminalError && <p className="error-message">{localTerminalError}</p>}
+            <div
+              ref={localTerminalHostRef}
+              className="exec-output local-terminal-output"
+              role="application"
+              aria-label="Local PowerShell terminal"
+              tabIndex={0}
+              onClick={() => localXtermRef.current?.focus()}
+            />
           </div>
         </div>
       )}

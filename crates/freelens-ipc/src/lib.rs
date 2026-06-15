@@ -428,6 +428,60 @@ pub struct KubernetesStopPodTerminalRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LocalTerminalStartRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+    pub context: String,
+    pub namespace: Option<String>,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalStartResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub session_id: String,
+    pub shell: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalInputRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+    pub input: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalInputResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub session_id: String,
+    pub output: String,
+    pub active: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalResizeRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+    pub rows: u16,
+    pub cols: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalTerminalStopRequest {
+    pub meta: RequestMeta,
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesStartPodPortForwardRequest {
     pub meta: RequestMeta,
     pub operation_id: String,
@@ -703,6 +757,24 @@ mod tests {
         assert_eq!(json["sessionId"], "session-1");
         assert_eq!(json["initialOutput"], "sh-5.1# ");
         assert_eq!(json["active"], true);
+    }
+
+    #[test]
+    fn local_terminal_start_request_serializes_context_and_size() {
+        let request = LocalTerminalStartRequest {
+            meta: RequestMeta::new("r-local-terminal"),
+            session_id: "local-1".into(),
+            context: "dev".into(),
+            namespace: Some("default".into()),
+            rows: 30,
+            cols: 120,
+        };
+        let json = serde_json::to_value(request).unwrap();
+        assert_eq!(json["sessionId"], "local-1");
+        assert_eq!(json["context"], "dev");
+        assert_eq!(json["namespace"], "default");
+        assert_eq!(json["rows"], 30);
+        assert_eq!(json["cols"], 120);
     }
 
     #[test]
