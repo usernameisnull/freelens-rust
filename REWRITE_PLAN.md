@@ -160,7 +160,6 @@ Crate 的边界应按照行为和职责划分，不应机械复制现有 TypeScr
 
 - 迁移协议处理器、深度链接、系统托盘、菜单、通知和更新功能。
 - 迁移设置和安全凭据。
-- 加固命令权限和文件系统访问控制。
 - 使用 Windows Credential Manager 处理适合由系统保护的凭据。
 - 实现 Windows 注册表协议注册、WebView2 运行时检测和 Windows 通知。
 
@@ -271,13 +270,21 @@ Kubernetes watch、日志、指标和终端会持续产生数据。IPC 缓冲机
 
 ## 11. 接下来的工作
 
-1. 初始化 Cargo workspace 和 Tauri 应用。
-2. 盘点当前 IPC 通道，并按照服务领域分类。
-3. 创建前端传输层接口。
-4. 实现健康检查和系统信息的概念验证。
-5. 编写架构决策记录，说明迁移早期继续保留 React 的原因。
+### 高优先级：核心 Kubernetes 体验
+
+- [x] 接入 Metrics API，并展示 Pod 和 Node 的 CPU、内存指标；Metrics Server 不可用时正常降级。
+- [ ] 增加集群概览 Dashboard，汇总工作负载、资源用量和异常状态。
+- [ ] 增加 Kubernetes Events 独立视图和筛选。
+- [ ] 继续完善资源详情页和常用操作，包括扩缩容、重启及触发 Job。
+- [ ] 补充 Pod attach 能力。
+- [ ] 验证 watch 断线重连、退避和 resource version 恢复。
+- [ ] 为大规模资源列表增加虚拟滚动并完成性能验证。
 
 ## 12. 低优先级兼容功能
+
+### IPC 与权限安全加固
+
+在主要 Kubernetes 工作流和平台基础能力稳定后，再集中审查 Tauri IPC 暴露面、命令参数校验、ACL/capabilities 以及文件系统访问范围，并补充非法参数和越权访问测试。
 
 ### Helm 工作流
 

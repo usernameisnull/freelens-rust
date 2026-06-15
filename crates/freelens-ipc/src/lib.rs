@@ -219,6 +219,34 @@ pub struct KubernetesListResourcesResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesListMetricsRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceMetricItem {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub cpu_millicores: Option<u64>,
+    pub memory_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesListMetricsResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub kind: String,
+    pub items: Vec<ResourceMetricItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesStartResourceWatchRequest {
     pub meta: RequestMeta,
     pub operation_id: String,
@@ -879,5 +907,25 @@ mod tests {
         assert_eq!(json["apiVersion"], "example.freelens.dev/v1alpha1");
         assert_eq!(json["kind"], "Widget");
         assert_eq!(json["columns"][0]["jsonPath"], ".status.ready");
+    }
+
+    #[test]
+    fn metrics_response_serializes_usage_units() {
+        let response = KubernetesListMetricsResponse {
+            version: IPC_VERSION,
+            request_id: "r-metrics".into(),
+            context: "dev".into(),
+            kind: "Pod".into(),
+            items: vec![ResourceMetricItem {
+                name: "web-0".into(),
+                namespace: Some("default".into()),
+                cpu_millicores: Some(125),
+                memory_bytes: Some(67_108_864),
+            }],
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["requestId"], "r-metrics");
+        assert_eq!(json["items"][0]["cpuMillicores"], 125);
+        assert_eq!(json["items"][0]["memoryBytes"], 67_108_864);
     }
 }

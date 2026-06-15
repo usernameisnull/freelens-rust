@@ -297,6 +297,10 @@ input {
   color: #ff8a8a;
 }
 
+.metrics-warning {
+  color: #e5b454;
+}
+
 .detail-panel-overlay {
   position: fixed;
   inset: 0;

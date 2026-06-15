@@ -12,20 +12,20 @@ use freelens_ipc::{
     KubernetesGetPodContainersRequest, KubernetesGetPodContainersResponse,
     KubernetesGetResourceDetailRequest, KubernetesGetResourceDetailResponse,
     KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
-    KubernetesListNamespacesRequest, KubernetesListNamespacesResponse,
-    KubernetesListResourcesRequest, KubernetesListResourcesResponse,
-    KubernetesResizePodTerminalRequest, KubernetesScaleDeploymentRequest,
-    KubernetesStartPodPortForwardRequest, KubernetesStartPodPortForwardResponse,
-    KubernetesStartPodTerminalRequest, KubernetesStartPodTerminalResponse,
-    KubernetesStartResourceWatchRequest, KubernetesStopPodLogsRequest,
-    KubernetesStopPodPortForwardRequest, KubernetesStopPodTerminalRequest,
-    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
-    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
-    KubernetesTerminalInputResponse, KubernetesVersionRequest, KubernetesVersionResponse,
-    LocalTerminalInputRequest, LocalTerminalInputResponse, LocalTerminalResizeRequest,
-    LocalTerminalStartRequest, LocalTerminalStartResponse, LocalTerminalStopRequest, NamespaceItem,
-    ResourceItem, ResourceKindItem, SettingsLoadRequest, SettingsLoadResponse, SettingsSaveRequest,
-    SystemInfoResponse,
+    KubernetesListMetricsRequest, KubernetesListMetricsResponse, KubernetesListNamespacesRequest,
+    KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
+    KubernetesListResourcesResponse, KubernetesResizePodTerminalRequest,
+    KubernetesScaleDeploymentRequest, KubernetesStartPodPortForwardRequest,
+    KubernetesStartPodPortForwardResponse, KubernetesStartPodTerminalRequest,
+    KubernetesStartPodTerminalResponse, KubernetesStartResourceWatchRequest,
+    KubernetesStopPodLogsRequest, KubernetesStopPodPortForwardRequest,
+    KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
+    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
+    KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
+    KubernetesVersionResponse, LocalTerminalInputRequest, LocalTerminalInputResponse,
+    LocalTerminalResizeRequest, LocalTerminalStartRequest, LocalTerminalStartResponse,
+    LocalTerminalStopRequest, NamespaceItem, ResourceItem, ResourceKindItem, ResourceMetricItem,
+    SettingsLoadRequest, SettingsLoadResponse, SettingsSaveRequest, SystemInfoResponse,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
@@ -440,6 +440,42 @@ async fn kubernetes_list_resources(
             })
             .collect(),
         continue_token: list.continue_token,
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_list_metrics(
+    request: KubernetesListMetricsRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesListMetricsResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context.clone()))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let items = freelens_kube::list_metrics(client, &request.kind, request.namespace.as_deref())
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    Ok(KubernetesListMetricsResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        context: request.context,
+        kind: request.kind,
+        items: items
+            .into_iter()
+            .map(|item| ResourceMetricItem {
+                name: item.name,
+                namespace: item.namespace,
+                cpu_millicores: item.cpu_millicores,
+                memory_bytes: item.memory_bytes,
+            })
+            .collect(),
     })
 }
 
@@ -1829,6 +1865,7 @@ fn main() {
             kubernetes_list_namespaces,
             kubernetes_discover_resources,
             kubernetes_list_resources,
+            kubernetes_list_metrics,
             kubernetes_get_resource_yaml,
             kubernetes_get_resource_detail,
             kubernetes_apply_resource,

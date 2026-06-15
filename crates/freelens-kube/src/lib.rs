@@ -9,7 +9,7 @@ use kube::api::{
     TerminalSize, WatchEvent, WatchParams,
 };
 use kube::config::KubeConfigOptions;
-use kube::core::{GroupVersion, GroupVersionKind};
+use kube::core::{ApiResource, GroupVersion, GroupVersionKind};
 use kube::discovery::{pinned_group, verbs};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -31,6 +31,8 @@ pub enum KubernetesError {
     UnsupportedResourceKind { kind: String },
     #[error("failed to list resources: {0}")]
     ListResourcesFailed(String),
+    #[error("failed to list resource metrics: {0}")]
+    ListMetricsFailed(String),
     #[error("failed to get resource: {0}")]
     GetResourceFailed(String),
     #[error("failed to stream pod logs: {0}")]
@@ -58,6 +60,7 @@ impl KubernetesError {
                 "kubernetes_unsupported_resource_kind"
             }
             KubernetesError::ListResourcesFailed(..) => "kubernetes_list_resources_failed",
+            KubernetesError::ListMetricsFailed(..) => "kubernetes_list_metrics_failed",
             KubernetesError::GetResourceFailed(..) => "kubernetes_get_resource_failed",
             KubernetesError::StreamLogsFailed(..) => "kubernetes_stream_logs_failed",
             KubernetesError::ApplyResourceFailed(..) => "kubernetes_apply_resource_failed",
@@ -121,6 +124,15 @@ pub struct ResourceList {
     pub kind: String,
     pub items: Vec<ResourceSummary>,
     pub continue_token: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceMetric {
+    pub name: String,
+    pub namespace: Option<String>,
+    pub cpu_millicores: Option<u64>,
+    pub memory_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -302,6 +314,31 @@ fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, St
             columns.insert("ready".into(), format!("{ready}/{total}"));
             columns.insert("restarts".into(), restarts.to_string());
             columns.insert("node".into(), json_string(data, &["spec", "nodeName"]));
+        }
+        "Node" => {
+            let ready = data
+                .pointer("/status/conditions")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|conditions| {
+                    conditions.iter().find(|condition| {
+                        condition.get("type").and_then(serde_json::Value::as_str) == Some("Ready")
+                    })
+                })
+                .and_then(|condition| condition.get("status"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("Unknown");
+            columns.insert(
+                "status".into(),
+                if ready == "True" { "Ready" } else { "NotReady" }.into(),
+            );
+            columns.insert(
+                "version".into(),
+                json_string(data, &["status", "nodeInfo", "kubeletVersion"]),
+            );
+            columns.insert(
+                "os".into(),
+                json_string(data, &["status", "nodeInfo", "osImage"]),
+            );
         }
         "Deployment" | "StatefulSet" => {
             let desired = data
@@ -504,6 +541,7 @@ fn format_jsonpath_value(value: serde_json::Value) -> String {
 fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
     match kind {
         "Pod" => Some(GroupVersionKind::gvk("", "v1", "Pod")),
+        "Node" => Some(GroupVersionKind::gvk("", "v1", "Node")),
         "Deployment" => Some(GroupVersionKind::gvk("apps", "v1", "Deployment")),
         "Service" => Some(GroupVersionKind::gvk("", "v1", "Service")),
         "StatefulSet" => Some(GroupVersionKind::gvk("apps", "v1", "StatefulSet")),
@@ -836,6 +874,116 @@ pub async fn list_resources(
         items,
         continue_token,
     })
+}
+
+fn parse_quantity(value: &str, suffixes: &[(&str, f64)], default_multiplier: f64) -> Option<u64> {
+    for (suffix, multiplier) in suffixes {
+        if let Some(number) = value.strip_suffix(suffix) {
+            let result = (number.parse::<f64>().ok()? * multiplier).max(0.0).round();
+            return result.is_finite().then_some(result as u64);
+        }
+    }
+    value.parse::<f64>().ok().and_then(|number| {
+        let result = (number * default_multiplier).max(0.0).round();
+        result.is_finite().then_some(result as u64)
+    })
+}
+
+fn cpu_millicores(value: &str) -> Option<u64> {
+    parse_quantity(value, &[("n", 0.000_001), ("u", 0.001), ("m", 1.0)], 1000.0)
+}
+
+fn memory_bytes(value: &str) -> Option<u64> {
+    parse_quantity(
+        value,
+        &[
+            ("Ei", 1_152_921_504_606_846_976.0),
+            ("Pi", 1_125_899_906_842_624.0),
+            ("Ti", 1_099_511_627_776.0),
+            ("Gi", 1_073_741_824.0),
+            ("Mi", 1_048_576.0),
+            ("Ki", 1024.0),
+            ("E", 1e18),
+            ("P", 1e15),
+            ("T", 1e12),
+            ("G", 1e9),
+            ("M", 1e6),
+            ("K", 1e3),
+        ],
+        1.0,
+    )
+}
+
+/// List Pod or Node usage from metrics.k8s.io/v1beta1.
+pub async fn list_metrics(
+    client: kube::Client,
+    kind: &str,
+    namespace: Option<&str>,
+) -> Result<Vec<ResourceMetric>, KubernetesError> {
+    let (metrics_kind, plural, namespaced) = match kind {
+        "Pod" => ("PodMetrics", "pods", true),
+        "Node" => ("NodeMetrics", "nodes", false),
+        _ => return Err(KubernetesError::UnsupportedResourceKind { kind: kind.into() }),
+    };
+    let gvk = GroupVersionKind::gvk("metrics.k8s.io", "v1beta1", metrics_kind);
+    let ar = ApiResource::from_gvk_with_plural(&gvk, plural);
+    let api: Api<DynamicObject> = if namespaced {
+        namespace.map_or_else(
+            || Api::all_with(client.clone(), &ar),
+            |ns| Api::namespaced_with(client.clone(), ns, &ar),
+        )
+    } else {
+        Api::all_with(client, &ar)
+    };
+    let list = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|error| KubernetesError::ListMetricsFailed(error.to_string()))?;
+
+    Ok(list
+        .into_iter()
+        .map(|object| {
+            let usages = if namespaced {
+                object
+                    .data
+                    .get("containers")
+                    .and_then(serde_json::Value::as_array)
+                    .map(|containers| {
+                        containers
+                            .iter()
+                            .filter_map(|container| container.get("usage"))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            } else {
+                object.data.get("usage").into_iter().collect()
+            };
+            let cpu_values = usages
+                .iter()
+                .filter_map(|usage| {
+                    usage
+                        .get("cpu")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(cpu_millicores)
+                })
+                .collect::<Vec<_>>();
+            let memory_values = usages
+                .iter()
+                .filter_map(|usage| {
+                    usage
+                        .get("memory")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(memory_bytes)
+                })
+                .collect::<Vec<_>>();
+            ResourceMetric {
+                name: object.name_any(),
+                namespace: object.namespace(),
+                cpu_millicores: (!cpu_values.is_empty()).then(|| cpu_values.into_iter().sum()),
+                memory_bytes: (!memory_values.is_empty()).then(|| memory_values.into_iter().sum()),
+            }
+        })
+        .collect())
 }
 
 /// Get a resource as YAML.
@@ -1833,6 +1981,10 @@ mod tests {
             "kubernetes_list_resources_failed"
         );
         assert_eq!(
+            KubernetesError::ListMetricsFailed("x".into()).code(),
+            "kubernetes_list_metrics_failed"
+        );
+        assert_eq!(
             KubernetesError::GetResourceFailed("x".into()).code(),
             "kubernetes_get_resource_failed"
         );
@@ -1856,6 +2008,16 @@ mod tests {
             KubernetesError::ExecPodFailed("x".into()).code(),
             "kubernetes_exec_pod_failed"
         );
+    }
+
+    #[test]
+    fn metric_quantities_are_converted_to_display_units() {
+        assert_eq!(cpu_millicores("250m"), Some(250));
+        assert_eq!(cpu_millicores("125000000n"), Some(125));
+        assert_eq!(cpu_millicores("0.5"), Some(500));
+        assert_eq!(memory_bytes("64Mi"), Some(67_108_864));
+        assert_eq!(memory_bytes("1Gi"), Some(1_073_741_824));
+        assert_eq!(memory_bytes("4096"), Some(4096));
     }
 
     #[test]

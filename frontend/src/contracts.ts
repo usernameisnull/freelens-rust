@@ -166,6 +166,28 @@ export interface KubernetesListResourcesResponse {
   continueToken: string | null;
 }
 
+export interface KubernetesListMetricsRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  kind: "Pod" | "Node";
+  namespace: string | null;
+}
+
+export interface ResourceMetricItem {
+  name: string;
+  namespace: string | null;
+  cpuMillicores: number | null;
+  memoryBytes: number | null;
+}
+
+export interface KubernetesListMetricsResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  kind: string;
+  items: ResourceMetricItem[];
+}
+
 export interface KubernetesStartResourceWatchRequest {
   meta: { version: number; requestId: string };
   operationId: string;

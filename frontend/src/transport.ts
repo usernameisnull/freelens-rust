@@ -29,6 +29,8 @@ import {
   KubernetesGetPodContainersResponse,
   KubernetesListNamespacesRequest,
   KubernetesListNamespacesResponse,
+  KubernetesListMetricsRequest,
+  KubernetesListMetricsResponse,
   KubernetesListResourcesRequest,
   KubernetesListResourcesResponse,
   KubernetesScaleDeploymentRequest,
@@ -86,6 +88,7 @@ export interface Transport {
   kubernetesListResources(
     request: KubernetesListResourcesRequest
   ): Promise<KubernetesListResourcesResponse>;
+  kubernetesListMetrics(request: KubernetesListMetricsRequest): Promise<KubernetesListMetricsResponse>;
   kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void>;
   kubernetesStopResourceWatch(request: KubernetesStopResourceWatchRequest): Promise<void>;
   onResourceWatchEvent(callback: (event: ResourceWatchEvent) => void): Promise<UnlistenFn>;
@@ -182,6 +185,10 @@ class TauriTransport implements Transport {
     request: KubernetesListResourcesRequest
   ): Promise<KubernetesListResourcesResponse> {
     return invoke("kubernetes_list_resources", { request });
+  }
+
+  kubernetesListMetrics(request: KubernetesListMetricsRequest): Promise<KubernetesListMetricsResponse> {
+    return invoke("kubernetes_list_metrics", { request });
   }
 
   kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void> {
@@ -439,6 +446,7 @@ class MockTransport implements Transport {
           ["", "v1", "ConfigMap", "configmaps", true], ["", "v1", "Secret", "secrets", true],
           ["", "v1", "PersistentVolumeClaim", "persistentvolumeclaims", true],
           ["", "v1", "PersistentVolume", "persistentvolumes", false],
+          ["", "v1", "Node", "nodes", false],
         ].map(([group, version, kind, plural, namespaced]) => ({
           group: String(group), version: String(version), kind: String(kind), plural: String(plural),
           scope: namespaced ? "Namespaced" : "Cluster", namespaced: Boolean(namespaced), columns: [],
@@ -482,6 +490,7 @@ class MockTransport implements Transport {
           Secret: { type: "Opaque", data: "2" },
           PersistentVolumeClaim: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
           PersistentVolume: { status: "Bound", capacity: "10Gi", storageClass: "standard" },
+          Node: { status: "Ready", version: "v1.mock.0", os: "Mock Linux" },
           Widget: { Ready: "True", Replicas: "2" },
         };
         const apiVersions: Record<string, string> = {
@@ -492,13 +501,35 @@ class MockTransport implements Transport {
           kind: request.kind,
           apiVersion: request.apiVersion || apiVersions[request.kind] || "v1",
           name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
-          namespace: request.kind === "PersistentVolume" ? null : request.namespace ?? item.namespace,
+          namespace: request.kind === "PersistentVolume" || request.kind === "Node"
+            ? null
+            : request.namespace ?? item.namespace,
           uid: `uid-${index}`,
           created: new Date().toISOString(),
           columns: columnsByKind[request.kind] ?? {},
         };
       }),
       continueToken: null,
+    };
+  }
+
+  async kubernetesListMetrics(
+    request: KubernetesListMetricsRequest
+  ): Promise<KubernetesListMetricsResponse> {
+    const names = request.kind === "Node"
+      ? ["node-nginx-1-1", "node-nginx-2-2", "node-redis-3"]
+      : ["pod-nginx-1-1", "pod-nginx-2-2", "pod-redis-3"];
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      context: request.context,
+      kind: request.kind,
+      items: names.map((name, index) => ({
+        name,
+        namespace: request.kind === "Pod" ? request.namespace ?? "default" : null,
+        cpuMillicores: 25 + index * 10,
+        memoryBytes: (64 + index * 16) * 1024 * 1024,
+      })),
     };
   }
 

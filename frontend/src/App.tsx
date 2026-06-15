@@ -9,9 +9,11 @@ import {
   KubectlRunResponse,
   KubernetesGetResourceDetailResponse,
   KubernetesListNamespacesResponse,
+  KubernetesListMetricsResponse,
   KubernetesListResourcesResponse,
   NamespaceItem,
   ResourceItem,
+  ResourceMetricItem,
   ResourceKindItem,
 } from "./contracts";
 import { createTransport } from "./transport";
@@ -85,6 +87,10 @@ const RESOURCE_GROUPS = [
     label: "Storage",
     kinds: ["PersistentVolumeClaim", "PersistentVolume"],
   },
+  {
+    label: "Cluster",
+    kinds: ["Node"],
+  },
 ];
 
 const RESOURCE_API_VERSIONS: Record<string, string> = {
@@ -100,6 +106,7 @@ const RESOURCE_API_VERSIONS: Record<string, string> = {
   Secret: "v1",
   PersistentVolumeClaim: "v1",
   PersistentVolume: "v1",
+  Node: "v1",
 };
 
 const FALLBACK_RESOURCE_KINDS: ResourceKindItem[] = RESOURCE_GROUPS.flatMap((group) =>
@@ -111,8 +118,8 @@ const FALLBACK_RESOURCE_KINDS: ResourceKindItem[] = RESOURCE_GROUPS.flatMap((gro
       version,
       kind,
       plural: resourceKindLabel(kind).toLowerCase(),
-      scope: kind === "PersistentVolume" ? "Cluster" : "Namespaced",
-      namespaced: kind !== "PersistentVolume",
+      scope: kind === "PersistentVolume" || kind === "Node" ? "Cluster" : "Namespaced",
+      namespaced: kind !== "PersistentVolume" && kind !== "Node",
       columns: [],
     };
   })
@@ -176,6 +183,11 @@ const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = 
     { key: "capacity", label: "Capacity" },
     { key: "storageClass", label: "Storage Class" },
   ],
+  Node: [
+    { key: "status", label: "Status" },
+    { key: "version", label: "Version" },
+    { key: "os", label: "OS" },
+  ],
 };
 
 function resourceKindLabel(kind: string): string {
@@ -204,6 +216,22 @@ function formatAge(created: string | null): string {
   if (hours < 24) return `${hours}h`;
   const days = Math.floor(hours / 24);
   return days < 365 ? `${days}d` : `${Math.floor(days / 365)}y`;
+}
+
+function formatCpu(value: number | null | undefined): string {
+  return value == null ? "-" : `${value}m`;
+}
+
+function formatMemory(value: number | null | undefined): string {
+  if (value == null) return "-";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) {
+    amount /= 1024;
+    unit += 1;
+  }
+  return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
 }
 
 export function App() {
@@ -241,6 +269,9 @@ export function App() {
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [resourcesError, setResourcesError] = useState<string>();
+  const [metrics, setMetrics] = useState<Record<string, ResourceMetricItem>>({});
+  const [metricsError, setMetricsError] = useState<string>();
+  const metricsRequestRef = useRef(0);
   const [continueToken, setContinueToken] = useState<string | null>(null);
   const resourceRequestRef = useRef(0);
   const [resourceSearch, setResourceSearch] = useState("");
@@ -851,7 +882,29 @@ export function App() {
     namespaceOverride: string = selectedNamespace,
   ) => {
     if (!selectedContext || !resource.kind) return;
-    if (!token) searchPaginationRef.current = { key: "", tokens: new Set() };
+    if (!token) {
+      searchPaginationRef.current = { key: "", tokens: new Set() };
+      const metricsKind = resource.kind === "Pod" || resource.kind === "Node" ? resource.kind : undefined;
+      const metricsRequest = ++metricsRequestRef.current;
+      setMetrics({});
+      setMetricsError(undefined);
+      if (metricsKind) {
+        transport.kubernetesListMetrics({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          context: selectedContext,
+          kind: metricsKind,
+          namespace: metricsKind === "Pod" ? namespaceOverride || null : null,
+        }).then((response: KubernetesListMetricsResponse) => {
+          if (metricsRequest !== metricsRequestRef.current) return;
+          setMetrics(Object.fromEntries(response.items.map((item) => [
+            `${item.namespace ?? ""}/${item.name}`,
+            item,
+          ])));
+        }).catch((reason: unknown) => {
+          if (metricsRequest === metricsRequestRef.current) setMetricsError(errorMessage(reason));
+        });
+      }
+    }
     const requestNumber = ++resourceRequestRef.current;
     const context = selectedContext;
     const kind = resource.kind;
@@ -1604,6 +1657,11 @@ export function App() {
           <section className="resource-list">
             {actionError && <p className="inline-message error-message">{actionError}</p>}
             {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
+            {metricsError && (selectedKind === "Pod" || selectedKind === "Node") && (
+              <p className="inline-message metrics-warning" title={metricsError}>
+                Metrics are unavailable. Resource browsing is unaffected.
+              </p>
+            )}
             <table>
               <thead>
                 <tr>
@@ -1612,6 +1670,8 @@ export function App() {
                   {selectedColumns.map((column) => (
                     <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
                   ))}
+                  {(selectedKind === "Pod" || selectedKind === "Node") && <th>CPU</th>}
+                  {(selectedKind === "Pod" || selectedKind === "Node") && <th>Memory</th>}
                   <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
                   <th>Actions</th>
                 </tr>
@@ -1622,6 +1682,12 @@ export function App() {
                     <td>{item.name}</td>
                     <td>{item.namespace ?? "-"}</td>
                     {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+                    {(selectedKind === "Pod" || selectedKind === "Node") && (
+                      <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
+                    )}
+                    {(selectedKind === "Pod" || selectedKind === "Node") && (
+                      <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
+                    )}
                     <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
                     <td className="actions">
                       <button onClick={() => openDetail(item)}>Details</button>
