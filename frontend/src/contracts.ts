@@ -210,6 +210,32 @@ export interface KubernetesClusterOverviewResponse {
   metricsError: string | null;
 }
 
+export interface KubernetesListEventsRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  namespace: string | null;
+}
+
+export interface KubernetesEventItem {
+  namespace: string | null;
+  eventType: string | null;
+  reason: string | null;
+  message: string | null;
+  count: number | null;
+  timestamp: string | null;
+  objectKind: string | null;
+  objectApiVersion: string | null;
+  objectName: string | null;
+  objectNamespace: string | null;
+}
+
+export interface KubernetesListEventsResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  items: KubernetesEventItem[];
+}
+
 export interface KubernetesStartResourceWatchRequest {
   meta: { version: number; requestId: string };
   operationId: string;

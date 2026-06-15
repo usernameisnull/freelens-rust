@@ -221,6 +221,21 @@ pub struct EventDetail {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ClusterEvent {
+    pub namespace: Option<String>,
+    pub event_type: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub count: Option<i32>,
+    pub timestamp: Option<String>,
+    pub object_kind: Option<String>,
+    pub object_api_version: Option<String>,
+    pub object_name: Option<String>,
+    pub object_namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResourceDetail {
     pub kind: String,
     pub name: String,
@@ -557,6 +572,7 @@ fn format_jsonpath_value(value: serde_json::Value) -> String {
 fn gvk_for_kind(kind: &str) -> Option<GroupVersionKind> {
     match kind {
         "Pod" => Some(GroupVersionKind::gvk("", "v1", "Pod")),
+        "Event" => Some(GroupVersionKind::gvk("", "v1", "Event")),
         "Node" => Some(GroupVersionKind::gvk("", "v1", "Node")),
         "Deployment" => Some(GroupVersionKind::gvk("apps", "v1", "Deployment")),
         "Service" => Some(GroupVersionKind::gvk("", "v1", "Service")),
@@ -1143,6 +1159,61 @@ pub async fn cluster_overview(client: kube::Client) -> Result<ClusterOverview, K
         memory_bytes,
         metrics_error,
     })
+}
+
+/// List Kubernetes events with their associated object identity.
+pub async fn list_events(
+    client: kube::Client,
+    namespace: Option<&str>,
+) -> Result<Vec<ClusterEvent>, KubernetesError> {
+    let api = namespace.map_or_else(
+        || Api::<Event>::all(client.clone()),
+        |namespace| Api::<Event>::namespaced(client.clone(), namespace),
+    );
+    let listed = api
+        .list(&ListParams::default())
+        .await
+        .map_err(|error| KubernetesError::ListResourcesFailed(error.to_string()))?;
+    let mut events = listed
+        .into_iter()
+        .map(|event| {
+            let timestamp = event_timestamp(&event);
+            ClusterEvent {
+                namespace: event.namespace(),
+                event_type: event.type_,
+                reason: event.reason,
+                message: event.message,
+                count: event.count,
+                timestamp,
+                object_kind: event.involved_object.kind,
+                object_api_version: event.involved_object.api_version,
+                object_name: event.involved_object.name,
+                object_namespace: event.involved_object.namespace,
+            }
+        })
+        .collect::<Vec<_>>();
+    events.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+    Ok(events)
+}
+
+fn event_timestamp(event: &Event) -> Option<String> {
+    event
+        .event_time
+        .as_ref()
+        .map(|time| time.0.to_rfc3339())
+        .or_else(|| {
+            event
+                .last_timestamp
+                .as_ref()
+                .map(|time| time.0.to_rfc3339())
+        })
+        .or_else(|| {
+            event
+                .first_timestamp
+                .as_ref()
+                .map(|time| time.0.to_rfc3339())
+        })
+        .or_else(|| event.creation_timestamp().map(|time| time.0.to_rfc3339()))
 }
 
 /// Get a resource as YAML.
@@ -2197,6 +2268,25 @@ mod tests {
         .unwrap();
         assert!(node_is_ready(&ready));
         assert!(!node_is_ready(&not_ready));
+    }
+
+    #[test]
+    fn event_timestamp_falls_back_to_creation_time() {
+        let event: Event = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Event",
+            "metadata": {
+                "name": "web-warning",
+                "namespace": "default",
+                "creationTimestamp": "2026-06-15T12:00:00Z"
+            },
+            "involvedObject": { "apiVersion": "v1", "kind": "Pod", "name": "web-0" }
+        }))
+        .unwrap();
+        assert_eq!(
+            event_timestamp(&event).as_deref(),
+            Some("2026-06-15T12:00:00+00:00")
+        );
     }
 
     #[test]

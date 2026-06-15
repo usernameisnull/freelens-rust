@@ -273,6 +273,38 @@ pub struct KubernetesClusterOverviewResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesListEventsRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesEventItem {
+    pub namespace: Option<String>,
+    pub event_type: Option<String>,
+    pub reason: Option<String>,
+    pub message: Option<String>,
+    pub count: Option<i32>,
+    pub timestamp: Option<String>,
+    pub object_kind: Option<String>,
+    pub object_api_version: Option<String>,
+    pub object_name: Option<String>,
+    pub object_namespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesListEventsResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub items: Vec<KubernetesEventItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesStartResourceWatchRequest {
     pub meta: RequestMeta,
     pub operation_id: String,
@@ -978,5 +1010,30 @@ mod tests {
         assert_eq!(json["abnormalPods"], 1);
         assert_eq!(json["unavailableWorkloads"], 2);
         assert_eq!(json["cpuMillicores"], 840);
+    }
+
+    #[test]
+    fn event_response_serializes_associated_object() {
+        let response = KubernetesListEventsResponse {
+            version: IPC_VERSION,
+            request_id: "r-events".into(),
+            context: "dev".into(),
+            items: vec![KubernetesEventItem {
+                namespace: Some("default".into()),
+                event_type: Some("Warning".into()),
+                reason: Some("BackOff".into()),
+                message: Some("Back-off restarting container".into()),
+                count: Some(3),
+                timestamp: Some("2026-06-15T12:00:00Z".into()),
+                object_kind: Some("Pod".into()),
+                object_api_version: Some("v1".into()),
+                object_name: Some("web-0".into()),
+                object_namespace: Some("default".into()),
+            }],
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["items"][0]["eventType"], "Warning");
+        assert_eq!(json["items"][0]["objectKind"], "Pod");
+        assert_eq!(json["items"][0]["objectName"], "web-0");
     }
 }

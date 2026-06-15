@@ -9,10 +9,11 @@ use freelens_ipc::{
     KubernetesClusterOverviewRequest, KubernetesClusterOverviewResponse,
     KubernetesCreateResourceRequest, KubernetesCreateResourceResponse,
     KubernetesDeleteResourceRequest, KubernetesDiscoverResourcesRequest,
-    KubernetesDiscoverResourcesResponse, KubernetesExecPodRequest, KubernetesExecPodResponse,
-    KubernetesGetPodContainersRequest, KubernetesGetPodContainersResponse,
-    KubernetesGetResourceDetailRequest, KubernetesGetResourceDetailResponse,
-    KubernetesGetResourceYamlRequest, KubernetesGetResourceYamlResponse,
+    KubernetesDiscoverResourcesResponse, KubernetesEventItem, KubernetesExecPodRequest,
+    KubernetesExecPodResponse, KubernetesGetPodContainersRequest,
+    KubernetesGetPodContainersResponse, KubernetesGetResourceDetailRequest,
+    KubernetesGetResourceDetailResponse, KubernetesGetResourceYamlRequest,
+    KubernetesGetResourceYamlResponse, KubernetesListEventsRequest, KubernetesListEventsResponse,
     KubernetesListMetricsRequest, KubernetesListMetricsResponse, KubernetesListNamespacesRequest,
     KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
     KubernetesListResourcesResponse, KubernetesResizePodTerminalRequest,
@@ -514,6 +515,47 @@ async fn kubernetes_cluster_overview(
         cpu_millicores: overview.cpu_millicores,
         memory_bytes: overview.memory_bytes,
         metrics_error: overview.metrics_error,
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_list_events(
+    request: KubernetesListEventsRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesListEventsResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context.clone()))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let items = freelens_kube::list_events(client, request.namespace.as_deref())
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    Ok(KubernetesListEventsResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        context: request.context,
+        items: items
+            .into_iter()
+            .map(|item| KubernetesEventItem {
+                namespace: item.namespace,
+                event_type: item.event_type,
+                reason: item.reason,
+                message: item.message,
+                count: item.count,
+                timestamp: item.timestamp,
+                object_kind: item.object_kind,
+                object_api_version: item.object_api_version,
+                object_name: item.object_name,
+                object_namespace: item.object_namespace,
+            })
+            .collect(),
     })
 }
 
@@ -1905,6 +1947,7 @@ fn main() {
             kubernetes_list_resources,
             kubernetes_list_metrics,
             kubernetes_cluster_overview,
+            kubernetes_list_events,
             kubernetes_get_resource_yaml,
             kubernetes_get_resource_detail,
             kubernetes_apply_resource,

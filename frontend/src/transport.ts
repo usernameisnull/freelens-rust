@@ -23,6 +23,8 @@ import {
   KubernetesDiscoverResourcesResponse,
   KubernetesExecPodRequest,
   KubernetesExecPodResponse,
+  KubernetesListEventsRequest,
+  KubernetesListEventsResponse,
   KubernetesGetResourceDetailRequest,
   KubernetesGetResourceDetailResponse,
   KubernetesGetResourceYamlRequest,
@@ -94,6 +96,7 @@ export interface Transport {
   kubernetesClusterOverview(
     request: KubernetesClusterOverviewRequest
   ): Promise<KubernetesClusterOverviewResponse>;
+  kubernetesListEvents(request: KubernetesListEventsRequest): Promise<KubernetesListEventsResponse>;
   kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void>;
   kubernetesStopResourceWatch(request: KubernetesStopResourceWatchRequest): Promise<void>;
   onResourceWatchEvent(callback: (event: ResourceWatchEvent) => void): Promise<UnlistenFn>;
@@ -200,6 +203,10 @@ class TauriTransport implements Transport {
     request: KubernetesClusterOverviewRequest
   ): Promise<KubernetesClusterOverviewResponse> {
     return invoke("kubernetes_cluster_overview", { request });
+  }
+
+  kubernetesListEvents(request: KubernetesListEventsRequest): Promise<KubernetesListEventsResponse> {
+    return invoke("kubernetes_list_events", { request });
   }
 
   kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void> {
@@ -562,6 +569,30 @@ class MockTransport implements Transport {
       cpuMillicores: 840,
       memoryBytes: 3_221_225_472,
       metricsError: null,
+    };
+  }
+
+  async kubernetesListEvents(
+    request: KubernetesListEventsRequest
+  ): Promise<KubernetesListEventsResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      context: request.context,
+      items: [
+        {
+          namespace: "default", eventType: "Warning", reason: "BackOff",
+          message: "Back-off restarting failed container", count: 4,
+          timestamp: new Date().toISOString(), objectKind: "Pod", objectApiVersion: "v1",
+          objectName: "pod-nginx-1-1", objectNamespace: "default",
+        },
+        {
+          namespace: "kube-system", eventType: "Normal", reason: "Scheduled",
+          message: "Successfully assigned pod to worker-1", count: 1,
+          timestamp: new Date(Date.now() - 60_000).toISOString(), objectKind: "Pod",
+          objectApiVersion: "v1", objectName: "coredns-mock", objectNamespace: "kube-system",
+        },
+      ],
     };
   }
 

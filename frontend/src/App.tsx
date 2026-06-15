@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import {
   IPC_VERSION,
+  KubernetesEventItem,
   KubernetesClusterOverviewResponse,
   KubeconfigContext,
   KubeconfigListResponse,
@@ -73,6 +75,10 @@ function parseCommandArguments(value: string): string[] {
 
 const RESOURCE_GROUPS = [
   {
+    label: "Cluster",
+    kinds: ["Node"],
+  },
+  {
     label: "Workloads",
     kinds: ["Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"],
   },
@@ -88,11 +94,39 @@ const RESOURCE_GROUPS = [
     label: "Storage",
     kinds: ["PersistentVolumeClaim", "PersistentVolume"],
   },
-  {
-    label: "Cluster",
-    kinds: ["Node"],
-  },
 ];
+
+type NavigationIcon = "overview" | "events" | "cluster" | "workloads" | "network" | "config" | "storage" | "more";
+
+const GROUP_ICONS: Record<string, NavigationIcon> = {
+  Cluster: "cluster",
+  Workloads: "workloads",
+  Network: "network",
+  Config: "config",
+  Storage: "storage",
+  "More Resources": "more",
+};
+
+function NavigationIcon({ name }: { name: NavigationIcon }) {
+  const paths: Record<NavigationIcon, ReactNode> = {
+    overview: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
+    events: <><circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/></>,
+    cluster: <><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M10.8 7.2 6.3 15.8M13.2 7.2l4.5 8.6M7.5 18h9"/></>,
+    workloads: <><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z"/><path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5"/></>,
+    network: <><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="m7 11 10-5M7 13l10 5"/></>,
+    config: <><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></>,
+    storage: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></>,
+    more: <><path d="M9 3h6l1 3 3 1v6l-3 1-1 3H9l-1-3-3-1V7l3-1 1-3Z"/><circle cx="12" cy="10" r="2"/><path d="M12 12v5"/></>,
+  };
+  return <svg className="navigation-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function ResourceIcon({ kind }: { kind: string }) {
+  const letters = kind
+    .replace(/[^A-Z]/g, "")
+    .slice(0, 2) || kind.slice(0, 2).toUpperCase();
+  return <span className={`resource-icon resource-icon-${kind.toLowerCase()}`}>{letters}</span>;
+}
 
 const RESOURCE_API_VERSIONS: Record<string, string> = {
   Pod: "v1",
@@ -236,6 +270,12 @@ function formatMemory(value: number | null | undefined): string {
 }
 
 export function App() {
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = Number(window.localStorage.getItem("freelens.sidebarWidth"));
+    return Number.isFinite(saved) && saved >= 180 && saved <= 420 ? saved : 220;
+  });
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const sidebarResizeRef = useRef(false);
   const [settingsReady, setSettingsReady] = useState(false);
   const settingsRestorePendingRef = useRef(0);
   const preferredNamespaceRef = useRef("");
@@ -257,7 +297,7 @@ export function App() {
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
   const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
-  const [activeView, setActiveView] = useState<"overview" | "resources">("overview");
+  const [activeView, setActiveView] = useState<"overview" | "events" | "resources">("overview");
   const [resourceDiscoveryError, setResourceDiscoveryError] = useState<string>();
   const [resourceCatalogSearch, setResourceCatalogSearch] = useState("");
   const [selectedResource, setSelectedResource] = useState<ResourceKindItem>(FALLBACK_RESOURCE_KINDS[0]);
@@ -275,6 +315,11 @@ export function App() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string>();
   const overviewRequestRef = useRef(0);
+  const [events, setEvents] = useState<KubernetesEventItem[]>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  const [eventsError, setEventsError] = useState<string>();
+  const [eventTypeFilter, setEventTypeFilter] = useState("");
+  const eventsRequestRef = useRef(0);
   const [metrics, setMetrics] = useState<Record<string, ResourceMetricItem>>({});
   const [metricsError, setMetricsError] = useState<string>();
   const metricsRequestRef = useRef(0);
@@ -291,6 +336,7 @@ export function App() {
   const [watchStatus, setWatchStatus] = useState<"connecting" | "live" | "retrying" | "off">("off");
   const resourceWatchOperationRef = useRef<string | undefined>(undefined);
   const resourceWatchRefreshRef = useRef<number | undefined>(undefined);
+  const watchRefreshActionRef = useRef<() => void>(() => {});
 
   const [detail, setDetail] = useState<KubernetesGetResourceDetailResponse>();
   const [detailTab, setDetailTab] = useState<"overview" | "yaml">("overview");
@@ -352,6 +398,39 @@ export function App() {
   const localXtermRef = useRef<Terminal | null>(null);
   const localXtermFitRef = useRef<FitAddon | null>(null);
   const localTerminalInputQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  useEffect(() => {
+    const move = (event: PointerEvent) => {
+      if (!sidebarResizeRef.current) return;
+      const width = Math.min(420, Math.max(180, event.clientX));
+      setSidebarWidth(width);
+    };
+    const stop = () => {
+      if (!sidebarResizeRef.current) return;
+      sidebarResizeRef.current = false;
+      document.body.classList.remove("resizing-sidebar");
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("freelens.sidebarWidth", String(sidebarWidth));
+  }, [sidebarWidth]);
+
+  const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    sidebarResizeRef.current = true;
+    document.body.classList.add("resizing-sidebar");
+  };
+
+  const toggleNavigationGroup = (label: string) => {
+    setCollapsedGroups((current) => ({ ...current, [label]: !current[label] }));
+  };
 
   const updatePortForwards = useCallback((next: Record<string, {
     operationId: string;
@@ -498,7 +577,7 @@ export function App() {
       }
       setWatchStatus("live");
       if (resourceWatchRefreshRef.current) window.clearTimeout(resourceWatchRefreshRef.current);
-      resourceWatchRefreshRef.current = window.setTimeout(() => loadResources(), 250);
+      resourceWatchRefreshRef.current = window.setTimeout(() => watchRefreshActionRef.current(), 250);
     }).then((unlisten) => {
       unlistenResourceWatch = unlisten;
     });
@@ -828,11 +907,14 @@ export function App() {
   }, [selectedContext]);
 
   useEffect(() => {
-    if (!selectedResource.namespaced && selectedNamespace) setSelectedNamespace("");
-  }, [selectedResource, selectedNamespace]);
+    if (activeView === "resources" && !selectedResource.namespaced && selectedNamespace) {
+      setSelectedNamespace("");
+    }
+  }, [activeView, selectedResource, selectedNamespace]);
 
   useEffect(() => {
     if (activeView !== "resources" || !selectedContext || !selectedKind) return;
+    watchRefreshActionRef.current = loadResources;
     loadResources();
   }, [activeView, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
@@ -842,8 +924,16 @@ export function App() {
   }, [activeView, selectedContext]);
 
   useEffect(() => {
-    if (activeView !== "resources" || !selectedContext || !selectedKind) return;
+    if (activeView !== "events" || !selectedContext) return;
+    watchRefreshActionRef.current = loadEvents;
+    loadEvents();
+  }, [activeView, selectedContext, selectedNamespace]);
+
+  useEffect(() => {
+    if ((activeView !== "resources" && activeView !== "events") || !selectedContext) return;
     const operationId = crypto.randomUUID();
+    const watchKind = activeView === "events" ? "Event" : selectedKind;
+    const watchApiVersion = activeView === "events" ? "v1" : selectedApiVersion;
     const previous = resourceWatchOperationRef.current;
     resourceWatchOperationRef.current = operationId;
     setWatchStatus("connecting");
@@ -857,8 +947,8 @@ export function App() {
       meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
       operationId,
       context: selectedContext,
-      kind: selectedKind,
-      apiVersion: selectedApiVersion,
+      kind: watchKind,
+      apiVersion: watchApiVersion,
       namespace: selectedNamespace || null,
     }).then(() => {
       if (resourceWatchOperationRef.current === operationId) setWatchStatus("live");
@@ -880,7 +970,7 @@ export function App() {
   useEffect(() => {
     if (!refreshSeconds || !selectedContext) return;
     const interval = window.setInterval(
-      () => activeView === "overview" ? loadOverview() : loadResources(),
+      () => activeView === "overview" ? loadOverview() : activeView === "events" ? loadEvents() : loadResources(),
       refreshSeconds * 1000,
     );
     return () => window.clearInterval(interval);
@@ -971,6 +1061,24 @@ export function App() {
       if (requestNumber === overviewRequestRef.current) setOverviewError(errorMessage(reason));
     }).finally(() => {
       if (requestNumber === overviewRequestRef.current) setOverviewLoading(false);
+    });
+  };
+
+  const loadEvents = () => {
+    if (!selectedContext) return;
+    const requestNumber = ++eventsRequestRef.current;
+    setEventsLoading(true);
+    setEventsError(undefined);
+    transport.kubernetesListEvents({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      context: selectedContext,
+      namespace: selectedNamespace || null,
+    }).then((response) => {
+      if (requestNumber === eventsRequestRef.current) setEvents(response.items);
+    }).catch((reason: unknown) => {
+      if (requestNumber === eventsRequestRef.current) setEventsError(errorMessage(reason));
+    }).finally(() => {
+      if (requestNumber === eventsRequestRef.current) setEventsLoading(false);
     });
   };
 
@@ -1529,6 +1637,34 @@ export function App() {
     });
   }, [resources, resourceSearch, sortKey, sortDirection]);
 
+  const visibleEvents = useMemo(() => {
+    const query = resourceSearch.trim().toLowerCase();
+    return events.filter((event) => {
+      if (eventTypeFilter && event.eventType !== eventTypeFilter) return false;
+      if (!query) return true;
+      return [
+        event.reason ?? "",
+        event.message ?? "",
+        event.namespace ?? "",
+        event.objectKind ?? "",
+        event.objectName ?? "",
+      ].some((value) => value.toLowerCase().includes(query));
+    });
+  }, [events, eventTypeFilter, resourceSearch]);
+
+  const openEventObject = (event: KubernetesEventItem) => {
+    if (!event.objectKind || !event.objectApiVersion || !event.objectName) return;
+    openDetail({
+      kind: event.objectKind,
+      apiVersion: event.objectApiVersion,
+      name: event.objectName,
+      namespace: event.objectNamespace,
+      uid: null,
+      created: null,
+      columns: {},
+    });
+  };
+
   const changeSort = (key: string) => {
     if (sortKey === key) {
       setSortDirection((current) => current === "asc" ? "desc" : "asc");
@@ -1572,7 +1708,7 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className="sidebar" style={{ width: sidebarWidth }}>
         <div className="sidebar-header">
           <h1>Freelens</h1>
           {kubeconfig ? (
@@ -1625,15 +1761,33 @@ export function App() {
                   className={activeView === "overview" ? "active" : ""}
                   onClick={() => setActiveView("overview")}
                 >
-                  Overview
+                  <NavigationIcon name="overview" />
+                  <span>Overview</span>
+                </button>
+              </li>
+              <li>
+                <button
+                  className={activeView === "events" ? "active" : ""}
+                  onClick={() => setActiveView("events")}
+                >
+                  <NavigationIcon name="events" />
+                  <span>Events</span>
                 </button>
               </li>
             </ul>
           </div>
           {navigationGroups.map((group) => (
             <div key={group.label} className="nav-group">
-              <h3>{group.label}</h3>
-              <ul>
+              <button
+                className="nav-group-header"
+                onClick={() => toggleNavigationGroup(group.label)}
+                aria-expanded={!collapsedGroups[group.label] || Boolean(resourceCatalogSearch.trim())}
+              >
+                <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
+                <span>{group.label}</span>
+                <span className="nav-chevron">{collapsedGroups[group.label] && !resourceCatalogSearch.trim() ? ">" : "v"}</span>
+              </button>
+              <ul hidden={collapsedGroups[group.label] && !resourceCatalogSearch.trim()}>
                 {group.resources.map((resource) => (
                   <li key={resourceKey(resource)}>
                     <button
@@ -1647,9 +1801,10 @@ export function App() {
                         setDetail(undefined);
                       }}
                     >
-                      {group.label === "More Resources" && resource.group
+                      <ResourceIcon kind={resource.kind} />
+                      <span>{group.label === "More Resources" && resource.group
                         ? `${resourceKindLabel(resource.kind)} (${resource.group})`
-                        : resourceKindLabel(resource.kind)}
+                        : resourceKindLabel(resource.kind)}</span>
                     </button>
                   </li>
                 ))}
@@ -1661,12 +1816,19 @@ export function App() {
           )}
         </nav>
       </aside>
+      <div
+        className="sidebar-resizer"
+        role="separator"
+        aria-label="Resize sidebar"
+        aria-orientation="vertical"
+        onPointerDown={startSidebarResize}
+      />
 
       <main className="main">
         <header className="topbar">
           <div className="title-with-status">
-            <h2>{activeView === "overview" ? "Cluster Overview" : resourceKindLabel(selectedKind)}</h2>
-            {activeView === "resources" && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
+            <h2>{activeView === "overview" ? "Cluster Overview" : activeView === "events" ? "Events" : resourceKindLabel(selectedKind)}</h2>
+            {activeView !== "overview" && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
           </div>
           <div className="topbar-controls">
             {activeView === "resources" && <>
@@ -1690,6 +1852,25 @@ export function App() {
                 ))}
               </select>
             </>}
+            {activeView === "events" && <>
+              <input
+                type="search"
+                placeholder="Search events"
+                value={resourceSearch}
+                onChange={(event) => setResourceSearch(event.target.value)}
+              />
+              <select value={selectedNamespace} onChange={(event) => setSelectedNamespace(event.target.value)}>
+                <option value="">All namespaces</option>
+                {namespaces.map((namespace) => (
+                  <option key={namespace.name} value={namespace.name}>{namespace.name}</option>
+                ))}
+              </select>
+              <select value={eventTypeFilter} onChange={(event) => setEventTypeFilter(event.target.value)}>
+                <option value="">All event types</option>
+                <option value="Normal">Normal</option>
+                <option value="Warning">Warning</option>
+              </select>
+            </>}
             <select value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}>
               <option value={0}>Auto refresh: Off</option>
               <option value={5}>Every 5s</option>
@@ -1697,8 +1878,8 @@ export function App() {
               <option value={30}>Every 30s</option>
             </select>
             <button
-              onClick={() => activeView === "overview" ? loadOverview() : loadResources()}
-              disabled={activeView === "overview" ? overviewLoading : resourcesLoading}
+              onClick={() => activeView === "overview" ? loadOverview() : activeView === "events" ? loadEvents() : loadResources()}
+              disabled={activeView === "overview" ? overviewLoading : activeView === "events" ? eventsLoading : resourcesLoading}
             >
               Refresh
             </button>
@@ -1751,6 +1932,35 @@ export function App() {
               </>
             )}
           </section>
+        ) : activeView === "events" ? (
+          eventsError ? <p className="error-message">{eventsError}</p> : (
+            <section className="resource-list events-list">
+              <table>
+                <thead><tr><th>Last Seen</th><th>Type</th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
+                <tbody>
+                  {visibleEvents.map((event, index) => (
+                    <tr key={`${event.timestamp ?? ""}-${event.objectKind ?? ""}-${event.objectName ?? ""}-${index}`}>
+                      <td title={event.timestamp ? new Date(event.timestamp).toLocaleString() : undefined}>{formatAge(event.timestamp)}</td>
+                      <td><span className={`event-type ${event.eventType?.toLowerCase() ?? ""}`}>{event.eventType ?? "-"}</span></td>
+                      <td>{event.reason ?? "-"}</td>
+                      <td>
+                        {event.objectKind && event.objectName ? (
+                          <button className="event-object" onClick={() => openEventObject(event)}>
+                            {event.objectKind}/{event.objectName}
+                          </button>
+                        ) : "-"}
+                      </td>
+                      <td>{event.namespace ?? event.objectNamespace ?? "-"}</td>
+                      <td className="event-message">{event.message ?? "-"}</td>
+                      <td>{event.count ?? "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {eventsLoading && events.length === 0 && <p>Loading events…</p>}
+              {!eventsLoading && visibleEvents.length === 0 && <p>No matching events.</p>}
+            </section>
+          )
         ) : resourcesError ? (
           <p className="error-message">{resourcesError}</p>
         ) : (

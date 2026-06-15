@@ -274,7 +274,7 @@ Kubernetes watch、日志、指标和终端会持续产生数据。IPC 缓冲机
 
 - [x] 接入 Metrics API，并展示 Pod 和 Node 的 CPU、内存指标；Metrics Server 不可用时正常降级。
 - [x] 增加集群概览 Dashboard，汇总工作负载、资源用量和异常状态。
-- [ ] 增加 Kubernetes Events 独立视图和筛选。
+- [x] 增加 Kubernetes Events 独立视图和筛选。
 - [ ] 继续完善资源详情页和常用操作，包括扩缩容、重启及触发 Job。
 - [ ] 补充 Pod attach 能力。
 - [ ] 验证 watch 断线重连、退避和 resource version 恢复。
