@@ -324,6 +324,8 @@ export function App() {
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string>();
   const [eventTypeFilter, setEventTypeFilter] = useState("");
+  const [eventSortKey, setEventSortKey] = useState<string>("");
+  const [eventSortDirection, setEventSortDirection] = useState<"asc" | "desc">("asc");
   const eventsRequestRef = useRef(0);
   const [metrics, setMetrics] = useState<Record<string, ResourceMetricItem>>({});
   const [metricsError, setMetricsError] = useState<string>();
@@ -1644,7 +1646,7 @@ export function App() {
 
   const visibleEvents = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
-    return events.filter((event) => {
+    const filtered = events.filter((event) => {
       if (eventTypeFilter && event.eventType !== eventTypeFilter) return false;
       if (!query) return true;
       return [
@@ -1655,7 +1657,46 @@ export function App() {
         event.objectName ?? "",
       ].some((value) => value.toLowerCase().includes(query));
     });
-  }, [events, eventTypeFilter, resourceSearch]);
+
+    if (!eventSortKey) return filtered;
+
+    return [...filtered].sort((left, right) => {
+      const valueFor = (event: KubernetesEventItem) => {
+        switch (eventSortKey) {
+          case "type":
+            return event.eventType ?? "";
+          case "reason":
+            return event.reason ?? "";
+          case "namespace":
+            return event.namespace ?? event.objectNamespace ?? "";
+          case "object":
+            return `${event.objectKind ?? ""}/${event.objectName ?? ""}`;
+          case "count":
+            return String(event.count ?? "");
+          case "lastSeen":
+            return event.timestamp ?? "";
+          default:
+            return "";
+        }
+      };
+      const result = valueFor(left).localeCompare(valueFor(right), undefined, { numeric: true });
+      return eventSortDirection === "asc" ? result : -result;
+    });
+  }, [events, eventTypeFilter, resourceSearch, eventSortKey, eventSortDirection]);
+
+  const changeEventSort = (key: string) => {
+    if (eventSortKey === key) {
+      setEventSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setEventSortKey(key);
+      setEventSortDirection("asc");
+    }
+  };
+
+  const eventSortLabel = (key: string, label: string) => {
+    if (eventSortKey !== key) return `${label} ↕`;
+    return `${label} ${eventSortDirection === "asc" ? "↑" : "↓"}`;
+  };
 
   const openEventObject = (event: KubernetesEventItem) => {
     if (!event.objectKind || !event.objectApiVersion || !event.objectName) return;
@@ -1941,7 +1982,7 @@ export function App() {
           eventsError ? <p className="error-message">{eventsError}</p> : (
             <section className="resource-list events-list">
               <table>
-                <thead><tr><th>Last Seen</th><th>Type</th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
+                <thead><tr><th>Last Seen</th><th><button className="sort-button" onClick={() => changeEventSort("type")}>{eventSortLabel("type", "Type")}</button></th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
                 <tbody>
                   {visibleEvents.map((event, index) => (
                     <tr key={`${event.timestamp ?? ""}-${event.objectKind ?? ""}-${event.objectName ?? ""}-${index}`}>
