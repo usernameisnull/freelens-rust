@@ -247,6 +247,32 @@ pub struct KubernetesListMetricsResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct KubernetesClusterOverviewRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesClusterOverviewResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub context: String,
+    pub namespaces: u64,
+    pub nodes: u64,
+    pub ready_nodes: u64,
+    pub pods: u64,
+    pub running_pods: u64,
+    pub abnormal_pods: u64,
+    pub workloads: u64,
+    pub unavailable_workloads: u64,
+    pub cpu_millicores: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub metrics_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesStartResourceWatchRequest {
     pub meta: RequestMeta,
     pub operation_id: String,
@@ -927,5 +953,30 @@ mod tests {
         assert_eq!(json["requestId"], "r-metrics");
         assert_eq!(json["items"][0]["cpuMillicores"], 125);
         assert_eq!(json["items"][0]["memoryBytes"], 67_108_864);
+    }
+
+    #[test]
+    fn cluster_overview_serializes_health_counts() {
+        let response = KubernetesClusterOverviewResponse {
+            version: IPC_VERSION,
+            request_id: "r-overview".into(),
+            context: "dev".into(),
+            namespaces: 4,
+            nodes: 3,
+            ready_nodes: 2,
+            pods: 18,
+            running_pods: 16,
+            abnormal_pods: 1,
+            workloads: 9,
+            unavailable_workloads: 2,
+            cpu_millicores: Some(840),
+            memory_bytes: Some(3_221_225_472),
+            metrics_error: None,
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["readyNodes"], 2);
+        assert_eq!(json["abnormalPods"], 1);
+        assert_eq!(json["unavailableWorkloads"], 2);
+        assert_eq!(json["cpuMillicores"], 840);
     }
 }

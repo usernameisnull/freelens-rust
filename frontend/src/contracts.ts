@@ -188,6 +188,28 @@ export interface KubernetesListMetricsResponse {
   items: ResourceMetricItem[];
 }
 
+export interface KubernetesClusterOverviewRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+}
+
+export interface KubernetesClusterOverviewResponse {
+  version: number;
+  requestId: string;
+  context: string;
+  namespaces: number;
+  nodes: number;
+  readyNodes: number;
+  pods: number;
+  runningPods: number;
+  abnormalPods: number;
+  workloads: number;
+  unavailableWorkloads: number;
+  cpuMillicores: number | null;
+  memoryBytes: number | null;
+  metricsError: string | null;
+}
+
 export interface KubernetesStartResourceWatchRequest {
   meta: { version: number; requestId: string };
   operationId: string;

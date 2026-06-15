@@ -6,6 +6,7 @@ use freelens_ipc::{
     KubeconfigListRequest, KubeconfigListResponse, KubectlCancelRequest, KubectlInfoRequest,
     KubectlInfoResponse, KubectlInstallation, KubectlRunRequest, KubectlRunResponse,
     KubernetesApplyResourceRequest, KubernetesApplyResourceResponse,
+    KubernetesClusterOverviewRequest, KubernetesClusterOverviewResponse,
     KubernetesCreateResourceRequest, KubernetesCreateResourceResponse,
     KubernetesDeleteResourceRequest, KubernetesDiscoverResourcesRequest,
     KubernetesDiscoverResourcesResponse, KubernetesExecPodRequest, KubernetesExecPodResponse,
@@ -476,6 +477,43 @@ async fn kubernetes_list_metrics(
                 memory_bytes: item.memory_bytes,
             })
             .collect(),
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_cluster_overview(
+    request: KubernetesClusterOverviewRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesClusterOverviewResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context.clone()))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let overview = freelens_kube::cluster_overview(client)
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    Ok(KubernetesClusterOverviewResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        context: request.context,
+        namespaces: overview.namespaces,
+        nodes: overview.nodes,
+        ready_nodes: overview.ready_nodes,
+        pods: overview.pods,
+        running_pods: overview.running_pods,
+        abnormal_pods: overview.abnormal_pods,
+        workloads: overview.workloads,
+        unavailable_workloads: overview.unavailable_workloads,
+        cpu_millicores: overview.cpu_millicores,
+        memory_bytes: overview.memory_bytes,
+        metrics_error: overview.metrics_error,
     })
 }
 
@@ -1866,6 +1904,7 @@ fn main() {
             kubernetes_discover_resources,
             kubernetes_list_resources,
             kubernetes_list_metrics,
+            kubernetes_cluster_overview,
             kubernetes_get_resource_yaml,
             kubernetes_get_resource_detail,
             kubernetes_apply_resource,

@@ -3,6 +3,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import {
   IPC_VERSION,
+  KubernetesClusterOverviewResponse,
   KubeconfigContext,
   KubeconfigListResponse,
   KubectlInstallation,
@@ -256,6 +257,7 @@ export function App() {
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
   const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
+  const [activeView, setActiveView] = useState<"overview" | "resources">("overview");
   const [resourceDiscoveryError, setResourceDiscoveryError] = useState<string>();
   const [resourceCatalogSearch, setResourceCatalogSearch] = useState("");
   const [selectedResource, setSelectedResource] = useState<ResourceKindItem>(FALLBACK_RESOURCE_KINDS[0]);
@@ -269,6 +271,10 @@ export function App() {
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [resourcesError, setResourcesError] = useState<string>();
+  const [overview, setOverview] = useState<KubernetesClusterOverviewResponse>();
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState<string>();
+  const overviewRequestRef = useRef(0);
   const [metrics, setMetrics] = useState<Record<string, ResourceMetricItem>>({});
   const [metricsError, setMetricsError] = useState<string>();
   const metricsRequestRef = useRef(0);
@@ -826,12 +832,17 @@ export function App() {
   }, [selectedResource, selectedNamespace]);
 
   useEffect(() => {
-    if (!selectedContext || !selectedKind) return;
+    if (activeView !== "resources" || !selectedContext || !selectedKind) return;
     loadResources();
-  }, [selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
+  }, [activeView, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
   useEffect(() => {
-    if (!selectedContext || !selectedKind) return;
+    if (activeView !== "overview" || !selectedContext) return;
+    loadOverview();
+  }, [activeView, selectedContext]);
+
+  useEffect(() => {
+    if (activeView !== "resources" || !selectedContext || !selectedKind) return;
     const operationId = crypto.randomUUID();
     const previous = resourceWatchOperationRef.current;
     resourceWatchOperationRef.current = operationId;
@@ -864,13 +875,16 @@ export function App() {
         operationId,
       });
     };
-  }, [selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
+  }, [activeView, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
   useEffect(() => {
-    if (!refreshSeconds || !selectedContext || !selectedKind) return;
-    const interval = window.setInterval(() => loadResources(), refreshSeconds * 1000);
+    if (!refreshSeconds || !selectedContext) return;
+    const interval = window.setInterval(
+      () => activeView === "overview" ? loadOverview() : loadResources(),
+      refreshSeconds * 1000,
+    );
     return () => window.clearInterval(interval);
-  }, [refreshSeconds, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
+  }, [activeView, refreshSeconds, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
   useEffect(() => {
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -941,6 +955,33 @@ export function App() {
           setResourcesLoading(false);
         }
       });
+  };
+
+  const loadOverview = () => {
+    if (!selectedContext) return;
+    const requestNumber = ++overviewRequestRef.current;
+    setOverviewLoading(true);
+    setOverviewError(undefined);
+    transport.kubernetesClusterOverview({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      context: selectedContext,
+    }).then((response) => {
+      if (requestNumber === overviewRequestRef.current) setOverview(response);
+    }).catch((reason: unknown) => {
+      if (requestNumber === overviewRequestRef.current) setOverviewError(errorMessage(reason));
+    }).finally(() => {
+      if (requestNumber === overviewRequestRef.current) setOverviewLoading(false);
+    });
+  };
+
+  const openResourceKind = (kind: string) => {
+    const resource = resourceKinds.find((item) => item.kind === kind)
+      ?? FALLBACK_RESOURCE_KINDS.find((item) => item.kind === kind);
+    if (!resource) return;
+    setSelectedResource(resource);
+    if (!resource.namespaced) setSelectedNamespace("");
+    setActiveView("resources");
+    setDetail(undefined);
   };
 
   useEffect(() => {
@@ -1577,6 +1618,18 @@ export function App() {
         </div>
 
         <nav className="sidebar-nav">
+          <div className="nav-group overview-navigation">
+            <ul>
+              <li>
+                <button
+                  className={activeView === "overview" ? "active" : ""}
+                  onClick={() => setActiveView("overview")}
+                >
+                  Overview
+                </button>
+              </li>
+            </ul>
+          </div>
           {navigationGroups.map((group) => (
             <div key={group.label} className="nav-group">
               <h3>{group.label}</h3>
@@ -1584,10 +1637,11 @@ export function App() {
                 {group.resources.map((resource) => (
                   <li key={resourceKey(resource)}>
                     <button
-                      className={resourceKey(selectedResource) === resourceKey(resource) ? "active" : ""}
+                      className={activeView === "resources" && resourceKey(selectedResource) === resourceKey(resource) ? "active" : ""}
                       title={resourceApiVersion(resource)}
                       onClick={() => {
                         setSelectedResource(resource);
+                        setActiveView("resources");
                         if (!resource.namespaced) setSelectedNamespace("");
                         resourceRequestRef.current += 1;
                         setDetail(undefined);
@@ -1611,47 +1665,93 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div className="title-with-status">
-            <h2>{resourceKindLabel(selectedKind)}</h2>
-            <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>
+            <h2>{activeView === "overview" ? "Cluster Overview" : resourceKindLabel(selectedKind)}</h2>
+            {activeView === "resources" && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
           </div>
           <div className="topbar-controls">
-            <input
-              type="search"
-              placeholder="Search resources"
-              value={resourceSearch}
-              onChange={(event) => setResourceSearch(event.target.value)}
-            />
-            <select
-              value={selectedNamespace}
-              onChange={(event) => {
-                resourceRequestRef.current += 1;
-                setSelectedNamespace(event.target.value);
-              }}
-              disabled={!selectedResource.namespaced}
-            >
-              <option value="">All namespaces</option>
-              {namespaces.map((ns: NamespaceItem) => (
-                <option key={ns.name} value={ns.name}>
-                  {ns.name}
-                </option>
-              ))}
-            </select>
+            {activeView === "resources" && <>
+              <input
+                type="search"
+                placeholder="Search resources"
+                value={resourceSearch}
+                onChange={(event) => setResourceSearch(event.target.value)}
+              />
+              <select
+                value={selectedNamespace}
+                onChange={(event) => {
+                  resourceRequestRef.current += 1;
+                  setSelectedNamespace(event.target.value);
+                }}
+                disabled={!selectedResource.namespaced}
+              >
+                <option value="">All namespaces</option>
+                {namespaces.map((ns: NamespaceItem) => (
+                  <option key={ns.name} value={ns.name}>{ns.name}</option>
+                ))}
+              </select>
+            </>}
             <select value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}>
               <option value={0}>Auto refresh: Off</option>
               <option value={5}>Every 5s</option>
               <option value={15}>Every 15s</option>
               <option value={30}>Every 30s</option>
             </select>
-            <button onClick={() => loadResources()} disabled={resourcesLoading}>
+            <button
+              onClick={() => activeView === "overview" ? loadOverview() : loadResources()}
+              disabled={activeView === "overview" ? overviewLoading : resourcesLoading}
+            >
               Refresh
             </button>
-            <button onClick={openCreate}>Create Resource</button>
+            {activeView === "resources" && <button onClick={openCreate}>Create Resource</button>}
             <button onClick={() => void openKubectl()}>Kubectl</button>
             <button onClick={() => setLocalTerminalOpen(true)}>Shell</button>
           </div>
         </header>
 
-        {resourcesError ? (
+        {activeView === "overview" ? (
+          <section className="dashboard">
+            {overviewError ? <p className="error-message">{overviewError}</p> : overviewLoading && !overview ? (
+              <p>Loading cluster overview…</p>
+            ) : overview && (
+              <>
+                <div className="dashboard-grid">
+                  <button className="dashboard-card" onClick={() => openResourceKind("Node")}>
+                    <span>Nodes</span><strong>{overview.readyNodes}/{overview.nodes}</strong><small>Ready</small>
+                  </button>
+                  <button className="dashboard-card" onClick={() => openResourceKind("Pod")}>
+                    <span>Pods</span><strong>{overview.runningPods}/{overview.pods}</strong><small>Running</small>
+                  </button>
+                  <button className="dashboard-card" onClick={() => openResourceKind("Deployment")}>
+                    <span>Workloads</span><strong>{overview.workloads}</strong><small>Deployments, StatefulSets, DaemonSets</small>
+                  </button>
+                  <div className="dashboard-card">
+                    <span>Namespaces</span><strong>{overview.namespaces}</strong><small>Cluster total</small>
+                  </div>
+                  <div className="dashboard-card">
+                    <span>CPU Usage</span><strong>{formatCpu(overview.cpuMillicores)}</strong><small>Across nodes</small>
+                  </div>
+                  <div className="dashboard-card">
+                    <span>Memory Usage</span><strong>{formatMemory(overview.memoryBytes)}</strong><small>Across nodes</small>
+                  </div>
+                </div>
+                <section className="dashboard-health">
+                  <h3>Cluster Health</h3>
+                  <button onClick={() => openResourceKind("Pod")} className={overview.abnormalPods ? "has-issues" : ""}>
+                    <strong>{overview.abnormalPods}</strong><span>Abnormal Pods</span>
+                  </button>
+                  <button onClick={() => openResourceKind("Deployment")} className={overview.unavailableWorkloads ? "has-issues" : ""}>
+                    <strong>{overview.unavailableWorkloads}</strong><span>Unavailable Workloads</span>
+                  </button>
+                </section>
+                {overview.metricsError && (
+                  <p className="inline-message metrics-warning" title={overview.metricsError}>
+                    Metrics are unavailable. Resource and health summaries are still available.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+        ) : resourcesError ? (
           <p className="error-message">{resourcesError}</p>
         ) : (
           <section className="resource-list">

@@ -1,7 +1,7 @@
 use futures::{AsyncBufReadExt, SinkExt, StreamExt};
 use jsonpath_rust::JsonPath;
-use k8s_openapi::api::apps::v1::Deployment;
-use k8s_openapi::api::core::v1::{Event, Namespace, Pod, Service};
+use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
+use k8s_openapi::api::core::v1::{Event, Namespace, Node, Pod, Service};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::ResourceExt;
 use kube::api::{
@@ -133,6 +133,22 @@ pub struct ResourceMetric {
     pub namespace: Option<String>,
     pub cpu_millicores: Option<u64>,
     pub memory_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClusterOverview {
+    pub namespaces: u64,
+    pub nodes: u64,
+    pub ready_nodes: u64,
+    pub pods: u64,
+    pub running_pods: u64,
+    pub abnormal_pods: u64,
+    pub workloads: u64,
+    pub unavailable_workloads: u64,
+    pub cpu_millicores: Option<u64>,
+    pub memory_bytes: Option<u64>,
+    pub metrics_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -984,6 +1000,149 @@ pub async fn list_metrics(
             }
         })
         .collect())
+}
+
+fn node_is_ready(node: &Node) -> bool {
+    node.status
+        .as_ref()
+        .and_then(|status| status.conditions.as_ref())
+        .into_iter()
+        .flatten()
+        .any(|condition| condition.type_ == "Ready" && condition.status == "True")
+}
+
+/// Build a cluster-wide summary for the dashboard.
+pub async fn cluster_overview(client: kube::Client) -> Result<ClusterOverview, KubernetesError> {
+    let params = ListParams::default();
+    let namespace_api = Api::<Namespace>::all(client.clone());
+    let node_api = Api::<Node>::all(client.clone());
+    let pod_api = Api::<Pod>::all(client.clone());
+    let deployment_api = Api::<Deployment>::all(client.clone());
+    let stateful_set_api = Api::<StatefulSet>::all(client.clone());
+    let daemon_set_api = Api::<DaemonSet>::all(client.clone());
+    let namespaces = namespace_api.list(&params);
+    let nodes = node_api.list(&params);
+    let pods = pod_api.list(&params);
+    let deployments = deployment_api.list(&params);
+    let stateful_sets = stateful_set_api.list(&params);
+    let daemon_sets = daemon_set_api.list(&params);
+    let (namespaces, nodes, pods, deployments, stateful_sets, daemon_sets) = tokio::try_join!(
+        namespaces,
+        nodes,
+        pods,
+        deployments,
+        stateful_sets,
+        daemon_sets,
+    )
+    .map_err(|error| KubernetesError::ListResourcesFailed(error.to_string()))?;
+
+    let running_pods = pods
+        .items
+        .iter()
+        .filter(|pod| {
+            pod.status
+                .as_ref()
+                .and_then(|status| status.phase.as_deref())
+                == Some("Running")
+        })
+        .count() as u64;
+    let abnormal_pods = pods
+        .items
+        .iter()
+        .filter(|pod| {
+            !matches!(
+                pod.status
+                    .as_ref()
+                    .and_then(|status| status.phase.as_deref()),
+                Some("Running" | "Succeeded")
+            )
+        })
+        .count() as u64;
+    let unavailable_deployments = deployments
+        .items
+        .iter()
+        .filter(|item| {
+            let desired = item
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.replicas)
+                .unwrap_or(1);
+            let available = item
+                .status
+                .as_ref()
+                .and_then(|status| status.available_replicas)
+                .unwrap_or(0);
+            available < desired
+        })
+        .count() as u64;
+    let unavailable_stateful_sets = stateful_sets
+        .items
+        .iter()
+        .filter(|item| {
+            let desired = item
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.replicas)
+                .unwrap_or(1);
+            let ready = item
+                .status
+                .as_ref()
+                .and_then(|status| status.ready_replicas)
+                .unwrap_or(0);
+            ready < desired
+        })
+        .count() as u64;
+    let unavailable_daemon_sets = daemon_sets
+        .items
+        .iter()
+        .filter(|item| {
+            item.status
+                .as_ref()
+                .is_none_or(|status| status.number_ready < status.desired_number_scheduled)
+        })
+        .count() as u64;
+
+    let (cpu_millicores, memory_bytes, metrics_error) =
+        match list_metrics(client, "Node", None).await {
+            Ok(metrics) => (
+                Some(
+                    metrics
+                        .iter()
+                        .filter_map(|metric| metric.cpu_millicores)
+                        .sum(),
+                ),
+                Some(
+                    metrics
+                        .iter()
+                        .filter_map(|metric| metric.memory_bytes)
+                        .sum(),
+                ),
+                None,
+            ),
+            Err(error) => (None, None, Some(error.to_string())),
+        };
+    let workload_count =
+        deployments.items.len() + stateful_sets.items.len() + daemon_sets.items.len();
+
+    Ok(ClusterOverview {
+        namespaces: namespaces.items.len() as u64,
+        nodes: nodes.items.len() as u64,
+        ready_nodes: nodes
+            .items
+            .iter()
+            .filter(|node| node_is_ready(node))
+            .count() as u64,
+        pods: pods.items.len() as u64,
+        running_pods,
+        abnormal_pods,
+        workloads: workload_count as u64,
+        unavailable_workloads: unavailable_deployments
+            + unavailable_stateful_sets
+            + unavailable_daemon_sets,
+        cpu_millicores,
+        memory_bytes,
+        metrics_error,
+    })
 }
 
 /// Get a resource as YAML.
@@ -2018,6 +2177,26 @@ mod tests {
         assert_eq!(memory_bytes("64Mi"), Some(67_108_864));
         assert_eq!(memory_bytes("1Gi"), Some(1_073_741_824));
         assert_eq!(memory_bytes("4096"), Some(4096));
+    }
+
+    #[test]
+    fn node_ready_condition_requires_true_status() {
+        let ready: Node = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": { "name": "worker-1" },
+            "status": { "conditions": [{ "type": "Ready", "status": "True" }] }
+        }))
+        .unwrap();
+        let not_ready: Node = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Node",
+            "metadata": { "name": "worker-2" },
+            "status": { "conditions": [{ "type": "Ready", "status": "False" }] }
+        }))
+        .unwrap();
+        assert!(node_is_ready(&ready));
+        assert!(!node_is_ready(&not_ready));
     }
 
     #[test]

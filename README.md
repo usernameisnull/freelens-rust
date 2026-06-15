@@ -34,3 +34,14 @@ cargo test --workspace
 cd frontend
 npm run build
 ```
+
+## Build The Debug Executable
+
+Run both commands from the repository root whenever the frontend or Rust code changes:
+
+```powershell
+npm --prefix frontend run build
+cargo build -p freelens-app
+```
+
+The executable is generated at `target\debug\freelens-app.exe`.

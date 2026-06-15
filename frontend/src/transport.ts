@@ -14,6 +14,8 @@ import {
   KubectlRunResponse,
   KubernetesApplyResourceRequest,
   KubernetesApplyResourceResponse,
+  KubernetesClusterOverviewRequest,
+  KubernetesClusterOverviewResponse,
   KubernetesDeleteResourceRequest,
   KubernetesCreateResourceRequest,
   KubernetesCreateResourceResponse,
@@ -89,6 +91,9 @@ export interface Transport {
     request: KubernetesListResourcesRequest
   ): Promise<KubernetesListResourcesResponse>;
   kubernetesListMetrics(request: KubernetesListMetricsRequest): Promise<KubernetesListMetricsResponse>;
+  kubernetesClusterOverview(
+    request: KubernetesClusterOverviewRequest
+  ): Promise<KubernetesClusterOverviewResponse>;
   kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void>;
   kubernetesStopResourceWatch(request: KubernetesStopResourceWatchRequest): Promise<void>;
   onResourceWatchEvent(callback: (event: ResourceWatchEvent) => void): Promise<UnlistenFn>;
@@ -189,6 +194,12 @@ class TauriTransport implements Transport {
 
   kubernetesListMetrics(request: KubernetesListMetricsRequest): Promise<KubernetesListMetricsResponse> {
     return invoke("kubernetes_list_metrics", { request });
+  }
+
+  kubernetesClusterOverview(
+    request: KubernetesClusterOverviewRequest
+  ): Promise<KubernetesClusterOverviewResponse> {
+    return invoke("kubernetes_cluster_overview", { request });
   }
 
   kubernetesStartResourceWatch(request: KubernetesStartResourceWatchRequest): Promise<void> {
@@ -530,6 +541,27 @@ class MockTransport implements Transport {
         cpuMillicores: 25 + index * 10,
         memoryBytes: (64 + index * 16) * 1024 * 1024,
       })),
+    };
+  }
+
+  async kubernetesClusterOverview(
+    request: KubernetesClusterOverviewRequest
+  ): Promise<KubernetesClusterOverviewResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      context: request.context,
+      namespaces: 4,
+      nodes: 3,
+      readyNodes: 3,
+      pods: 18,
+      runningPods: 16,
+      abnormalPods: 1,
+      workloads: 9,
+      unavailableWorkloads: 1,
+      cpuMillicores: 840,
+      memoryBytes: 3_221_225_472,
+      metricsError: null,
     };
   }
 
