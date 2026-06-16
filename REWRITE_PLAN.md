@@ -275,8 +275,7 @@ Kubernetes watch、日志、指标和终端会持续产生数据。IPC 缓冲机
 - [x] 接入 Metrics API，并展示 Pod 和 Node 的 CPU、内存指标；Metrics Server 不可用时正常降级。
 - [x] 增加集群概览 Dashboard，汇总工作负载、资源用量和异常状态。
 - [x] 增加 Kubernetes Events 独立视图和筛选。
-- [ ] 继续完善资源详情页和常用操作，包括扩缩容、重启及触发 Job。
-- [ ] 补充 Pod attach 能力。
+- [x] 继续完善资源详情页和常用操作，包括扩缩容、重启及触发 Job。
 - [ ] 验证 watch 断线重连、退避和 resource version 恢复。
 - [ ] 为大规模资源列表增加虚拟滚动并完成性能验证。
 
@@ -285,6 +284,10 @@ Kubernetes watch、日志、指标和终端会持续产生数据。IPC 缓冲机
 ### IPC 与权限安全加固
 
 在主要 Kubernetes 工作流和平台基础能力稳定后，再集中审查 Tauri IPC 暴露面、命令参数校验、ACL/capabilities 以及文件系统访问范围，并补充非法参数和越权访问测试。
+
+### Pod attach
+
+Pod attach 与终端、日志相比使用频率较低。后续需要兼容该能力时，再补充容器选择、stdin/stdout/stderr 连接、停止 attach 和关闭时清理。
 
 ### Helm 工作流
 
