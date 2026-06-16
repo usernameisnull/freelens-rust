@@ -353,6 +353,7 @@ export function App() {
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
+  const [resourceActionKey, setResourceActionKey] = useState<string>();
   const detailRequestRef = useRef(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [createYaml, setCreateYaml] = useState("");
@@ -1330,6 +1331,8 @@ export function App() {
   const deleteResource = async (item: ResourceItem) => {
     if (!selectedContext) return;
     if (!window.confirm(`Delete ${item.kind} ${item.namespace ? `${item.namespace}/` : ""}${item.name}?`)) return;
+    const actionKey = `${item.kind}/${item.namespace ?? ""}/${item.name}/delete`;
+    setResourceActionKey(actionKey);
     setActionError(undefined);
     setActionMessage(undefined);
     try {
@@ -1349,32 +1352,88 @@ export function App() {
       loadResources();
     } catch (reason) {
       setActionError(errorMessage(reason));
+    } finally {
+      setResourceActionKey(undefined);
     }
   };
 
-  const scaleDeployment = async (item: ResourceItem) => {
+  const scaleWorkload = async (item: ResourceItem) => {
     if (!selectedContext || !item.namespace) return;
     const current = item.columns.ready?.split("/")[1] ?? "1";
-    const value = window.prompt(`Desired replicas for ${item.name}`, current);
+    const value = window.prompt(`Desired replicas for ${item.kind} ${item.namespace}/${item.name}`, current);
     if (value === null) return;
     const replicas = Number(value);
     if (!Number.isInteger(replicas) || replicas < 0) {
       setActionError("Replicas must be a non-negative integer");
+      setActionMessage(undefined);
       return;
     }
+    const actionKey = `${item.kind}/${item.namespace}/${item.name}/scale`;
+    setResourceActionKey(actionKey);
     setActionError(undefined);
+    setActionMessage(undefined);
     try {
-      await transport.kubernetesScaleDeployment({
+      await transport.kubernetesScaleWorkload({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         context: selectedContext,
+        kind: item.kind as "Deployment" | "StatefulSet",
         namespace: item.namespace,
         name: item.name,
         replicas,
       });
-      setActionMessage(`Deployment scaled to ${replicas}`);
+      setActionMessage(`${item.kind} ${item.name} scaled to ${replicas} replicas`);
       loadResources();
     } catch (reason) {
       setActionError(errorMessage(reason));
+    } finally {
+      setResourceActionKey(undefined);
+    }
+  };
+
+  const restartWorkload = async (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    if (!window.confirm(`Rollout restart ${item.kind} ${item.namespace}/${item.name}?`)) return;
+    const actionKey = `${item.kind}/${item.namespace}/${item.name}/restart`;
+    setResourceActionKey(actionKey);
+    setActionError(undefined);
+    setActionMessage(undefined);
+    try {
+      await transport.kubernetesRestartWorkload({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        kind: item.kind as "Deployment" | "StatefulSet" | "DaemonSet",
+        namespace: item.namespace,
+        name: item.name,
+      });
+      setActionMessage(`${item.kind} ${item.name} rolling restart requested`);
+      loadResources();
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    } finally {
+      setResourceActionKey(undefined);
+    }
+  };
+
+  const triggerCronJob = async (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    if (!window.confirm(`Create a Job from CronJob ${item.namespace}/${item.name}?`)) return;
+    const actionKey = `${item.kind}/${item.namespace}/${item.name}/trigger`;
+    setResourceActionKey(actionKey);
+    setActionError(undefined);
+    setActionMessage(undefined);
+    try {
+      const response = await transport.kubernetesTriggerCronJob({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        context: selectedContext,
+        namespace: item.namespace,
+        name: item.name,
+      });
+      setActionMessage(`Job ${response.jobName} created from CronJob ${item.name}`);
+      loadResources();
+    } catch (reason) {
+      setActionError(errorMessage(reason));
+    } finally {
+      setResourceActionKey(undefined);
     }
   };
 
@@ -2076,9 +2135,23 @@ export function App() {
                           )}
                         </>
                       )}
-                      {item.kind === "Deployment" && item.apiVersion === "apps/v1"
-                        && <button onClick={() => void scaleDeployment(item)}>Scale</button>}
-                      <button className="danger-button" onClick={() => void deleteResource(item)}>Delete</button>
+                      {(item.kind === "Deployment" || item.kind === "StatefulSet")
+                        && item.apiVersion === "apps/v1" && item.namespace
+                        && <button disabled={Boolean(resourceActionKey)} onClick={() => void scaleWorkload(item)}>
+                          {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/scale` ? "Scaling..." : "Scale"}
+                        </button>}
+                      {(item.kind === "Deployment" || item.kind === "StatefulSet" || item.kind === "DaemonSet")
+                        && item.apiVersion === "apps/v1" && item.namespace
+                        && <button disabled={Boolean(resourceActionKey)} onClick={() => void restartWorkload(item)}>
+                          {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/restart` ? "Restarting..." : "Restart"}
+                        </button>}
+                      {item.kind === "CronJob" && item.apiVersion === "batch/v1" && item.namespace
+                        && <button disabled={Boolean(resourceActionKey)} onClick={() => void triggerCronJob(item)}>
+                          {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/trigger` ? "Starting..." : "Run now"}
+                        </button>}
+                      <button className="danger-button" disabled={Boolean(resourceActionKey)} onClick={() => void deleteResource(item)}>
+                        {resourceActionKey === `${item.kind}/${item.namespace ?? ""}/${item.name}/delete` ? "Deleting..." : "Delete"}
+                      </button>
                     </td>
                   </tr>
                 ))}

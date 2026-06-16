@@ -353,12 +353,34 @@ export interface KubernetesDeleteResourceRequest {
   name: string;
 }
 
-export interface KubernetesScaleDeploymentRequest {
+export interface KubernetesScaleWorkloadRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  kind: "Deployment" | "StatefulSet";
+  namespace: string;
+  name: string;
+  replicas: number;
+}
+
+export interface KubernetesRestartWorkloadRequest {
+  meta: { version: number; requestId: string };
+  context: string;
+  kind: "Deployment" | "StatefulSet" | "DaemonSet";
+  namespace: string;
+  name: string;
+}
+
+export interface KubernetesTriggerCronJobRequest {
   meta: { version: number; requestId: string };
   context: string;
   namespace: string;
   name: string;
-  replicas: number;
+}
+
+export interface KubernetesTriggerCronJobResponse {
+  version: number;
+  requestId: string;
+  jobName: string;
 }
 
 export interface KubernetesExecPodRequest {

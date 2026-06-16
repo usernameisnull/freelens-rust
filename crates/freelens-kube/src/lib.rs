@@ -1,6 +1,7 @@
 use futures::{AsyncBufReadExt, SinkExt, StreamExt};
 use jsonpath_rust::JsonPath;
 use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
+use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Namespace, Node, Pod, Service};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
 use kube::ResourceExt;
@@ -41,8 +42,12 @@ pub enum KubernetesError {
     ApplyResourceFailed(String),
     #[error("failed to delete resource: {0}")]
     DeleteResourceFailed(String),
-    #[error("failed to scale deployment: {0}")]
-    ScaleDeploymentFailed(String),
+    #[error("failed to scale workload: {0}")]
+    ScaleWorkloadFailed(String),
+    #[error("failed to restart workload: {0}")]
+    RestartWorkloadFailed(String),
+    #[error("failed to trigger cronjob: {0}")]
+    TriggerCronJobFailed(String),
     #[error("failed to execute pod command: {0}")]
     ExecPodFailed(String),
     #[error("failed to forward pod port: {0}")]
@@ -65,7 +70,9 @@ impl KubernetesError {
             KubernetesError::StreamLogsFailed(..) => "kubernetes_stream_logs_failed",
             KubernetesError::ApplyResourceFailed(..) => "kubernetes_apply_resource_failed",
             KubernetesError::DeleteResourceFailed(..) => "kubernetes_delete_resource_failed",
-            KubernetesError::ScaleDeploymentFailed(..) => "kubernetes_scale_deployment_failed",
+            KubernetesError::ScaleWorkloadFailed(..) => "kubernetes_scale_workload_failed",
+            KubernetesError::RestartWorkloadFailed(..) => "kubernetes_restart_workload_failed",
+            KubernetesError::TriggerCronJobFailed(..) => "kubernetes_trigger_cronjob_failed",
             KubernetesError::ExecPodFailed(..) => "kubernetes_exec_pod_failed",
             KubernetesError::PortForwardFailed(..) => "kubernetes_port_forward_failed",
         }
@@ -1819,27 +1826,125 @@ pub async fn delete_resource(
     Ok(())
 }
 
-/// Update the desired replica count of a Deployment.
-pub async fn scale_deployment(
+/// Update the desired replica count of a Deployment or StatefulSet.
+pub async fn scale_workload(
     client: kube::Client,
+    kind: &str,
     namespace: &str,
     name: &str,
     replicas: i32,
 ) -> Result<(), KubernetesError> {
     if replicas < 0 {
-        return Err(KubernetesError::ScaleDeploymentFailed(
+        return Err(KubernetesError::ScaleWorkloadFailed(
             "replicas cannot be negative".into(),
         ));
     }
-    let api: Api<Deployment> = Api::namespaced(client, namespace);
-    api.patch(
-        name,
-        &PatchParams::default(),
-        &Patch::Merge(serde_json::json!({ "spec": { "replicas": replicas } })),
-    )
-    .await
-    .map_err(|error| KubernetesError::ScaleDeploymentFailed(error.to_string()))?;
+    let patch = Patch::Merge(serde_json::json!({ "spec": { "replicas": replicas } }));
+    match kind {
+        "Deployment" => {
+            let api: Api<Deployment> = Api::namespaced(client, namespace);
+            api.patch(name, &PatchParams::default(), &patch)
+                .await
+                .map(|_| ())
+        }
+        "StatefulSet" => {
+            let api: Api<StatefulSet> = Api::namespaced(client, namespace);
+            api.patch(name, &PatchParams::default(), &patch)
+                .await
+                .map(|_| ())
+        }
+        _ => {
+            return Err(KubernetesError::ScaleWorkloadFailed(format!(
+                "{kind} does not support scaling"
+            )));
+        }
+    }
+    .map_err(|error| KubernetesError::ScaleWorkloadFailed(error.to_string()))?;
     Ok(())
+}
+
+/// Trigger a rolling restart by changing the Pod template annotation.
+pub async fn restart_workload(
+    client: kube::Client,
+    kind: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<(), KubernetesError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| KubernetesError::RestartWorkloadFailed(error.to_string()))?;
+    let restarted_at = format!("{}.{:09}", now.as_secs(), now.subsec_nanos());
+    let patch = Patch::Merge(serde_json::json!({
+        "spec": { "template": { "metadata": { "annotations": {
+            "freelens.dev/restartedAt": restarted_at
+        } } } }
+    }));
+    match kind {
+        "Deployment" => {
+            let api: Api<Deployment> = Api::namespaced(client, namespace);
+            api.patch(name, &PatchParams::default(), &patch)
+                .await
+                .map(|_| ())
+        }
+        "StatefulSet" => {
+            let api: Api<StatefulSet> = Api::namespaced(client, namespace);
+            api.patch(name, &PatchParams::default(), &patch)
+                .await
+                .map(|_| ())
+        }
+        "DaemonSet" => {
+            let api: Api<DaemonSet> = Api::namespaced(client, namespace);
+            api.patch(name, &PatchParams::default(), &patch)
+                .await
+                .map(|_| ())
+        }
+        _ => {
+            return Err(KubernetesError::RestartWorkloadFailed(format!(
+                "{kind} does not support rolling restart"
+            )));
+        }
+    }
+    .map_err(|error| KubernetesError::RestartWorkloadFailed(error.to_string()))?;
+    Ok(())
+}
+
+/// Create a one-off Job from a CronJob's job template.
+pub async fn trigger_cronjob(
+    client: kube::Client,
+    namespace: &str,
+    name: &str,
+) -> Result<String, KubernetesError> {
+    let cronjobs: Api<CronJob> = Api::namespaced(client.clone(), namespace);
+    let cronjob = cronjobs
+        .get(name)
+        .await
+        .map_err(|error| KubernetesError::TriggerCronJobFailed(error.to_string()))?;
+    let job_template = cronjob
+        .spec
+        .map(|spec| spec.job_template)
+        .ok_or_else(|| KubernetesError::TriggerCronJobFailed("job template is missing".into()))?;
+    let spec = job_template.spec.ok_or_else(|| {
+        KubernetesError::TriggerCronJobFailed("job template spec is missing".into())
+    })?;
+    let template_metadata = job_template.metadata.unwrap_or_default();
+    let prefix_len = name.len().min(57);
+    let job = Job {
+        metadata: kube::core::ObjectMeta {
+            generate_name: Some(format!("{}-", &name[..prefix_len])),
+            namespace: Some(namespace.into()),
+            labels: template_metadata.labels,
+            annotations: template_metadata.annotations,
+            ..Default::default()
+        },
+        spec: Some(spec),
+        status: None,
+    };
+    let jobs: Api<Job> = Api::namespaced(client, namespace);
+    let created = jobs
+        .create(&Default::default(), &job)
+        .await
+        .map_err(|error| KubernetesError::TriggerCronJobFailed(error.to_string()))?;
+    Ok(created.name_any())
 }
 
 /// Execute a shell command in a Pod container and collect its output.
@@ -2286,8 +2391,16 @@ mod tests {
             "kubernetes_delete_resource_failed"
         );
         assert_eq!(
-            KubernetesError::ScaleDeploymentFailed("x".into()).code(),
-            "kubernetes_scale_deployment_failed"
+            KubernetesError::ScaleWorkloadFailed("x".into()).code(),
+            "kubernetes_scale_workload_failed"
+        );
+        assert_eq!(
+            KubernetesError::RestartWorkloadFailed("x".into()).code(),
+            "kubernetes_restart_workload_failed"
+        );
+        assert_eq!(
+            KubernetesError::TriggerCronJobFailed("x".into()).code(),
+            "kubernetes_trigger_cronjob_failed"
         );
         assert_eq!(
             KubernetesError::ExecPodFailed("x".into()).code(),

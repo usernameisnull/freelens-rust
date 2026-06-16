@@ -17,17 +17,19 @@ use freelens_ipc::{
     KubernetesListMetricsRequest, KubernetesListMetricsResponse, KubernetesListNamespacesRequest,
     KubernetesListNamespacesResponse, KubernetesListResourcesRequest,
     KubernetesListResourcesResponse, KubernetesResizePodTerminalRequest,
-    KubernetesScaleDeploymentRequest, KubernetesStartPodPortForwardRequest,
-    KubernetesStartPodPortForwardResponse, KubernetesStartPodTerminalRequest,
-    KubernetesStartPodTerminalResponse, KubernetesStartResourceWatchRequest,
-    KubernetesStopPodLogsRequest, KubernetesStopPodPortForwardRequest,
-    KubernetesStopPodTerminalRequest, KubernetesStopResourceWatchRequest,
-    KubernetesStreamPodLogsRequest, KubernetesStreamPodLogsResponse,
-    KubernetesTerminalInputRequest, KubernetesTerminalInputResponse, KubernetesVersionRequest,
-    KubernetesVersionResponse, LocalTerminalInputRequest, LocalTerminalInputResponse,
-    LocalTerminalResizeRequest, LocalTerminalStartRequest, LocalTerminalStartResponse,
-    LocalTerminalStopRequest, NamespaceItem, ResourceItem, ResourceKindItem, ResourceMetricItem,
-    SettingsLoadRequest, SettingsLoadResponse, SettingsSaveRequest, SystemInfoResponse,
+    KubernetesRestartWorkloadRequest, KubernetesScaleWorkloadRequest,
+    KubernetesStartPodPortForwardRequest, KubernetesStartPodPortForwardResponse,
+    KubernetesStartPodTerminalRequest, KubernetesStartPodTerminalResponse,
+    KubernetesStartResourceWatchRequest, KubernetesStopPodLogsRequest,
+    KubernetesStopPodPortForwardRequest, KubernetesStopPodTerminalRequest,
+    KubernetesStopResourceWatchRequest, KubernetesStreamPodLogsRequest,
+    KubernetesStreamPodLogsResponse, KubernetesTerminalInputRequest,
+    KubernetesTerminalInputResponse, KubernetesTriggerCronJobRequest,
+    KubernetesTriggerCronJobResponse, KubernetesVersionRequest, KubernetesVersionResponse,
+    LocalTerminalInputRequest, LocalTerminalInputResponse, LocalTerminalResizeRequest,
+    LocalTerminalStartRequest, LocalTerminalStartResponse, LocalTerminalStopRequest, NamespaceItem,
+    ResourceItem, ResourceKindItem, ResourceMetricItem, SettingsLoadRequest, SettingsLoadResponse,
+    SettingsSaveRequest, SystemInfoResponse,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
@@ -779,8 +781,8 @@ async fn kubernetes_delete_resource(
 }
 
 #[tauri::command]
-async fn kubernetes_scale_deployment(
-    request: KubernetesScaleDeploymentRequest,
+async fn kubernetes_scale_workload(
+    request: KubernetesScaleWorkloadRequest,
     cache: State<'_, freelens_kube::ClientCache>,
 ) -> Result<(), IpcError> {
     validate_ipc_version(request.meta.version)?;
@@ -791,12 +793,65 @@ async fn kubernetes_scale_deployment(
             code: error.code().into(),
             message: error.to_string(),
         })?;
-    freelens_kube::scale_deployment(client, &request.namespace, &request.name, request.replicas)
+    freelens_kube::scale_workload(
+        client,
+        &request.kind,
+        &request.namespace,
+        &request.name,
+        request.replicas,
+    )
+    .await
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })
+}
+
+#[tauri::command]
+async fn kubernetes_restart_workload(
+    request: KubernetesRestartWorkloadRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<(), IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    freelens_kube::restart_workload(client, &request.kind, &request.namespace, &request.name)
         .await
         .map_err(|error| IpcError {
             code: error.code().into(),
             message: error.to_string(),
         })
+}
+
+#[tauri::command]
+async fn kubernetes_trigger_cronjob(
+    request: KubernetesTriggerCronJobRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubernetesTriggerCronJobResponse, IpcError> {
+    validate_ipc_version(request.meta.version)?;
+    let client = cache
+        .client(Some(request.context))
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    let job_name = freelens_kube::trigger_cronjob(client, &request.namespace, &request.name)
+        .await
+        .map_err(|error| IpcError {
+            code: error.code().into(),
+            message: error.to_string(),
+        })?;
+    Ok(KubernetesTriggerCronJobResponse {
+        version: IPC_VERSION,
+        request_id: request.meta.request_id,
+        job_name,
+    })
 }
 
 #[tauri::command]
@@ -1953,7 +2008,9 @@ fn main() {
             kubernetes_apply_resource,
             kubernetes_create_resource,
             kubernetes_delete_resource,
-            kubernetes_scale_deployment,
+            kubernetes_scale_workload,
+            kubernetes_restart_workload,
+            kubernetes_trigger_cronjob,
             kubernetes_exec_pod,
             kubernetes_start_pod_terminal,
             kubernetes_terminal_input,

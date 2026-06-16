@@ -436,6 +436,11 @@ button.dashboard-card:hover {
   color: #e8edf2;
 }
 
+.resource-list .actions button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
 .resource-list .actions .danger-button,
 .danger-button {
   color: #ff8a8a;

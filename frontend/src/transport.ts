@@ -37,7 +37,8 @@ import {
   KubernetesListMetricsResponse,
   KubernetesListResourcesRequest,
   KubernetesListResourcesResponse,
-  KubernetesScaleDeploymentRequest,
+  KubernetesRestartWorkloadRequest,
+  KubernetesScaleWorkloadRequest,
   KubernetesResizePodTerminalRequest,
   KubernetesStartResourceWatchRequest,
   KubernetesStartPodTerminalRequest,
@@ -52,6 +53,8 @@ import {
   KubernetesStreamPodLogsResponse,
   KubernetesTerminalInputRequest,
   KubernetesTerminalInputResponse,
+  KubernetesTriggerCronJobRequest,
+  KubernetesTriggerCronJobResponse,
   KubernetesVersionRequest,
   KubernetesVersionResponse,
   LogDoneEvent,
@@ -113,7 +116,9 @@ export interface Transport {
     request: KubernetesCreateResourceRequest
   ): Promise<KubernetesCreateResourceResponse>;
   kubernetesDeleteResource(request: KubernetesDeleteResourceRequest): Promise<void>;
-  kubernetesScaleDeployment(request: KubernetesScaleDeploymentRequest): Promise<void>;
+  kubernetesScaleWorkload(request: KubernetesScaleWorkloadRequest): Promise<void>;
+  kubernetesRestartWorkload(request: KubernetesRestartWorkloadRequest): Promise<void>;
+  kubernetesTriggerCronJob(request: KubernetesTriggerCronJobRequest): Promise<KubernetesTriggerCronJobResponse>;
   kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse>;
   kubernetesStartPodTerminal(request: KubernetesStartPodTerminalRequest): Promise<KubernetesStartPodTerminalResponse>;
   kubernetesTerminalInput(request: KubernetesTerminalInputRequest): Promise<KubernetesTerminalInputResponse>;
@@ -249,8 +254,16 @@ class TauriTransport implements Transport {
     return invoke("kubernetes_delete_resource", { request });
   }
 
-  kubernetesScaleDeployment(request: KubernetesScaleDeploymentRequest): Promise<void> {
-    return invoke("kubernetes_scale_deployment", { request });
+  kubernetesScaleWorkload(request: KubernetesScaleWorkloadRequest): Promise<void> {
+    return invoke("kubernetes_scale_workload", { request });
+  }
+
+  kubernetesRestartWorkload(request: KubernetesRestartWorkloadRequest): Promise<void> {
+    return invoke("kubernetes_restart_workload", { request });
+  }
+
+  kubernetesTriggerCronJob(request: KubernetesTriggerCronJobRequest): Promise<KubernetesTriggerCronJobResponse> {
+    return invoke("kubernetes_trigger_cronjob", { request });
   }
 
   kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse> {
@@ -674,7 +687,17 @@ class MockTransport implements Transport {
 
   async kubernetesDeleteResource(): Promise<void> {}
 
-  async kubernetesScaleDeployment(): Promise<void> {}
+  async kubernetesScaleWorkload(): Promise<void> {}
+
+  async kubernetesRestartWorkload(): Promise<void> {}
+
+  async kubernetesTriggerCronJob(request: KubernetesTriggerCronJobRequest): Promise<KubernetesTriggerCronJobResponse> {
+    return {
+      version: IPC_VERSION,
+      requestId: request.meta.requestId,
+      jobName: `${request.name}-manual-mock`,
+    };
+  }
 
   async kubernetesExecPod(request: KubernetesExecPodRequest): Promise<KubernetesExecPodResponse> {
     return {

@@ -457,12 +457,40 @@ pub struct KubernetesDeleteResourceRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct KubernetesScaleDeploymentRequest {
+pub struct KubernetesScaleWorkloadRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+    pub replicas: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesRestartWorkloadRequest {
+    pub meta: RequestMeta,
+    pub context: String,
+    pub kind: String,
+    pub namespace: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesTriggerCronJobRequest {
     pub meta: RequestMeta,
     pub context: String,
     pub namespace: String,
     pub name: String,
-    pub replicas: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubernetesTriggerCronJobResponse {
+    pub version: u16,
+    pub request_id: String,
+    pub job_name: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -737,6 +765,44 @@ pub struct IpcError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workload_action_requests_serialize_camel_case_fields() {
+        let scale = KubernetesScaleWorkloadRequest {
+            meta: RequestMeta::new("r-scale"),
+            context: "dev".into(),
+            kind: "StatefulSet".into(),
+            namespace: "default".into(),
+            name: "database".into(),
+            replicas: 3,
+        };
+        let restart = KubernetesRestartWorkloadRequest {
+            meta: RequestMeta::new("r-restart"),
+            context: "dev".into(),
+            kind: "DaemonSet".into(),
+            namespace: "monitoring".into(),
+            name: "agent".into(),
+        };
+        let scale_json = serde_json::to_value(scale).unwrap();
+        let restart_json = serde_json::to_value(restart).unwrap();
+        assert_eq!(scale_json["meta"]["requestId"], "r-scale");
+        assert_eq!(scale_json["kind"], "StatefulSet");
+        assert_eq!(scale_json["replicas"], 3);
+        assert_eq!(restart_json["meta"]["requestId"], "r-restart");
+        assert_eq!(restart_json["kind"], "DaemonSet");
+    }
+
+    #[test]
+    fn trigger_cronjob_response_serializes_job_name() {
+        let response = KubernetesTriggerCronJobResponse {
+            version: IPC_VERSION,
+            request_id: "r-trigger".into(),
+            job_name: "backup-abc12".into(),
+        };
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["requestId"], "r-trigger");
+        assert_eq!(json["jobName"], "backup-abc12");
+    }
 
     #[test]
     fn health_request_uses_stable_camel_case_json() {
