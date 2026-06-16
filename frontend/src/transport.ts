@@ -497,11 +497,13 @@ class MockTransport implements Transport {
   async kubernetesListResources(
     request: KubernetesListResourcesRequest
   ): Promise<KubernetesListResourcesResponse> {
-    const base = [
-      { name: "nginx-1", namespace: "default" },
-      { name: "nginx-2", namespace: "default" },
-      { name: "redis", namespace: "default" },
-    ];
+    const largeKinds = new Set(["Pod", "Secret", "ConfigMap"]);
+    const itemCount = largeKinds.has(request.kind) ? 1200 : 3;
+    const namespaces = [request.namespace ?? "default", "kube-system", "mock-namespace"];
+    const base = Array.from({ length: itemCount }, (_, index) => ({
+      name: itemCount > 3 ? `${request.kind.toLowerCase()}-${String(index + 1).padStart(4, "0")}` : ["nginx-1", "nginx-2", "redis"][index],
+      namespace: namespaces[index % namespaces.length],
+    }));
     return {
       version: IPC_VERSION,
       requestId: request.meta.requestId,
@@ -528,6 +530,7 @@ class MockTransport implements Transport {
           },
           Widget: { Ready: "True", Replicas: "2" },
         };
+        const created = new Date(Date.now() - index * 60_000).toISOString();
         const apiVersions: Record<string, string> = {
           Deployment: "apps/v1", StatefulSet: "apps/v1", DaemonSet: "apps/v1",
           Job: "batch/v1", CronJob: "batch/v1", Ingress: "networking.k8s.io/v1",
@@ -535,12 +538,12 @@ class MockTransport implements Transport {
         return {
           kind: request.kind,
           apiVersion: request.apiVersion || apiVersions[request.kind] || "v1",
-          name: `${request.kind.toLowerCase()}-${item.name}-${index + 1}`,
+          name: item.name,
           namespace: request.kind === "PersistentVolume" || request.kind === "Node"
             ? null
             : request.namespace ?? item.namespace,
           uid: `uid-${index}`,
-          created: new Date().toISOString(),
+          created,
           columns: columnsByKind[request.kind] ?? {},
         };
       }),

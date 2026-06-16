@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode, UIEvent as ReactUIEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import {
@@ -24,6 +24,9 @@ import "@xterm/xterm/css/xterm.css";
 import "./styles.css";
 
 const transport = createTransport();
+const RESOURCE_ROW_HEIGHT = 44;
+const RESOURCE_VIRTUAL_OVERSCAN = 8;
+const RESOURCE_VIRTUAL_THRESHOLD = 80;
 
 function errorMessage(reason: unknown): string {
   if (reason instanceof Error) return reason.message;
@@ -339,6 +342,11 @@ export function App() {
   });
   const [sortKey, setSortKey] = useState("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const resourceListRef = useRef<HTMLElement | null>(null);
+  const resourceTableRef = useRef<HTMLTableElement | null>(null);
+  const [resourceScrollTop, setResourceScrollTop] = useState(0);
+  const [resourceViewportHeight, setResourceViewportHeight] = useState(0);
+  const [resourceTableTop, setResourceTableTop] = useState(0);
   const [refreshSeconds, setRefreshSeconds] = useState(0);
   const [watchStatus, setWatchStatus] = useState<"connecting" | "live" | "retrying" | "off">("off");
   const resourceWatchOperationRef = useRef<string | undefined>(undefined);
@@ -1703,6 +1711,56 @@ export function App() {
     });
   }, [resources, resourceSearch, sortKey, sortDirection]);
 
+  useEffect(() => {
+    if (activeView !== "resources") return;
+    const container = resourceListRef.current;
+    const table = resourceTableRef.current;
+    if (!container || !table) return;
+    const measure = () => {
+      setResourceViewportHeight(container.clientHeight);
+      setResourceTableTop(table.offsetTop);
+      setResourceScrollTop(container.scrollTop);
+    };
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, [activeView, selectedKind, selectedColumns.length, actionError, actionMessage, metricsError]);
+
+  useEffect(() => {
+    if (activeView !== "resources") return;
+    if (resourceListRef.current) resourceListRef.current.scrollTop = 0;
+    setResourceScrollTop(0);
+  }, [activeView, resourceSearch, selectedKind, selectedNamespace, sortKey, sortDirection]);
+
+  const resourceColumnCount = selectedKind === "Node"
+    ? selectedColumns.length + 4
+    : selectedColumns.length + (selectedKind === "Pod" ? 6 : 4);
+  const virtualizeResources = visibleResources.length > RESOURCE_VIRTUAL_THRESHOLD;
+  const resourceScrollInsideTable = Math.max(0, resourceScrollTop - resourceTableTop);
+  const virtualStartIndex = virtualizeResources
+    ? Math.max(0, Math.floor(resourceScrollInsideTable / RESOURCE_ROW_HEIGHT) - RESOURCE_VIRTUAL_OVERSCAN)
+    : 0;
+  const virtualVisibleCount = virtualizeResources
+    ? Math.ceil(resourceViewportHeight / RESOURCE_ROW_HEIGHT) + RESOURCE_VIRTUAL_OVERSCAN * 2
+    : visibleResources.length;
+  const virtualEndIndex = virtualizeResources
+    ? Math.min(visibleResources.length, virtualStartIndex + virtualVisibleCount)
+    : visibleResources.length;
+  const renderedResources = virtualizeResources
+    ? visibleResources.slice(virtualStartIndex, virtualEndIndex)
+    : visibleResources;
+  const resourceTopSpacerHeight = virtualStartIndex * RESOURCE_ROW_HEIGHT;
+  const resourceBottomSpacerHeight = Math.max(0, (visibleResources.length - virtualEndIndex) * RESOURCE_ROW_HEIGHT);
+  const handleResourceListScroll = (event: ReactUIEvent<HTMLElement>) => {
+    setResourceScrollTop(event.currentTarget.scrollTop);
+  };
+
   const visibleEvents = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     const filtered = events.filter((event) => {
@@ -1781,6 +1839,60 @@ export function App() {
 
   const sortLabel = (key: string, label: string) =>
     `${label}${sortKey === key ? (sortDirection === "asc" ? " ^" : " v") : ""}`;
+
+  const renderResourceRow = (item: ResourceItem) => (
+    <tr key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}>
+      <td>{item.name}</td>
+      {selectedKind === "Node" ? <>
+        {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+        <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+        {selectedColumns.slice(2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+        <td>{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
+        <td>{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
+      </> : <>
+        <td>{item.namespace ?? "-"}</td>
+        {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+        {selectedKind === "Pod" && <>
+          <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
+          <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
+        </>}
+        <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+      </>}
+      <td className="actions">
+        <button onClick={() => openDetail(item)}>Details</button>
+        {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
+          <>
+            <button onClick={() => startLogs(item)}>Logs</button>
+            <button onClick={() => void openExec(item)}>Terminal</button>
+            {portForwards[portForwardKey(item)] ? (
+              <button onClick={() => void stopPortForward(item)}>
+                Stop {portForwards[portForwardKey(item)].localPort}:{portForwards[portForwardKey(item)].remotePort}
+              </button>
+            ) : (
+              <button onClick={() => void startPortForward(item)}>Port Forward</button>
+            )}
+          </>
+        )}
+        {(item.kind === "Deployment" || item.kind === "StatefulSet")
+          && item.apiVersion === "apps/v1" && item.namespace
+          && <button disabled={Boolean(resourceActionKey)} onClick={() => void scaleWorkload(item)}>
+            {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/scale` ? "Scaling..." : "Scale"}
+          </button>}
+        {(item.kind === "Deployment" || item.kind === "StatefulSet" || item.kind === "DaemonSet")
+          && item.apiVersion === "apps/v1" && item.namespace
+          && <button disabled={Boolean(resourceActionKey)} onClick={() => void restartWorkload(item)}>
+            {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/restart` ? "Restarting..." : "Restart"}
+          </button>}
+        {item.kind === "CronJob" && item.apiVersion === "batch/v1" && item.namespace
+          && <button disabled={Boolean(resourceActionKey)} onClick={() => void triggerCronJob(item)}>
+            {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/trigger` ? "Starting..." : "Run now"}
+          </button>}
+        <button className="danger-button" disabled={Boolean(resourceActionKey)} onClick={() => void deleteResource(item)}>
+          {resourceActionKey === `${item.kind}/${item.namespace ?? ""}/${item.name}/delete` ? "Deleting..." : "Delete"}
+        </button>
+      </td>
+    </tr>
+  );
 
   const navigationGroups = useMemo(() => {
     const query = resourceCatalogSearch.trim().toLowerCase();
@@ -2069,7 +2181,11 @@ export function App() {
         ) : resourcesError ? (
           <p className="error-message">{resourcesError}</p>
         ) : (
-          <section className="resource-list">
+          <section
+            className="resource-list"
+            ref={resourceListRef}
+            onScroll={handleResourceListScroll}
+          >
             {actionError && <p className="inline-message error-message">{actionError}</p>}
             {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
             {metricsError && (selectedKind === "Pod" || selectedKind === "Node") && (
@@ -2077,7 +2193,7 @@ export function App() {
                 Metrics are unavailable. Resource browsing is unaffected.
               </p>
             )}
-            <table>
+            <table ref={resourceTableRef} className={virtualizeResources ? "virtualized-table" : undefined}>
               <thead>
                 <tr>
                   <th><button className="sort-button" onClick={() => changeSort("name")}>{sortLabel("name", "Name")}</button></th>
@@ -2102,59 +2218,17 @@ export function App() {
                 </tr>
               </thead>
               <tbody>
-                {visibleResources.map((item: ResourceItem) => (
-                  <tr key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}>
-                    <td>{item.name}</td>
-                    {selectedKind === "Node" ? <>
-                      {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
-                      <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-                      {selectedColumns.slice(2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
-                      <td>{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
-                      <td>{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
-                    </> : <>
-                      <td>{item.namespace ?? "-"}</td>
-                      {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
-                      {selectedKind === "Pod" && <>
-                        <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
-                        <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
-                      </>}
-                      <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-                    </>}
-                    <td className="actions">
-                      <button onClick={() => openDetail(item)}>Details</button>
-                      {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
-                        <>
-                          <button onClick={() => startLogs(item)}>Logs</button>
-                          <button onClick={() => void openExec(item)}>Terminal</button>
-                          {portForwards[portForwardKey(item)] ? (
-                            <button onClick={() => void stopPortForward(item)}>
-                              Stop {portForwards[portForwardKey(item)].localPort}:{portForwards[portForwardKey(item)].remotePort}
-                            </button>
-                          ) : (
-                            <button onClick={() => void startPortForward(item)}>Port Forward</button>
-                          )}
-                        </>
-                      )}
-                      {(item.kind === "Deployment" || item.kind === "StatefulSet")
-                        && item.apiVersion === "apps/v1" && item.namespace
-                        && <button disabled={Boolean(resourceActionKey)} onClick={() => void scaleWorkload(item)}>
-                          {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/scale` ? "Scaling..." : "Scale"}
-                        </button>}
-                      {(item.kind === "Deployment" || item.kind === "StatefulSet" || item.kind === "DaemonSet")
-                        && item.apiVersion === "apps/v1" && item.namespace
-                        && <button disabled={Boolean(resourceActionKey)} onClick={() => void restartWorkload(item)}>
-                          {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/restart` ? "Restarting..." : "Restart"}
-                        </button>}
-                      {item.kind === "CronJob" && item.apiVersion === "batch/v1" && item.namespace
-                        && <button disabled={Boolean(resourceActionKey)} onClick={() => void triggerCronJob(item)}>
-                          {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/trigger` ? "Starting..." : "Run now"}
-                        </button>}
-                      <button className="danger-button" disabled={Boolean(resourceActionKey)} onClick={() => void deleteResource(item)}>
-                        {resourceActionKey === `${item.kind}/${item.namespace ?? ""}/${item.name}/delete` ? "Deleting..." : "Delete"}
-                      </button>
-                    </td>
+                {resourceTopSpacerHeight > 0 && (
+                  <tr className="virtual-spacer-row" aria-hidden="true">
+                    <td colSpan={resourceColumnCount} style={{ height: resourceTopSpacerHeight }} />
                   </tr>
-                ))}
+                )}
+                {renderedResources.map(renderResourceRow)}
+                {resourceBottomSpacerHeight > 0 && (
+                  <tr className="virtual-spacer-row" aria-hidden="true">
+                    <td colSpan={resourceColumnCount} style={{ height: resourceBottomSpacerHeight }} />
+                  </tr>
+                )}
               </tbody>
             </table>
             {continueToken && !resourceSearch.trim() && (

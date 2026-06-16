@@ -376,6 +376,30 @@ button.dashboard-card:hover {
   border-bottom: 1px solid #26313a;
 }
 
+.resource-list:not(.events-list) tbody tr {
+  height: 44px;
+}
+
+.resource-list:not(.events-list) td {
+  box-sizing: border-box;
+  white-space: nowrap;
+}
+
+.resource-list:not(.events-list) td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.resource-list .virtual-spacer-row,
+.resource-list .virtual-spacer-row:hover {
+  background: transparent;
+}
+
+.resource-list .virtual-spacer-row td {
+  padding: 0;
+  border-bottom: 0;
+}
+
 .resource-list thead {
   background: #0f1419;
 }
