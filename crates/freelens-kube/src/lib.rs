@@ -286,6 +286,53 @@ pub enum ResourceWatchNotification {
     Error(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResourceWatchState {
+    resource_version: String,
+    retry_delay: std::time::Duration,
+}
+
+impl Default for ResourceWatchState {
+    fn default() -> Self {
+        Self {
+            resource_version: "0".into(),
+            retry_delay: std::time::Duration::from_secs(1),
+        }
+    }
+}
+
+impl ResourceWatchState {
+    fn observe_version(&mut self, version: Option<String>) {
+        if let Some(version) = version.filter(|value| !value.is_empty()) {
+            self.resource_version = version;
+            self.retry_delay = std::time::Duration::from_secs(1);
+        }
+    }
+
+    fn retry_after_error(&mut self, gone: bool) -> std::time::Duration {
+        if gone {
+            self.resource_version = "0".into();
+        }
+        let current = self.retry_delay;
+        self.retry_delay = (self.retry_delay * 2).min(std::time::Duration::from_secs(16));
+        current
+    }
+}
+
+fn is_expired_watch_error(code: Option<u16>, message: &str) -> bool {
+    code == Some(410) || message.contains("too old resource version")
+}
+
+fn watch_event_resource_version(event: &WatchEvent<DynamicObject>) -> Option<String> {
+    match event {
+        WatchEvent::Added(object) | WatchEvent::Modified(object) | WatchEvent::Deleted(object) => {
+            object.resource_version()
+        }
+        WatchEvent::Bookmark(bookmark) => Some(bookmark.metadata.resource_version.clone()),
+        WatchEvent::Error(_) => None,
+    }
+}
+
 fn field(label: &str, value: impl ToString) -> DetailField {
     DetailField {
         label: label.into(),
@@ -1632,33 +1679,42 @@ pub async fn watch_resources(
         };
     let (tx, rx) = tokio::sync::mpsc::channel(32);
     let task = tokio::spawn(async move {
+        let mut state = ResourceWatchState::default();
         loop {
             let params = WatchParams::default().timeout(30);
-            match api.watch(&params, "0").await {
+            match api.watch(&params, &state.resource_version).await {
                 Ok(stream) => {
                     futures::pin_mut!(stream);
                     while let Some(event) = stream.next().await {
                         match event {
                             Ok(
-                                WatchEvent::Added(_)
+                                event @ (WatchEvent::Added(_)
                                 | WatchEvent::Modified(_)
-                                | WatchEvent::Deleted(_),
+                                | WatchEvent::Deleted(_)),
                             ) => {
+                                state.observe_version(watch_event_resource_version(&event));
                                 if tx.send(ResourceWatchNotification::Changed).await.is_err() {
                                     return;
                                 }
                             }
                             Ok(WatchEvent::Error(error)) => {
+                                let gone = is_expired_watch_error(Some(error.code), &error.message);
                                 let _ = tx
                                     .send(ResourceWatchNotification::Error(error.message))
                                     .await;
+                                let delay = state.retry_after_error(gone);
+                                tokio::time::sleep(delay).await;
                                 break;
                             }
-                            Ok(WatchEvent::Bookmark(_)) => {}
+                            Ok(event @ WatchEvent::Bookmark(_)) => {
+                                state.observe_version(watch_event_resource_version(&event));
+                            }
                             Err(error) => {
                                 let _ = tx
                                     .send(ResourceWatchNotification::Error(error.to_string()))
                                     .await;
+                                let delay = state.retry_after_error(false);
+                                tokio::time::sleep(delay).await;
                                 break;
                             }
                         }
@@ -1672,9 +1728,10 @@ pub async fn watch_resources(
                     {
                         return;
                     }
+                    let delay = state.retry_after_error(false);
+                    tokio::time::sleep(delay).await;
                 }
             }
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         }
     });
     Ok((rx, task.abort_handle()))
@@ -2454,6 +2511,70 @@ mod tests {
         assert_eq!(
             event_timestamp(&event).as_deref(),
             Some("2026-06-15T12:00:00+00:00")
+        );
+    }
+
+    #[test]
+    fn watch_state_tracks_resource_version_and_resets_backoff_on_progress() {
+        let mut state = ResourceWatchState::default();
+        assert_eq!(state.resource_version, "0");
+        assert_eq!(
+            state.retry_after_error(false),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(
+            state.retry_after_error(false),
+            std::time::Duration::from_secs(2)
+        );
+
+        state.observe_version(Some("42".into()));
+        assert_eq!(state.resource_version, "42");
+        assert_eq!(
+            state.retry_after_error(false),
+            std::time::Duration::from_secs(1)
+        );
+    }
+
+    #[test]
+    fn expired_watch_errors_reset_to_initial_resource_version() {
+        let mut state = ResourceWatchState::default();
+        state.observe_version(Some("99".into()));
+        assert_eq!(
+            state.retry_after_error(true),
+            std::time::Duration::from_secs(1)
+        );
+        assert_eq!(state.resource_version, "0");
+        assert!(is_expired_watch_error(Some(410), "Gone"));
+        assert!(is_expired_watch_error(
+            None,
+            "too old resource version: 123"
+        ));
+    }
+
+    #[test]
+    fn watch_event_resource_version_reads_object_and_bookmark_versions() {
+        let object: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Pod",
+            "metadata": { "name": "web", "resourceVersion": "7" }
+        }))
+        .unwrap();
+        let bookmark: WatchEvent<DynamicObject> = serde_json::from_value(serde_json::json!({
+            "type": "BOOKMARK",
+            "object": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "metadata": { "resourceVersion": "8" }
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            watch_event_resource_version(&WatchEvent::Modified(object)).as_deref(),
+            Some("7")
+        );
+        assert_eq!(
+            watch_event_resource_version(&bookmark).as_deref(),
+            Some("8")
         );
     }
 

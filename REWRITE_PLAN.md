@@ -276,8 +276,8 @@ Kubernetes watch、日志、指标和终端会持续产生数据。IPC 缓冲机
 - [x] 增加集群概览 Dashboard，汇总工作负载、资源用量和异常状态。
 - [x] 增加 Kubernetes Events 独立视图和筛选。
 - [x] 继续完善资源详情页和常用操作，包括扩缩容、重启及触发 Job。
-- [ ] 验证 watch 断线重连、退避和 resource version 恢复。
-- [ ] 为大规模资源列表增加虚拟滚动并完成性能验证。
+- [x] 验证 watch 断线重连、退避和 resource version 恢复。
+- [x] 为大规模资源列表增加虚拟滚动并完成性能验证。
 
 ## 12. 低优先级兼容功能
 

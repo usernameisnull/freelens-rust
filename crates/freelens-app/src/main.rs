@@ -2071,6 +2071,16 @@ mod tests {
         processes.cancel_all();
         assert!(runtime.block_on(task).unwrap_err().is_cancelled());
         assert!(processes.processes.lock().unwrap().is_empty());
+
+        let watches = ResourceWatchManager::default();
+        let task = runtime.spawn(async {
+            std::future::pending::<()>().await;
+        });
+        let abort = task.abort_handle();
+        watches.insert("watch-1".into(), abort);
+        watches.stop_all();
+        assert!(runtime.block_on(task).unwrap_err().is_cancelled());
+        assert!(watches.watches.lock().unwrap().is_empty());
     }
 
     #[test]
