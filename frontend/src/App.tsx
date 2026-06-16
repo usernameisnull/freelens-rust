@@ -99,7 +99,7 @@ const RESOURCE_GROUPS = [
   },
 ];
 
-type NavigationIcon = "overview" | "events" | "cluster" | "workloads" | "network" | "config" | "storage" | "more";
+type NavigationIcon = "overview" | "events" | "cluster" | "workloads" | "network" | "config" | "storage" | "more" | "collapseAll" | "expandAll";
 
 const GROUP_ICONS: Record<string, NavigationIcon> = {
   Cluster: "cluster",
@@ -120,6 +120,8 @@ function NavigationIcon({ name }: { name: NavigationIcon }) {
     config: <><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></>,
     storage: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></>,
     more: <><path d="M9 3h6l1 3 3 1v6l-3 1-1 3H9l-1-3-3-1V7l3-1 1-3Z"/><circle cx="12" cy="10" r="2"/><path d="M12 12v5"/></>,
+    collapseAll: <><path d="m8 10 4-4 4 4M8 14l4 4 4-4"/><path d="M5 12h14"/></>,
+    expandAll: <><path d="m8 6 4 4 4-4M8 18l4-4 4 4"/><path d="M5 12h14"/></>,
   };
   return <svg className="navigation-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
 }
@@ -2023,6 +2025,15 @@ export function App() {
       ? [...coreGroups, { label: "More Resources", resources: moreResources }]
       : coreGroups;
   }, [resourceKinds, resourceCatalogSearch]);
+  const hasResourceCatalogSearch = Boolean(resourceCatalogSearch.trim());
+  const allNavigationGroupsExpanded = navigationGroups.every((group) => !collapsedGroups[group.label]);
+  const toggleAllNavigationGroups = () => {
+    const nextCollapsed = allNavigationGroupsExpanded;
+    setCollapsedGroups((current) => ({
+      ...current,
+      ...Object.fromEntries(navigationGroups.map((group) => [group.label, nextCollapsed])),
+    }));
+  };
 
   return (
     <div className="app-shell">
@@ -2094,18 +2105,30 @@ export function App() {
               </li>
             </ul>
           </div>
+          <div className="nav-group-tools">
+            <button
+              type="button"
+              className="nav-icon-button"
+              onClick={toggleAllNavigationGroups}
+              disabled={hasResourceCatalogSearch || navigationGroups.length === 0}
+              aria-label={allNavigationGroupsExpanded ? "Collapse all resource groups" : "Expand all resource groups"}
+              title={allNavigationGroupsExpanded ? "Collapse all" : "Expand all"}
+            >
+              <NavigationIcon name={allNavigationGroupsExpanded ? "collapseAll" : "expandAll"} />
+            </button>
+          </div>
           {navigationGroups.map((group) => (
             <div key={group.label} className="nav-group">
               <button
                 className="nav-group-header"
                 onClick={() => toggleNavigationGroup(group.label)}
-                aria-expanded={!collapsedGroups[group.label] || Boolean(resourceCatalogSearch.trim())}
+                aria-expanded={!collapsedGroups[group.label] || hasResourceCatalogSearch}
               >
                 <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
                 <span>{group.label}</span>
-                <span className="nav-chevron">{collapsedGroups[group.label] && !resourceCatalogSearch.trim() ? ">" : "v"}</span>
+                <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
               </button>
-              <ul hidden={collapsedGroups[group.label] && !resourceCatalogSearch.trim()}>
+              <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
                 {group.resources.map((resource) => (
                   <li key={resourceKey(resource)}>
                     <button

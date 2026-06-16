@@ -103,6 +103,35 @@ body.resizing-sidebar {
   border-bottom: 1px solid #26313a;
 }
 
+.nav-group-tools {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 12px 6px;
+}
+
+.nav-icon-button {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #9eabb8;
+  cursor: pointer;
+}
+
+.nav-icon-button:hover:not(:disabled) {
+  border-color: rgba(88, 209, 181, 0.55);
+  color: #58d1b5;
+}
+
+.nav-icon-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .nav-group li > button,
 .nav-group-header {
   width: 100%;
