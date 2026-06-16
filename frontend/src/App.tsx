@@ -305,7 +305,7 @@ export function App() {
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
   const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
-  const [activeView, setActiveView] = useState<"overview" | "events" | "resources">("overview");
+  const [activeView, setActiveView] = useState<"overview" | "events" | "health" | "resources">("overview");
   const [resourceDiscoveryError, setResourceDiscoveryError] = useState<string>();
   const [resourceCatalogSearch, setResourceCatalogSearch] = useState("");
   const [selectedResource, setSelectedResource] = useState<ResourceKindItem>(FALLBACK_RESOURCE_KINDS[0]);
@@ -323,6 +323,11 @@ export function App() {
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [overviewError, setOverviewError] = useState<string>();
   const overviewRequestRef = useRef(0);
+  const [healthTitle, setHealthTitle] = useState("");
+  const [healthItems, setHealthItems] = useState<ResourceItem[]>([]);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const [healthError, setHealthError] = useState<string>();
+  const healthRequestRef = useRef(0);
   const [events, setEvents] = useState<KubernetesEventItem[]>([]);
   const [eventsLoading, setEventsLoading] = useState(false);
   const [eventsError, setEventsError] = useState<string>();
@@ -986,7 +991,11 @@ export function App() {
   useEffect(() => {
     if (!refreshSeconds || !selectedContext) return;
     const interval = window.setInterval(
-      () => activeView === "overview" ? loadOverview() : activeView === "events" ? loadEvents() : loadResources(),
+      () => activeView === "overview" ? loadOverview()
+        : activeView === "events" ? loadEvents()
+          : activeView === "health" && healthTitle === "Abnormal Pods" ? openAbnormalPods()
+            : activeView === "health" && healthTitle === "Unavailable Workloads" ? openUnavailableWorkloads()
+              : loadResources(),
       refreshSeconds * 1000,
     );
     return () => window.clearInterval(interval);
@@ -1098,9 +1107,92 @@ export function App() {
     });
   };
 
-  const openResourceKind = (kind: string) => {
-    const resource = resourceKinds.find((item) => item.kind === kind)
+  const resourceForKind = (kind: string) =>
+    resourceKinds.find((item) => item.kind === kind)
       ?? FALLBACK_RESOURCE_KINDS.find((item) => item.kind === kind);
+
+  const listAllResourcesForKind = async (kind: string, namespace: string | null = selectedNamespace || null): Promise<ResourceItem[]> => {
+    const resource = resourceForKind(kind);
+    if (!resource || !selectedContext) return [];
+    const response = await transport.kubernetesListResources({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      context: selectedContext,
+      kind,
+      apiVersion: resourceApiVersion(resource),
+      columns: resource.columns,
+      namespace: resource.namespaced ? namespace : null,
+      limit: null,
+      continueToken: null,
+    });
+    return response.items;
+  };
+
+  const openAbnormalPods = () => {
+    if (!selectedContext) return;
+    const requestNumber = ++healthRequestRef.current;
+    setHealthTitle("Abnormal Pods");
+    setHealthItems([]);
+    setHealthLoading(true);
+    setHealthError(undefined);
+    setActiveView("health");
+    listAllResourcesForKind("Pod", null)
+      .then((items) => {
+        if (requestNumber !== healthRequestRef.current) return;
+        setHealthItems(items.filter((item) => {
+          const status = item.columns.status ?? "";
+          return status !== "Running" && status !== "Succeeded";
+        }));
+      })
+      .catch((reason: unknown) => {
+        if (requestNumber === healthRequestRef.current) setHealthError(errorMessage(reason));
+      })
+      .finally(() => {
+        if (requestNumber === healthRequestRef.current) setHealthLoading(false);
+      });
+  };
+
+  const openUnavailableWorkloads = () => {
+    if (!selectedContext) return;
+    const requestNumber = ++healthRequestRef.current;
+    setHealthTitle("Unavailable Workloads");
+    setHealthItems([]);
+    setHealthLoading(true);
+    setHealthError(undefined);
+    setActiveView("health");
+    Promise.all([
+      listAllResourcesForKind("Deployment", null),
+      listAllResourcesForKind("StatefulSet", null),
+      listAllResourcesForKind("DaemonSet", null),
+    ])
+      .then(([deployments, statefulSets, daemonSets]) => {
+        if (requestNumber !== healthRequestRef.current) return;
+        const replicaUnavailable = (item: ResourceItem) => {
+          const [ready, desired] = (item.columns.ready ?? "0/0")
+            .split("/", 2)
+            .map((value) => Number(value));
+          return Number.isFinite(ready) && Number.isFinite(desired) && ready < desired;
+        };
+        const daemonUnavailable = (item: ResourceItem) => {
+          const desired = Number(item.columns.desired ?? 0);
+          const available = Number(item.columns.available ?? item.columns.ready ?? 0);
+          return Number.isFinite(desired) && Number.isFinite(available) && available < desired;
+        };
+        setHealthItems([
+          ...deployments.filter(replicaUnavailable),
+          ...statefulSets.filter(replicaUnavailable),
+          ...daemonSets.filter(daemonUnavailable),
+        ]);
+      })
+      .catch((reason: unknown) => {
+        if (requestNumber === healthRequestRef.current) setHealthError(errorMessage(reason));
+      })
+      .finally(() => {
+        if (requestNumber === healthRequestRef.current) setHealthLoading(false);
+      });
+  };
+
+  const openResourceKind = (kind: string) => {
+    const resource = resourceForKind(kind);
     if (!resource) return;
     setSelectedResource(resource);
     if (!resource.namespaced) setSelectedNamespace("");
@@ -1711,6 +1803,15 @@ export function App() {
     });
   }, [resources, resourceSearch, sortKey, sortDirection]);
 
+  const visibleHealthItems = useMemo(() => {
+    const query = resourceSearch.trim().toLowerCase();
+    if (!query) return healthItems;
+    return healthItems.filter((item) =>
+      [item.kind, item.name, item.namespace ?? "", ...Object.values(item.columns)]
+        .some((value) => value.toLowerCase().includes(query))
+    );
+  }, [healthItems, resourceSearch]);
+
   useEffect(() => {
     if (activeView !== "resources") return;
     const container = resourceListRef.current;
@@ -2044,8 +2145,8 @@ export function App() {
       <main className="main">
         <header className="topbar">
           <div className="title-with-status">
-            <h2>{activeView === "overview" ? "Cluster Overview" : activeView === "events" ? "Events" : resourceKindLabel(selectedKind)}</h2>
-            {activeView !== "overview" && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
+            <h2>{activeView === "overview" ? "Cluster Overview" : activeView === "events" ? "Events" : activeView === "health" ? healthTitle : resourceKindLabel(selectedKind)}</h2>
+            {(activeView === "resources" || activeView === "events") && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
           </div>
           <div className="topbar-controls">
             {activeView === "resources" && <>
@@ -2088,6 +2189,14 @@ export function App() {
                 <option value="Warning">Warning</option>
               </select>
             </>}
+            {activeView === "health" && (
+              <input
+                type="search"
+                placeholder={`Search ${healthTitle.toLowerCase()}`}
+                value={resourceSearch}
+                onChange={(event) => setResourceSearch(event.target.value)}
+              />
+            )}
             <select value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}>
               <option value={0}>Auto refresh: Off</option>
               <option value={5}>Every 5s</option>
@@ -2095,8 +2204,12 @@ export function App() {
               <option value={30}>Every 30s</option>
             </select>
             <button
-              onClick={() => activeView === "overview" ? loadOverview() : activeView === "events" ? loadEvents() : loadResources()}
-              disabled={activeView === "overview" ? overviewLoading : activeView === "events" ? eventsLoading : resourcesLoading}
+              onClick={() => activeView === "overview" ? loadOverview()
+                : activeView === "events" ? loadEvents()
+                  : activeView === "health" && healthTitle === "Abnormal Pods" ? openAbnormalPods()
+                    : activeView === "health" && healthTitle === "Unavailable Workloads" ? openUnavailableWorkloads()
+                      : loadResources()}
+              disabled={activeView === "overview" ? overviewLoading : activeView === "events" ? eventsLoading : activeView === "health" ? healthLoading : resourcesLoading}
             >
               Refresh
             </button>
@@ -2134,10 +2247,10 @@ export function App() {
                 </div>
                 <section className="dashboard-health">
                   <h3>Cluster Health</h3>
-                  <button onClick={() => openResourceKind("Pod")} className={overview.abnormalPods ? "has-issues" : ""}>
+                  <button onClick={openAbnormalPods} className={overview.abnormalPods ? "has-issues" : ""}>
                     <strong>{overview.abnormalPods}</strong><span>Abnormal Pods</span>
                   </button>
-                  <button onClick={() => openResourceKind("Deployment")} className={overview.unavailableWorkloads ? "has-issues" : ""}>
+                  <button onClick={openUnavailableWorkloads} className={overview.unavailableWorkloads ? "has-issues" : ""}>
                     <strong>{overview.unavailableWorkloads}</strong><span>Unavailable Workloads</span>
                   </button>
                 </section>
@@ -2149,6 +2262,29 @@ export function App() {
               </>
             )}
           </section>
+        ) : activeView === "health" ? (
+          healthError ? <p className="error-message">{healthError}</p> : (
+            <section className="resource-list health-drilldown">
+              <table>
+                <thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Age</th><th>Actions</th></tr></thead>
+                <tbody>
+                  {visibleHealthItems.map((item) => (
+                    <tr key={`${item.kind}/${item.namespace ?? ""}/${item.name}`}>
+                      <td>{item.kind}</td>
+                      <td>{item.name}</td>
+                      <td>{item.namespace ?? "-"}</td>
+                      <td>{item.columns.status ?? item.columns.available ?? "-"}</td>
+                      <td>{item.columns.ready ?? item.columns.available ?? "-"}</td>
+                      <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+                      <td className="actions"><button onClick={() => openDetail(item)}>Details</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {healthLoading && healthItems.length === 0 && <p>Loading {healthTitle.toLowerCase()}…</p>}
+              {!healthLoading && visibleHealthItems.length === 0 && <p>No matching {healthTitle.toLowerCase()}.</p>}
+            </section>
+          )
         ) : activeView === "events" ? (
           eventsError ? <p className="error-message">{eventsError}</p> : (
             <section className="resource-list events-list">
