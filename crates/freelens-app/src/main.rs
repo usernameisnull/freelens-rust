@@ -36,7 +36,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State, path::BaseDirectory};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -98,6 +98,7 @@ fn path_error(error: tauri::Error) -> IpcError {
 }
 
 const SETTINGS_FILE_VERSION: u16 = 1;
+static ORIGINAL_KUBECONFIG: OnceLock<Option<std::ffi::OsString>> = OnceLock::new();
 
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -145,6 +146,7 @@ fn settings_load(
             });
         }
     };
+    apply_kubeconfig_sources_env(&settings.kubeconfig_sources);
     Ok(SettingsLoadResponse {
         version: IPC_VERSION,
         request_id: request.meta.request_id,
@@ -153,8 +155,14 @@ fn settings_load(
 }
 
 #[tauri::command]
-fn settings_save(request: SettingsSaveRequest, app: AppHandle) -> Result<(), IpcError> {
+fn settings_save(
+    request: SettingsSaveRequest,
+    app: AppHandle,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<(), IpcError> {
     validate_ipc_version(request.meta.version)?;
+    apply_kubeconfig_sources_env(&request.settings.kubeconfig_sources);
+    cache.clear();
     let path = settings_path(&app)?;
     let parent = path.parent().ok_or_else(|| IpcError {
         code: "settings_path_invalid".into(),
@@ -204,7 +212,10 @@ fn settings_save(request: SettingsSaveRequest, app: AppHandle) -> Result<(), Ipc
 }
 
 #[tauri::command]
-fn kubeconfig_list(request: KubeconfigListRequest) -> Result<KubeconfigListResponse, IpcError> {
+fn kubeconfig_list(
+    request: KubeconfigListRequest,
+    cache: State<'_, freelens_kube::ClientCache>,
+) -> Result<KubeconfigListResponse, IpcError> {
     if request.meta.version != IPC_VERSION {
         return Err(IpcError {
             code: "unsupported_ipc_version".into(),
@@ -215,10 +226,25 @@ fn kubeconfig_list(request: KubeconfigListRequest) -> Result<KubeconfigListRespo
         });
     }
 
-    let summary = freelens_kubeconfig::list_contexts(None).map_err(|error| IpcError {
-        code: error.code().into(),
-        message: error.to_string(),
-    })?;
+    let summary =
+        freelens_kubeconfig::list_contexts_from_sources(&request.sources).map_err(|error| {
+            IpcError {
+                code: error.code().into(),
+                message: error.to_string(),
+            }
+        })?;
+
+    cache.set_context_kubeconfigs(
+        summary
+            .contexts
+            .iter()
+            .filter_map(|ctx| {
+                ctx.source_path
+                    .as_ref()
+                    .map(|source_path| (ctx.name.clone(), PathBuf::from(source_path)))
+            })
+            .collect::<Vec<_>>(),
+    );
 
     Ok(KubeconfigListResponse {
         version: IPC_VERSION,
@@ -232,9 +258,50 @@ fn kubeconfig_list(request: KubeconfigListRequest) -> Result<KubeconfigListRespo
                 cluster: ctx.cluster,
                 user: ctx.user,
                 is_current: ctx.is_current,
+                source_path: ctx.source_path,
             })
             .collect(),
+        sources: summary
+            .sources
+            .into_iter()
+            .map(|source| freelens_ipc::KubeconfigSource {
+                path: source.path,
+                kind: source.kind,
+                file_count: source.file_count,
+                context_count: source.context_count,
+            })
+            .collect(),
+        duplicate_contexts: summary.duplicate_contexts,
     })
+}
+
+fn apply_kubeconfig_sources_env(sources: &[String]) {
+    let original = ORIGINAL_KUBECONFIG.get_or_init(|| std::env::var_os("KUBECONFIG"));
+    if sources.is_empty() {
+        unsafe {
+            if let Some(value) = original {
+                std::env::set_var("KUBECONFIG", value);
+            } else {
+                std::env::remove_var("KUBECONFIG");
+            }
+        }
+        return;
+    }
+    let paths = match freelens_kubeconfig::resolve_kubeconfig_files_from_sources(sources) {
+        Ok(paths) if !paths.is_empty() => paths,
+        Ok(_) | Err(_) => return,
+    };
+    let separator = if cfg!(windows) { ";" } else { ":" };
+    let value = paths
+        .iter()
+        .map(|path| path.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(separator);
+    // The app owns this process-level override and updates it from user settings.
+    // kube-rs reads KUBECONFIG when building clients for selected contexts.
+    unsafe {
+        std::env::set_var("KUBECONFIG", value);
+    }
 }
 
 #[tauri::command]
@@ -1951,6 +2018,7 @@ fn main() {
                 let _ = window.set_focus();
             }
         }))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .setup(|app| {
             tracing::info!(

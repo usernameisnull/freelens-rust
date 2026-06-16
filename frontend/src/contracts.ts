@@ -28,6 +28,7 @@ export interface AppSettings {
   resourceKind: string | null;
   resourceApiVersion: string | null;
   refreshSeconds: number;
+  kubeconfigSources: string[];
 }
 
 export interface SettingsLoadRequest {
@@ -50,6 +51,7 @@ export interface KubeconfigListRequest {
     version: number;
     requestId: string;
   };
+  sources: string[];
 }
 
 export interface KubeconfigContext {
@@ -57,6 +59,7 @@ export interface KubeconfigContext {
   cluster: string;
   user: string | null;
   isCurrent: boolean;
+  sourcePath: string | null;
 }
 
 export interface KubeconfigListResponse {
@@ -64,6 +67,15 @@ export interface KubeconfigListResponse {
   requestId: string;
   currentContext: string | null;
   contexts: KubeconfigContext[];
+  sources: KubeconfigSource[];
+  duplicateContexts: string[];
+}
+
+export interface KubeconfigSource {
+  path: string;
+  kind: "file" | "directory";
+  fileCount: number;
+  contextCount: number;
 }
 
 export interface KubernetesVersionRequest {

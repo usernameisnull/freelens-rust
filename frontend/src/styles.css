@@ -65,7 +65,52 @@ body.resizing-sidebar {
   color: #58d1b5;
 }
 
+.sidebar-context-card {
+  width: 100%;
+  min-height: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #e8edf2;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-context-card:hover,
+.sidebar-context-card:focus-visible {
+  border-color: rgba(88, 209, 181, 0.55);
+}
+
+.sidebar-context-home {
+  height: 0;
+  overflow: hidden;
+  color: #58d1b5;
+  font-size: 0.82rem;
+  transition: height 0.12s ease;
+}
+
+.sidebar-context-card:hover .sidebar-context-home,
+.sidebar-context-card:focus-visible .sidebar-context-home {
+  height: 18px;
+}
+
+.sidebar-context-name {
+  max-width: 100%;
+  overflow: hidden;
+  color: #cfe6ff;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .sidebar-header select,
+.context-search,
 .resource-catalog-search {
   width: 100%;
   padding: 6px 8px;
@@ -75,6 +120,31 @@ body.resizing-sidebar {
   color: #e8edf2;
 }
 
+.context-picker-row {
+  display: flex;
+  gap: 8px;
+}
+
+.context-picker-row select {
+  min-width: 0;
+}
+
+.context-settings-button {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #1b242e;
+  color: #e8edf2;
+  cursor: pointer;
+}
+
+.context-settings-button:hover {
+  border-color: rgba(88, 209, 181, 0.55);
+  color: #58d1b5;
+}
+
+.context-search,
 .resource-catalog-search {
   margin-top: 10px;
 }
@@ -315,6 +385,219 @@ body.resizing-sidebar {
 .resource-list {
   flex: 1;
   overflow: auto;
+}
+
+.context-home {
+  flex: 1;
+  position: relative;
+  min-height: 0;
+  overflow: hidden;
+  padding: 36px 64px 0;
+}
+
+.context-home-inner {
+  height: 100%;
+  max-width: 1160px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.context-settings-top {
+  position: absolute;
+  top: 35px;
+  right: 64px;
+  padding: 8px 12px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #1c242d;
+  color: #e8edf2;
+  cursor: pointer;
+}
+
+.context-home-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 28px;
+  padding-right: 110px;
+  padding-bottom: 28px;
+}
+
+.context-home-header h2 {
+  margin: 0 0 8px;
+  color: #e8edf2;
+  font-size: 1.6rem;
+}
+
+.context-home-header p {
+  margin: 0;
+  color: #9eabb8;
+}
+
+.kubeconfig-duplicates-warning {
+  margin-top: 14px;
+  color: #ff9f43;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.kubeconfig-duplicates-warning p {
+  margin: 0 0 4px;
+  color: inherit;
+}
+
+.context-home-tools {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.context-home-tools input {
+  width: min(320px, 30vw);
+  padding: 8px 10px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #e8edf2;
+}
+
+.context-home-tools button,
+.context-settings-top,
+.context-home-footer button,
+.context-view-toggle button {
+  padding: 8px 12px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #1c242d;
+  color: #e8edf2;
+  cursor: pointer;
+}
+
+.context-home-tools button:hover:not(:disabled),
+.context-settings-top:hover:not(:disabled),
+.context-home-footer button:hover:not(:disabled),
+.context-view-toggle button:hover:not(:disabled),
+.context-view-toggle button.active {
+  border-color: rgba(88, 209, 181, 0.55);
+  color: #58d1b5;
+}
+
+.context-view-toggle {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.context-results {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 22px 22px 0;
+  scrollbar-color: #3d4b57 transparent;
+}
+
+.context-results-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.context-results-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-content: start;
+  gap: 12px;
+}
+
+.context-result {
+  display: grid;
+  grid-template-columns: auto minmax(140px, max-content) minmax(140px, 1fr);
+  grid-template-areas: "icon name cluster";
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e8edf2;
+  cursor: pointer;
+  text-align: left;
+}
+
+.context-results-grid .context-result {
+  grid-template-columns: auto 1fr;
+  grid-template-areas:
+    "icon name"
+    "icon cluster";
+  min-height: 132px;
+  padding: 14px;
+  border-color: #26313a;
+  background: #151b22;
+}
+
+.context-result:hover,
+.context-result.active {
+  border-color: rgba(88, 209, 181, 0.4);
+  background: rgba(232, 237, 242, 0.06);
+}
+
+.context-result.active {
+  box-shadow: inset 3px 0 0 #58d1b5;
+}
+
+.context-result-icon {
+  grid-area: icon;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(88, 209, 181, 0.45);
+  border-radius: 999px;
+  color: #58d1b5;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.context-result-name {
+  grid-area: name;
+  font-weight: 600;
+}
+
+.context-result-cluster {
+  grid-area: cluster;
+  overflow: hidden;
+  color: #8a99a7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.context-home-footer {
+  display: flex;
+  justify-content: center;
+  padding: 16px 0 22px;
+  background: linear-gradient(180deg, rgba(15, 20, 25, 0), #0f1419 40%);
+}
+
+.context-home-footer button {
+  min-width: 128px;
+  background: #2563eb;
+  border-color: #2563eb;
+}
+
+.context-home-footer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.compact-error {
+  margin-top: 12px;
+  padding: 0;
+}
+
+.empty-state {
+  color: #8a99a7;
 }
 
 .dashboard {
@@ -716,6 +999,106 @@ button.dashboard-card:hover {
   width: min(760px, 90vw);
 }
 
+.kubeconfig-panel {
+  width: min(620px, 90vw);
+}
+
+.kubeconfig-panel header > div {
+  display: block;
+}
+
+.kubeconfig-panel .panel-hint {
+  margin-top: 4px;
+  padding: 0;
+  border-bottom: none;
+  font-size: 0.82rem;
+}
+
+.kubeconfig-source-list {
+  padding: 14px 18px;
+  overflow: auto;
+  border-bottom: 1px solid #26313a;
+}
+
+.kubeconfig-source-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(38, 49, 58, 0.75);
+}
+
+.kubeconfig-source-item:last-child {
+  border-bottom: none;
+}
+
+.kubeconfig-source-icon {
+  color: #58d1b5;
+  font-family: ui-monospace, monospace;
+  font-size: 0.78rem;
+}
+
+.kubeconfig-source-path {
+  overflow-wrap: anywhere;
+}
+
+.kubeconfig-source-meta {
+  margin-top: 3px;
+  color: #8a99a7;
+  font-size: 0.78rem;
+}
+
+.plain-danger-button {
+  padding: 5px 8px;
+  border: 1px solid #4b2d33;
+  border-radius: 6px;
+  background: #25181d;
+  color: #ff8a8a;
+  cursor: pointer;
+}
+
+.kubeconfig-source-form {
+  display: grid;
+  gap: 8px;
+  padding: 14px 18px;
+}
+
+.kubeconfig-source-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 8px;
+}
+
+.kubeconfig-source-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.kubeconfig-source-form input {
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #e8edf2;
+}
+
+.kubeconfig-source-form input[readonly] {
+  color: #8a99a7;
+}
+
+.kubeconfig-source-form button {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #1c242d;
+  color: #e8edf2;
+  cursor: pointer;
+}
+
 .panel-hint {
   margin: 0;
   padding: 12px 20px;
@@ -941,6 +1324,30 @@ button.dashboard-card:hover {
 @media (max-width: 800px) {
   .sidebar {
     width: 160px;
+  }
+
+  .context-home {
+    padding: 28px 20px 0;
+  }
+
+  .context-settings-top {
+    position: static;
+    margin: 16px 20px 0 auto;
+    display: block;
+  }
+
+  .context-home-header {
+    flex-direction: column;
+    padding-right: 0;
+  }
+
+  .context-home-tools {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .context-home-tools input {
+    width: 100%;
   }
 
   .detail-panel,

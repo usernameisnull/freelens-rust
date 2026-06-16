@@ -358,6 +358,7 @@ class MockTransport implements Transport {
     resourceKind: null,
     resourceApiVersion: null,
     refreshSeconds: 0,
+    kubeconfigSources: [],
   };
   private terminalSessionId?: string;
   private terminalCallback?: (event: TerminalEvent) => void;
@@ -403,14 +404,30 @@ class MockTransport implements Transport {
           cluster: "mock-dev-cluster",
           user: "mock-dev-user",
           isCurrent: true,
+          sourcePath: "mock-kubeconfig",
         },
         {
           name: "mock-prod",
           cluster: "mock-prod-cluster",
           user: "mock-prod-user",
           isCurrent: false,
+          sourcePath: "mock-kubeconfig",
         },
       ],
+      sources: request.sources.length > 0
+        ? request.sources.map((source) => ({
+            path: source,
+            kind: source.endsWith("\\") || source.endsWith("/") ? "directory" : "file",
+            fileCount: 1,
+            contextCount: 2,
+          }))
+        : [{
+            path: "mock-kubeconfig",
+            kind: "file",
+            fileCount: 1,
+            contextCount: 2,
+          }],
+      duplicateContexts: [],
     };
   }
 

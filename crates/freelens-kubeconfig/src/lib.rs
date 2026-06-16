@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -91,6 +92,8 @@ pub struct User {}
 pub struct KubeconfigSummary {
     pub current_context: Option<String>,
     pub contexts: Vec<ContextItem>,
+    pub sources: Vec<KubeconfigSourceSummary>,
+    pub duplicate_contexts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +103,16 @@ pub struct ContextItem {
     pub cluster: String,
     pub user: Option<String>,
     pub is_current: bool,
+    pub source_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubeconfigSourceSummary {
+    pub path: String,
+    pub kind: String,
+    pub file_count: usize,
+    pub context_count: usize,
 }
 
 /// Discover and parse kubeconfig files.
@@ -108,41 +121,244 @@ pub struct ContextItem {
 /// * `Some(path)` - treat as a single explicit path (used mainly in tests).
 pub fn load_kubeconfig(path_or_env: Option<String>) -> Result<Kubeconfig, KubeconfigError> {
     let paths = resolve_paths(path_or_env)?;
-    if paths.is_empty() {
-        return Err(KubeconfigError::NotFound {
-            path: default_kubeconfig_path(),
-        });
-    }
-
-    let mut merged = Kubeconfig::default();
-    for path in paths {
-        let file = load_single_file(&path)?;
-        merge_kubeconfig(&mut merged, file, &path)?;
-    }
-
-    Ok(merged)
+    load_kubeconfig_files(&paths, default_kubeconfig_path())
 }
 
 /// List contexts in display order with the current context flagged.
 pub fn list_contexts(path_or_env: Option<String>) -> Result<KubeconfigSummary, KubeconfigError> {
-    let config = load_kubeconfig(path_or_env)?;
+    let paths = resolve_paths(path_or_env)?;
+    let config = load_kubeconfig_files(&paths, default_kubeconfig_path())?;
+    let (context_sources, duplicate_contexts) = context_source_paths_for_files(&paths)?;
+    let sources = paths
+        .iter()
+        .map(|path| summarize_file_source(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    summarize_contexts(config, sources, context_sources, duplicate_contexts)
+}
+
+/// List contexts from user-selected kubeconfig files or directories.
+pub fn list_contexts_from_sources(
+    sources: &[String],
+) -> Result<KubeconfigSummary, KubeconfigError> {
+    if sources.is_empty() {
+        return list_contexts(None);
+    }
+
+    let mut merged = Kubeconfig::default();
+    let mut summaries = Vec::new();
+    let mut context_sources = HashMap::new();
+    let mut duplicate_contexts = Vec::new();
+    let mut saw_file = false;
+
+    for source in sources {
+        let path = PathBuf::from(source);
+        if path.is_dir() {
+            let files = collect_directory_files(&path)?;
+            let mut source_summary = KubeconfigSourceSummary {
+                path: path.to_string_lossy().into_owned(),
+                kind: "directory".into(),
+                file_count: 0,
+                context_count: 0,
+            };
+            for file_path in files {
+                let file = match load_single_file(&file_path) {
+                    Ok(file) if is_probably_kubeconfig(&file) => file,
+                    Ok(_) => continue,
+                    Err(KubeconfigError::ParseFailed { .. }) => continue,
+                    Err(KubeconfigError::ReadFailed { .. }) => continue,
+                    Err(error) => return Err(error),
+                };
+                collect_context_source_paths(
+                    &mut context_sources,
+                    &mut duplicate_contexts,
+                    &file_path,
+                    &file,
+                );
+                source_summary.file_count += 1;
+                source_summary.context_count += file.contexts.len();
+                merge_kubeconfig(&mut merged, file, &file_path)?;
+                saw_file = true;
+            }
+            summaries.push(source_summary);
+        } else {
+            let file = load_single_file(&path)?;
+            collect_context_source_paths(
+                &mut context_sources,
+                &mut duplicate_contexts,
+                &path,
+                &file,
+            );
+            let context_count = file.contexts.len();
+            merge_kubeconfig(&mut merged, file, &path)?;
+            summaries.push(KubeconfigSourceSummary {
+                path: path.to_string_lossy().into_owned(),
+                kind: "file".into(),
+                file_count: 1,
+                context_count,
+            });
+            saw_file = true;
+        }
+    }
+
+    if !saw_file {
+        return Err(KubeconfigError::NotFound {
+            path: sources
+                .first()
+                .map(PathBuf::from)
+                .unwrap_or_else(default_kubeconfig_path),
+        });
+    }
+
+    summarize_contexts(merged, summaries, context_sources, duplicate_contexts)
+}
+
+pub fn resolve_kubeconfig_files_from_sources(
+    sources: &[String],
+) -> Result<Vec<PathBuf>, KubeconfigError> {
+    if sources.is_empty() {
+        return resolve_paths(None);
+    }
+
+    let mut result = Vec::new();
+    for source in sources {
+        let path = PathBuf::from(source);
+        if path.is_dir() {
+            for file_path in collect_directory_files(&path)? {
+                match load_single_file(&file_path) {
+                    Ok(file) if is_probably_kubeconfig(&file) => result.push(file_path),
+                    Ok(_) => {}
+                    Err(KubeconfigError::ParseFailed { .. }) => {}
+                    Err(KubeconfigError::ReadFailed { .. }) => {}
+                    Err(error) => return Err(error),
+                }
+            }
+        } else {
+            load_single_file(&path)?;
+            result.push(path);
+        }
+    }
+    Ok(result)
+}
+
+fn summarize_contexts(
+    config: Kubeconfig,
+    sources: Vec<KubeconfigSourceSummary>,
+    context_sources: HashMap<String, String>,
+    duplicate_contexts: Vec<String>,
+) -> Result<KubeconfigSummary, KubeconfigError> {
     let current = config.current_context.clone();
 
     let contexts = config
         .contexts
         .into_iter()
-        .map(|named| ContextItem {
-            is_current: current.as_ref() == Some(&named.name),
-            name: named.name,
-            cluster: named.context.cluster,
-            user: named.context.user,
+        .map(|named| {
+            let source_path = context_sources.get(&named.name).cloned();
+            ContextItem {
+                is_current: current.as_ref() == Some(&named.name),
+                name: named.name,
+                cluster: named.context.cluster,
+                user: named.context.user,
+                source_path,
+            }
         })
         .collect();
 
     Ok(KubeconfigSummary {
         current_context: current,
         contexts,
+        sources,
+        duplicate_contexts,
     })
+}
+
+fn load_kubeconfig_files(
+    paths: &[PathBuf],
+    not_found_path: PathBuf,
+) -> Result<Kubeconfig, KubeconfigError> {
+    if paths.is_empty() {
+        return Err(KubeconfigError::NotFound {
+            path: not_found_path,
+        });
+    }
+
+    let mut merged = Kubeconfig::default();
+    for path in paths {
+        let file = load_single_file(path)?;
+        merge_kubeconfig(&mut merged, file, path)?;
+    }
+
+    Ok(merged)
+}
+
+fn summarize_file_source(path: &Path) -> Result<KubeconfigSourceSummary, KubeconfigError> {
+    let file = load_single_file(path)?;
+    Ok(KubeconfigSourceSummary {
+        path: path.to_string_lossy().into_owned(),
+        kind: "file".into(),
+        file_count: 1,
+        context_count: file.contexts.len(),
+    })
+}
+
+fn context_source_paths_for_files(
+    paths: &[PathBuf],
+) -> Result<(HashMap<String, String>, Vec<String>), KubeconfigError> {
+    let mut context_sources = HashMap::new();
+    let mut duplicate_contexts = Vec::new();
+    for path in paths {
+        let file = load_single_file(path)?;
+        collect_context_source_paths(&mut context_sources, &mut duplicate_contexts, path, &file);
+    }
+    Ok((context_sources, duplicate_contexts))
+}
+
+fn collect_context_source_paths(
+    context_sources: &mut HashMap<String, String>,
+    duplicate_contexts: &mut Vec<String>,
+    path: &Path,
+    file: &Kubeconfig,
+) {
+    let source_path = path.to_string_lossy().into_owned();
+    for named in &file.contexts {
+        if context_sources.contains_key(&named.name) {
+            duplicate_contexts.push(named.name.clone());
+        } else {
+            context_sources.insert(named.name.clone(), source_path.clone());
+        }
+    }
+}
+
+fn collect_directory_files(path: &Path) -> Result<Vec<PathBuf>, KubeconfigError> {
+    let mut result = Vec::new();
+    collect_directory_files_inner(path, &mut result)?;
+    result.sort();
+    Ok(result)
+}
+
+fn collect_directory_files_inner(
+    path: &Path,
+    result: &mut Vec<PathBuf>,
+) -> Result<(), KubeconfigError> {
+    for entry in std::fs::read_dir(path).map_err(|source| KubeconfigError::ReadFailed {
+        path: path.to_path_buf(),
+        source,
+    })? {
+        let entry = entry.map_err(|source| KubeconfigError::ReadFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let entry_path = entry.path();
+        if entry_path.is_dir() {
+            collect_directory_files_inner(&entry_path, result)?;
+        } else if entry_path.is_file() {
+            result.push(entry_path);
+        }
+    }
+    Ok(())
+}
+
+fn is_probably_kubeconfig(file: &Kubeconfig) -> bool {
+    file.kind.as_deref() == Some("Config") || !file.contexts.is_empty() || !file.clusters.is_empty()
 }
 
 fn resolve_paths(path_or_env: Option<String>) -> Result<Vec<PathBuf>, KubeconfigError> {
@@ -402,6 +618,11 @@ contexts:
         assert_eq!(shared.cluster, "shared-cluster");
         assert_eq!(shared.user, Some("shared-user".into()));
         assert!(shared.is_current);
+        assert_eq!(
+            shared.source_path,
+            Some(first.path().to_string_lossy().into_owned())
+        );
+        assert_eq!(summary.duplicate_contexts, vec!["shared"]);
     }
 
     #[test]

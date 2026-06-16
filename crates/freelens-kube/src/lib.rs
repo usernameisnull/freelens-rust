@@ -9,11 +9,12 @@ use kube::api::{
     Api, AttachParams, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
     TerminalSize, WatchEvent, WatchParams,
 };
-use kube::config::KubeConfigOptions;
+use kube::config::{KubeConfigOptions, Kubeconfig as KubeconfigFile};
 use kube::core::{ApiResource, GroupVersion, GroupVersionKind};
 use kube::discovery::{pinned_group, verbs};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use thiserror::Error;
 
@@ -719,13 +720,28 @@ fn is_builtin_resource(kind: &str, api_version: &str) -> bool {
 
 /// Create a Kubernetes client for the given context.
 pub async fn create_client(context: Option<String>) -> Result<kube::Client, KubernetesError> {
+    create_client_from_kubeconfig(context, None).await
+}
+
+pub async fn create_client_from_kubeconfig(
+    context: Option<String>,
+    kubeconfig_path: Option<PathBuf>,
+) -> Result<kube::Client, KubernetesError> {
     let options = KubeConfigOptions {
         context,
         ..Default::default()
     };
-    let config = kube::Config::from_kubeconfig(&options)
-        .await
-        .map_err(|error| KubernetesError::ConfigFailed(error.to_string()))?;
+    let config = if let Some(path) = kubeconfig_path {
+        let kubeconfig = KubeconfigFile::read_from(&path)
+            .map_err(|error| KubernetesError::ConfigFailed(error.to_string()))?;
+        kube::Config::from_custom_kubeconfig(kubeconfig, &options)
+            .await
+            .map_err(|error| KubernetesError::ConfigFailed(error.to_string()))?
+    } else {
+        kube::Config::from_kubeconfig(&options)
+            .await
+            .map_err(|error| KubernetesError::ConfigFailed(error.to_string()))?
+    };
     kube::Client::try_from(config).map_err(|error| KubernetesError::ClientFailed(error.to_string()))
 }
 
@@ -2369,6 +2385,7 @@ pub async fn stream_pod_logs(
 #[derive(Default)]
 pub struct ClientCache {
     clients: Mutex<HashMap<String, kube::Client>>,
+    context_kubeconfigs: Mutex<HashMap<String, PathBuf>>,
 }
 
 impl ClientCache {
@@ -2376,23 +2393,48 @@ impl ClientCache {
         Self::default()
     }
 
+    pub fn clear(&self) {
+        self.clients.lock().unwrap().clear();
+    }
+
+    pub fn set_context_kubeconfigs<I>(&self, contexts: I)
+    where
+        I: IntoIterator<Item = (String, PathBuf)>,
+    {
+        let mut context_kubeconfigs = self.context_kubeconfigs.lock().unwrap();
+        context_kubeconfigs.clear();
+        context_kubeconfigs.extend(contexts);
+        self.clients.lock().unwrap().clear();
+    }
+
     /// Get or create a client for the given context.
     pub async fn client(&self, context: Option<String>) -> Result<kube::Client, KubernetesError> {
-        let key = context.clone().unwrap_or_default();
+        let kubeconfig_path = context.as_ref().and_then(|context| {
+            self.context_kubeconfigs
+                .lock()
+                .unwrap()
+                .get(context)
+                .cloned()
+        });
+        let context_key = context.clone().unwrap_or_default();
+        let key = kubeconfig_path
+            .as_ref()
+            .map(|path| format!("{}@{}", context_key, path.display()))
+            .unwrap_or_else(|| context_key.clone());
         {
             let clients = self.clients.lock().unwrap();
             if let Some(client) = clients.get(&key) {
-                tracing::debug!(context = %key, "reusing cached kubernetes client");
+                tracing::debug!(context = %context_key, cache_key = %key, "reusing cached kubernetes client");
                 return Ok(client.clone());
             }
         }
 
-        let client = create_client(context).await?;
+        let client = create_client_from_kubeconfig(context, kubeconfig_path).await?;
         self.clients
             .lock()
             .unwrap()
             .insert(key.clone(), client.clone());
-        tracing::debug!(context = %key, "created and cached kubernetes client");
+        tracing::debug!(context = %context_key, cache_key = %key, "created and cached kubernetes client");
         Ok(client)
     }
 }

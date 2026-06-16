@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode, UIEvent as ReactUIEvent } from "react";
 import { FitAddon } from "@xterm/addon-fit";
+import { open } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
 import {
   IPC_VERSION,
@@ -8,6 +9,7 @@ import {
   KubernetesClusterOverviewResponse,
   KubeconfigContext,
   KubeconfigListResponse,
+  KubeconfigSource,
   KubectlInstallation,
   KubectlRunResponse,
   KubernetesGetResourceDetailResponse,
@@ -76,6 +78,22 @@ function parseCommandArguments(value: string): string[] {
   return argumentsList;
 }
 
+function normalizeKubeconfigSource(value: string): string {
+  return value.trim().replace(/^["']|["']$/g, "");
+}
+
+function uniqueKubeconfigSources(sources: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const source of sources.map(normalizeKubeconfigSource).filter(Boolean)) {
+    const key = source.toLocaleLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(source);
+  }
+  return result;
+}
+
 const RESOURCE_GROUPS = [
   {
     label: "Cluster",
@@ -100,6 +118,8 @@ const RESOURCE_GROUPS = [
 ];
 
 type NavigationIcon = "overview" | "events" | "cluster" | "workloads" | "network" | "config" | "storage" | "more" | "collapseAll" | "expandAll";
+type ActiveView = "contexts" | "overview" | "events" | "health" | "resources";
+type ContextDisplayMode = "list" | "grid";
 
 const GROUP_ICONS: Record<string, NavigationIcon> = {
   Cluster: "cluster",
@@ -292,6 +312,12 @@ export function App() {
   const preferredResourceRef = useRef("");
   const [kubeconfig, setKubeconfig] = useState<KubeconfigListResponse>();
   const [kubeconfigError, setKubeconfigError] = useState<string>();
+  const [kubeconfigSources, setKubeconfigSources] = useState<string[]>([]);
+  const [kubeconfigSearch, setKubeconfigSearch] = useState("");
+  const [kubeconfigSettingsOpen, setKubeconfigSettingsOpen] = useState(false);
+  const [kubeconfigSourceDraft, setKubeconfigSourceDraft] = useState("");
+  const [contextDisplayMode, setContextDisplayMode] = useState<ContextDisplayMode>("list");
+  const [pendingContext, setPendingContext] = useState("");
   const [selectedContext, setSelectedContext] = useState<string>("");
   const selectedContextRef = useRef(selectedContext);
   const setSelectedContextAndRef = (value: string) => {
@@ -307,7 +333,7 @@ export function App() {
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
   const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
-  const [activeView, setActiveView] = useState<"overview" | "events" | "health" | "resources">("overview");
+  const [activeView, setActiveView] = useState<ActiveView>("contexts");
   const [resourceDiscoveryError, setResourceDiscoveryError] = useState<string>();
   const [resourceCatalogSearch, setResourceCatalogSearch] = useState("");
   const [selectedResource, setSelectedResource] = useState<ResourceKindItem>(FALLBACK_RESOURCE_KINDS[0]);
@@ -522,11 +548,7 @@ export function App() {
   }, [localTerminalSize]);
 
   useEffect(() => {
-    Promise.all([
-      transport.kubeconfigList({
-        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-      }),
-      transport.settingsLoad({
+    transport.settingsLoad({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
       }).catch((reason: unknown) => {
         setActionError(errorMessage(reason));
@@ -539,11 +561,19 @@ export function App() {
             resourceKind: null,
             resourceApiVersion: null,
             refreshSeconds: 0,
+            kubeconfigSources: [],
           },
         };
-      }),
-    ])
-      .then(([response, saved]) => {
+      })
+      .then((saved) => {
+        const savedSources = uniqueKubeconfigSources(saved.settings.kubeconfigSources ?? []);
+        setKubeconfigSources(savedSources);
+        return transport.kubeconfigList({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          sources: savedSources,
+        }).then((response) => ({ response, saved }));
+      })
+      .then(({ response, saved }) => {
         setKubeconfig(response);
         const savedContext = saved.settings.context;
         const context = response.contexts.some((item) => item.name === savedContext)
@@ -558,6 +588,7 @@ export function App() {
           : 0);
         settingsRestorePendingRef.current = 2;
         setSelectedContextAndRef(context);
+        setPendingContext(context);
         if (!context) {
           settingsRestorePendingRef.current = 0;
           setSettingsReady(true);
@@ -697,11 +728,12 @@ export function App() {
           resourceKind: selectedResource.kind || null,
           resourceApiVersion: resourceApiVersion(selectedResource) || null,
           refreshSeconds,
+          kubeconfigSources,
         },
       }).catch((reason) => setActionError(errorMessage(reason)));
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [settingsReady, selectedContext, selectedNamespace, selectedResource, refreshSeconds]);
+  }, [settingsReady, selectedContext, selectedNamespace, selectedResource, refreshSeconds, kubeconfigSources]);
 
   useEffect(() => {
     const terminalElement = terminalHostRef.current;
@@ -992,6 +1024,7 @@ export function App() {
 
   useEffect(() => {
     if (!refreshSeconds || !selectedContext) return;
+    if (activeView === "contexts") return;
     const interval = window.setInterval(
       () => activeView === "overview" ? loadOverview()
         : activeView === "events" ? loadEvents()
@@ -2025,6 +2058,106 @@ export function App() {
       ? [...coreGroups, { label: "More Resources", resources: moreResources }]
       : coreGroups;
   }, [resourceKinds, resourceCatalogSearch]);
+  const filteredKubeconfigContexts = useMemo(() => {
+    const query = kubeconfigSearch.trim().toLocaleLowerCase();
+    if (!kubeconfig) return [];
+    if (!query) return kubeconfig.contexts;
+    return kubeconfig.contexts.filter((ctx) =>
+      [ctx.name, ctx.cluster, ctx.user ?? ""].some((value) =>
+        value.toLocaleLowerCase().includes(query)
+      )
+    );
+  }, [kubeconfig, kubeconfigSearch]);
+  const switchContext = (context: string) => {
+    if (!context) return;
+    void cancelKubectl();
+    closeLocalTerminal();
+    for (const forward of Object.values(portForwardsRef.current)) {
+      void transport.kubernetesStopPodPortForward({
+        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+        operationId: forward.operationId,
+      });
+    }
+    updatePortForwards({});
+    setSelectedContextAndRef(context);
+    setPendingContext(context);
+    setNamespaces([]);
+    setSelectedNamespace("");
+    setResources([]);
+    setDetail(undefined);
+    closeTerminal();
+    setLogs([]);
+    resourceRequestRef.current += 1;
+    closeLogs();
+  };
+  const reloadKubeconfigFromSources = async (sources: string[]) => {
+    const nextSources = uniqueKubeconfigSources(sources);
+    setKubeconfigError(undefined);
+    setKubeconfigSources(nextSources);
+    const response = await transport.kubeconfigList({
+      meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+      sources: nextSources,
+    });
+    setKubeconfig(response);
+    const nextContext = response.contexts.some((item) => item.name === selectedContext)
+      ? selectedContext
+      : response.currentContext ?? response.contexts[0]?.name ?? "";
+    setSelectedContextAndRef(nextContext);
+    setPendingContext(nextContext);
+    setNamespaces([]);
+    setSelectedNamespace("");
+    setResources([]);
+    setDetail(undefined);
+    setLogs([]);
+    resourceRequestRef.current += 1;
+    closeLogs();
+    closeTerminal();
+    closeLocalTerminal();
+  };
+  const addKubeconfigSource = (source: string) => {
+    const normalized = normalizeKubeconfigSource(source);
+    if (!normalized) return;
+    setKubeconfigSourceDraft("");
+    void reloadKubeconfigFromSources([...kubeconfigSources, normalized]).catch((reason) =>
+      setKubeconfigError(errorMessage(reason))
+    );
+  };
+  const addKubeconfigSources = (sources: string[]) => {
+    const normalized = uniqueKubeconfigSources(sources);
+    if (normalized.length === 0) return;
+    setKubeconfigSourceDraft("");
+    void reloadKubeconfigFromSources([...kubeconfigSources, ...normalized]).catch((reason) =>
+      setKubeconfigError(errorMessage(reason))
+    );
+  };
+  const chooseKubeconfigFiles = async () => {
+    const selected = await open({
+      multiple: true,
+      directory: false,
+      title: "Select kubeconfig files",
+    });
+    if (!selected) return;
+    addKubeconfigSources(Array.isArray(selected) ? selected : [selected]);
+  };
+  const chooseKubeconfigFolder = async () => {
+    const selected = await open({
+      multiple: false,
+      directory: true,
+      title: "Select kubeconfig folder",
+    });
+    if (!selected || Array.isArray(selected)) return;
+    addKubeconfigSources([selected]);
+  };
+  const removeKubeconfigSource = (source: string) => {
+    void reloadKubeconfigFromSources(kubeconfigSources.filter((item) => item !== source)).catch((reason) =>
+      setKubeconfigError(errorMessage(reason))
+    );
+  };
+  const reloadContexts = () => {
+    void reloadKubeconfigFromSources(kubeconfigSources).catch((reason) =>
+      setKubeconfigError(errorMessage(reason))
+    );
+  };
   const hasResourceCatalogSearch = Boolean(resourceCatalogSearch.trim());
   const allNavigationGroupsExpanded = navigationGroups.every((group) => !collapsedGroups[group.label]);
   const toggleAllNavigationGroups = () => {
@@ -2037,136 +2170,116 @@ export function App() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar" style={{ width: sidebarWidth }}>
-        <div className="sidebar-header">
-          <h1>Freelens</h1>
-          {kubeconfig ? (
-            <select
-              value={selectedContext}
-              onChange={(event) => {
-                void cancelKubectl();
-                closeLocalTerminal();
-                for (const forward of Object.values(portForwardsRef.current)) {
-                  void transport.kubernetesStopPodPortForward({
-                    meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-                    operationId: forward.operationId,
-                  });
-                }
-                updatePortForwards({});
-                setSelectedContextAndRef(event.target.value);
-                setNamespaces([]);
-                setSelectedNamespace("");
-                setResources([]);
-                setDetail(undefined);
-                closeTerminal();
-                setLogs([]);
-                resourceRequestRef.current += 1;
-                closeLogs();
-              }}
-            >
-              {kubeconfig.contexts.map((ctx: KubeconfigContext) => (
-                <option key={ctx.name} value={ctx.name}>
-                  {ctx.name}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <p>{kubeconfigError ?? "Loading contexts…"}</p>
-          )}
-          <input
-            className="resource-catalog-search"
-            type="search"
-            placeholder="Find resource type"
-            value={resourceCatalogSearch}
-            onChange={(event) => setResourceCatalogSearch(event.target.value)}
-          />
-        </div>
-
-        <nav className="sidebar-nav">
-          <div className="nav-group overview-navigation">
-            <ul>
-              <li>
-                <button
-                  className={activeView === "overview" ? "active" : ""}
-                  onClick={() => setActiveView("overview")}
-                >
-                  <NavigationIcon name="overview" />
-                  <span>Overview</span>
-                </button>
-              </li>
-              <li>
-                <button
-                  className={activeView === "events" ? "active" : ""}
-                  onClick={() => setActiveView("events")}
-                >
-                  <NavigationIcon name="events" />
-                  <span>Events</span>
-                </button>
-              </li>
-            </ul>
-          </div>
-          <div className="nav-group-tools">
-            <button
-              type="button"
-              className="nav-icon-button"
-              onClick={toggleAllNavigationGroups}
-              disabled={hasResourceCatalogSearch || navigationGroups.length === 0}
-              aria-label={allNavigationGroupsExpanded ? "Collapse all resource groups" : "Expand all resource groups"}
-              title={allNavigationGroupsExpanded ? "Collapse all" : "Expand all"}
-            >
-              <NavigationIcon name={allNavigationGroupsExpanded ? "collapseAll" : "expandAll"} />
-            </button>
-          </div>
-          {navigationGroups.map((group) => (
-            <div key={group.label} className="nav-group">
+      {activeView !== "contexts" && (
+        <>
+          <aside className="sidebar" style={{ width: sidebarWidth }}>
+            <div className="sidebar-header">
+              <h1>Freelens</h1>
               <button
-                className="nav-group-header"
-                onClick={() => toggleNavigationGroup(group.label)}
-                aria-expanded={!collapsedGroups[group.label] || hasResourceCatalogSearch}
+                type="button"
+                className="sidebar-context-card"
+                onClick={() => setActiveView("contexts")}
+                title="Back to contexts"
               >
-                <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
-                <span>{group.label}</span>
-                <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                <span className="sidebar-context-home">{"<"}</span>
+                <span className="sidebar-context-name">{selectedContext || "No context"}</span>
               </button>
-              <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
-                {group.resources.map((resource) => (
-                  <li key={resourceKey(resource)}>
+              <input
+                className="resource-catalog-search"
+                type="search"
+                placeholder="Find resource type"
+                value={resourceCatalogSearch}
+                onChange={(event) => setResourceCatalogSearch(event.target.value)}
+              />
+            </div>
+
+            <nav className="sidebar-nav">
+              <div className="nav-group overview-navigation">
+                <ul>
+                  <li>
                     <button
-                      className={activeView === "resources" && resourceKey(selectedResource) === resourceKey(resource) ? "active" : ""}
-                      title={resourceApiVersion(resource)}
-                      onClick={() => {
-                        setSelectedResource(resource);
-                        setActiveView("resources");
-                        if (!resource.namespaced) setSelectedNamespace("");
-                        resourceRequestRef.current += 1;
-                        setDetail(undefined);
-                      }}
+                      className={activeView === "overview" ? "active" : ""}
+                      onClick={() => setActiveView("overview")}
                     >
-                      <ResourceIcon kind={resource.kind} />
-                      <span>{group.label === "More Resources" && resource.group
-                        ? `${resourceKindLabel(resource.kind)} (${resource.group})`
-                        : resourceKindLabel(resource.kind)}</span>
+                      <NavigationIcon name="overview" />
+                      <span>Overview</span>
                     </button>
                   </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          {resourceDiscoveryError && (
-            <p className="sidebar-warning" title={resourceDiscoveryError}>Using built-in resource catalog</p>
-          )}
-        </nav>
-      </aside>
-      <div
-        className="sidebar-resizer"
-        role="separator"
-        aria-label="Resize sidebar"
-        aria-orientation="vertical"
-        onPointerDown={startSidebarResize}
-      />
+                  <li>
+                    <button
+                      className={activeView === "events" ? "active" : ""}
+                      onClick={() => setActiveView("events")}
+                    >
+                      <NavigationIcon name="events" />
+                      <span>Events</span>
+                    </button>
+                  </li>
+                </ul>
+              </div>
+              <div className="nav-group-tools">
+                <button
+                  type="button"
+                  className="nav-icon-button"
+                  onClick={toggleAllNavigationGroups}
+                  disabled={hasResourceCatalogSearch || navigationGroups.length === 0}
+                  aria-label={allNavigationGroupsExpanded ? "Collapse all resource groups" : "Expand all resource groups"}
+                  title={allNavigationGroupsExpanded ? "Collapse all" : "Expand all"}
+                >
+                  <NavigationIcon name={allNavigationGroupsExpanded ? "collapseAll" : "expandAll"} />
+                </button>
+              </div>
+              {navigationGroups.map((group) => (
+                <div key={group.label} className="nav-group">
+                  <button
+                    className="nav-group-header"
+                    onClick={() => toggleNavigationGroup(group.label)}
+                    aria-expanded={!collapsedGroups[group.label] || hasResourceCatalogSearch}
+                  >
+                    <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
+                    <span>{group.label}</span>
+                    <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                  </button>
+                  <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
+                    {group.resources.map((resource) => (
+                      <li key={resourceKey(resource)}>
+                        <button
+                          className={activeView === "resources" && resourceKey(selectedResource) === resourceKey(resource) ? "active" : ""}
+                          title={resourceApiVersion(resource)}
+                          onClick={() => {
+                            setSelectedResource(resource);
+                            setActiveView("resources");
+                            if (!resource.namespaced) setSelectedNamespace("");
+                            resourceRequestRef.current += 1;
+                            setDetail(undefined);
+                          }}
+                        >
+                          <ResourceIcon kind={resource.kind} />
+                          <span>{group.label === "More Resources" && resource.group
+                            ? `${resourceKindLabel(resource.kind)} (${resource.group})`
+                            : resourceKindLabel(resource.kind)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+              {resourceDiscoveryError && (
+                <p className="sidebar-warning" title={resourceDiscoveryError}>Using built-in resource catalog</p>
+              )}
+            </nav>
+          </aside>
+          <div
+            className="sidebar-resizer"
+            role="separator"
+            aria-label="Resize sidebar"
+            aria-orientation="vertical"
+            onPointerDown={startSidebarResize}
+          />
+        </>
+      )}
 
       <main className="main">
-        <header className="topbar">
+        {activeView !== "contexts" && <header className="topbar">
           <div className="title-with-status">
             <h2>{activeView === "overview" ? "Cluster Overview" : activeView === "events" ? "Events" : activeView === "health" ? healthTitle : resourceKindLabel(selectedKind)}</h2>
             {(activeView === "resources" || activeView === "events") && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
@@ -2240,9 +2353,101 @@ export function App() {
             <button onClick={() => void openKubectl()}>Kubectl</button>
             <button onClick={() => setLocalTerminalOpen(true)}>Shell</button>
           </div>
-        </header>
+        </header>}
 
-        {activeView === "overview" ? (
+        {activeView === "contexts" ? (
+          <section className="context-home">
+            <button
+              type="button"
+              className="context-settings-top"
+              onClick={() => setKubeconfigSettingsOpen(true)}
+            >
+              Settings
+            </button>
+            <div className="context-home-inner">
+              <div className="context-home-header">
+                <div>
+                  <h2>Freelens</h2>
+                  <p>Select one context to get started.</p>
+                  {kubeconfig && kubeconfig.duplicateContexts.length > 0 && (
+                    <div className="kubeconfig-duplicates-warning">
+                      <p>You have {kubeconfig.duplicateContexts.length} duplicate contexts in your Kubeconfig files.</p>
+                      <p>To avoid mistakes and accidental connections to the wrong cluster, it's recommended to delete or rename them.</p>
+                      <p>Duplicate: {kubeconfig.duplicateContexts.join(", ")}</p>
+                    </div>
+                  )}
+                  {kubeconfigError && <p className="error-message compact-error">{kubeconfigError}</p>}
+                </div>
+                <div className="context-home-tools">
+                  <input
+                    type="search"
+                    placeholder="Search contexts"
+                    value={kubeconfigSearch}
+                    onChange={(event) => setKubeconfigSearch(event.target.value)}
+                  />
+                  <div className="context-view-toggle" role="group" aria-label="Context display mode">
+                    <button
+                      type="button"
+                      className={contextDisplayMode === "grid" ? "active" : ""}
+                      onClick={() => setContextDisplayMode("grid")}
+                      title="Grid view"
+                    >
+                      Grid
+                    </button>
+                    <button
+                      type="button"
+                      className={contextDisplayMode === "list" ? "active" : ""}
+                      onClick={() => setContextDisplayMode("list")}
+                      title="List view"
+                    >
+                      List
+                    </button>
+                  </div>
+                  <button type="button" onClick={reloadContexts}>
+                    Reload
+                  </button>
+                </div>
+              </div>
+
+              <div className={`context-results context-results-${contextDisplayMode}`}>
+                {filteredKubeconfigContexts.map((ctx) => (
+                  <button
+                    key={ctx.name}
+                    type="button"
+                    className={`context-result ${pendingContext === ctx.name ? "active" : ""}`}
+                    onClick={() => setPendingContext(ctx.name)}
+                    onDoubleClick={() => {
+                      switchContext(ctx.name);
+                      setActiveView("overview");
+                    }}
+                  >
+                    <span className="context-result-icon">K8s</span>
+                    <span className="context-result-name">{ctx.name}</span>
+                    <span className="context-result-cluster">{ctx.cluster}</span>
+                  </button>
+                ))}
+                {kubeconfig && filteredKubeconfigContexts.length === 0 && (
+                  <p className="empty-state">No matching contexts.</p>
+                )}
+                {!kubeconfig && <p>Loading contexts...</p>}
+              </div>
+
+              <div className="context-home-footer">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const context = pendingContext || selectedContext;
+                    switchContext(context);
+                    if (context) setActiveView("overview");
+                  }}
+                  disabled={!pendingContext && !selectedContext}
+                >
+                  Connect {"->"}
+                </button>
+              </div>
+            </div>
+          </section>
+        ) : activeView === "overview" ? (
           <section className="dashboard">
             {overviewError ? <p className="error-message">{overviewError}</p> : overviewLoading && !overview ? (
               <p>Loading cluster overview…</p>
@@ -2671,6 +2876,86 @@ export function App() {
               onClick={focusTerminal}
               onDoubleClick={focusTerminal}
             />
+          </div>
+        </div>
+      )}
+
+      {kubeconfigSettingsOpen && (
+        <div className="detail-panel-overlay" onClick={() => setKubeconfigSettingsOpen(false)}>
+          <div className="detail-panel kubeconfig-panel" onClick={(event) => event.stopPropagation()}>
+            <header>
+              <div>
+                <h3>Kubeconfig Sources</h3>
+                <p className="panel-hint">
+                  Add kubeconfig files or folders, or enter a path directly. Empty sources use kubectl's default location.
+                </p>
+              </div>
+              <button onClick={() => setKubeconfigSettingsOpen(false)}>Close</button>
+            </header>
+            <div className="kubeconfig-source-list">
+              {kubeconfig && kubeconfig.duplicateContexts.length > 0 && (
+                <div className="kubeconfig-duplicates-warning">
+                  <p>You have {kubeconfig.duplicateContexts.length} duplicate contexts in your Kubeconfig files.</p>
+                  <p>To avoid mistakes and accidental connections to the wrong cluster, it's recommended to delete or rename them.</p>
+                  <p>Duplicate: {kubeconfig.duplicateContexts.join(", ")}</p>
+                </div>
+              )}
+              {(kubeconfig?.sources ?? []).map((source: KubeconfigSource) => (
+                <div key={source.path} className="kubeconfig-source-item">
+                  <span className="kubeconfig-source-icon">{source.kind === "directory" ? "[dir]" : "[file]"}</span>
+                  <div>
+                    <div className="kubeconfig-source-path">{source.path}</div>
+                    <div className="kubeconfig-source-meta">
+                      {source.fileCount} {source.fileCount === 1 ? "file" : "files"} / {source.contextCount} contexts
+                    </div>
+                  </div>
+                  {kubeconfigSources.includes(source.path) && (
+                    <button type="button" className="plain-danger-button" onClick={() => removeKubeconfigSource(source.path)}>
+                      Remove
+                    </button>
+                  )}
+                </div>
+              ))}
+              {kubeconfigError && <p className="error-message">{kubeconfigError}</p>}
+            </div>
+            <form
+              className="kubeconfig-source-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                addKubeconfigSource(kubeconfigSourceDraft);
+              }}
+            >
+              <div className="kubeconfig-source-row">
+                <input
+                  value={kubeconfigSourceDraft}
+                  onChange={(event) => setKubeconfigSourceDraft(event.target.value)}
+                  placeholder="C:\\Users\\MaBing\\.kube\\config or C:\\Users\\MaBing\\.kube\\configs"
+                />
+                <button type="submit" disabled={!kubeconfigSourceDraft.trim()}>
+                  Enter Path
+                </button>
+              </div>
+              <div className="kubeconfig-source-row">
+                <input value="kubectl default: ~/.kube/config" readOnly />
+                <button type="button" onClick={() => void reloadKubeconfigFromSources([]).catch((reason) => setKubeconfigError(errorMessage(reason)))}>
+                  Use Default
+                </button>
+              </div>
+              <div className="kubeconfig-source-actions">
+                <button
+                  type="button"
+                  onClick={() => void chooseKubeconfigFiles().catch((reason) => setKubeconfigError(errorMessage(reason)))}
+                >
+                  Add Files
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void chooseKubeconfigFolder().catch((reason) => setKubeconfigError(errorMessage(reason)))}
+                >
+                  Add Folder
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

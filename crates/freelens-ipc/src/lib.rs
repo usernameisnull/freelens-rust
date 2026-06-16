@@ -58,6 +58,8 @@ pub struct AppSettings {
     pub resource_kind: Option<String>,
     pub resource_api_version: Option<String>,
     pub refresh_seconds: u32,
+    #[serde(default)]
+    pub kubeconfig_sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +87,8 @@ pub struct SettingsSaveRequest {
 #[serde(rename_all = "camelCase")]
 pub struct KubeconfigListRequest {
     pub meta: RequestMeta,
+    #[serde(default)]
+    pub sources: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +98,7 @@ pub struct KubeconfigContext {
     pub cluster: String,
     pub user: Option<String>,
     pub is_current: bool,
+    pub source_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -103,6 +108,17 @@ pub struct KubeconfigListResponse {
     pub request_id: String,
     pub current_context: Option<String>,
     pub contexts: Vec<KubeconfigContext>,
+    pub sources: Vec<KubeconfigSource>,
+    pub duplicate_contexts: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KubeconfigSource {
+    pub path: String,
+    pub kind: String,
+    pub file_count: usize,
+    pub context_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -830,12 +846,17 @@ mod tests {
                 resource_kind: Some("Deployment".into()),
                 resource_api_version: Some("apps/v1".into()),
                 refresh_seconds: 15,
+                kubeconfig_sources: vec!["C:\\Users\\demo\\.kube\\config".into()],
             },
         };
         let json = serde_json::to_value(request).unwrap();
         assert_eq!(json["settings"]["resourceKind"], "Deployment");
         assert_eq!(json["settings"]["resourceApiVersion"], "apps/v1");
         assert_eq!(json["settings"]["refreshSeconds"], 15);
+        assert_eq!(
+            json["settings"]["kubeconfigSources"][0],
+            "C:\\Users\\demo\\.kube\\config"
+        );
     }
 
     #[test]
@@ -849,7 +870,15 @@ mod tests {
                 cluster: "dev-cluster".into(),
                 user: Some("dev-user".into()),
                 is_current: true,
+                source_path: Some("config".into()),
             }],
+            sources: vec![KubeconfigSource {
+                path: "config".into(),
+                kind: "file".into(),
+                file_count: 1,
+                context_count: 1,
+            }],
+            duplicate_contexts: vec!["dev".into()],
         };
 
         let json = serde_json::to_value(response).unwrap();
@@ -857,6 +886,8 @@ mod tests {
         assert_eq!(json["requestId"], "r2");
         assert_eq!(json["contexts"][0]["isCurrent"], true);
         assert_eq!(json["contexts"][0]["user"], "dev-user");
+        assert_eq!(json["sources"][0]["contextCount"], 1);
+        assert_eq!(json["duplicateContexts"][0], "dev");
     }
 
     #[test]
