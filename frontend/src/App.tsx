@@ -236,6 +236,246 @@ function ResourceIcon({ kind }: { kind: string }) {
   return <span className={`resource-icon resource-icon-${kind.toLowerCase()}`}>{letters}</span>;
 }
 
+interface YamlParsedLine {
+  raw: string;
+  indent: number;
+  text: string;
+  body: string;
+  isBlank: boolean;
+  isComment: boolean;
+  isListItem: boolean;
+  dashPrefix: string;
+  key?: string;
+  value?: string;
+  hasMapping: boolean;
+  literal: boolean;
+}
+
+function splitKeyValue(s: string): { key?: string; value?: string } {
+  if (s === "") return {};
+  let inSingle = false;
+  let inDouble = false;
+  let inFlow = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (inSingle) {
+      if (c === "'") inSingle = false;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '"') inDouble = false;
+      continue;
+    }
+    if (c === "'") inSingle = true;
+    else if (c === '"') inDouble = true;
+    else if (c === "[" || c === "{") inFlow++;
+    else if (c === "]" || c === "}") inFlow--;
+    else if (c === ":" && inFlow === 0) {
+      const next = s[i + 1];
+      if (next === undefined || next === " " || next === "\t") {
+        return { key: s.slice(0, i).trim(), value: s.slice(i + 1).trim() };
+      }
+    }
+  }
+  return { value: s };
+}
+
+function parseYamlLine(raw: string): YamlParsedLine {
+  const indent = raw.length - raw.trimStart().length;
+  const text = raw.trim();
+  if (text === "") {
+    return { raw, indent: 0, text: "", body: "", isBlank: true, isComment: false, isListItem: false, dashPrefix: "", hasMapping: false, literal: false };
+  }
+  if (text.startsWith("#")) {
+    return { raw, indent, text, body: text, isBlank: false, isComment: true, isListItem: false, dashPrefix: "", hasMapping: false, literal: false };
+  }
+  let body = text;
+  let dashPrefix = "";
+  let isListItem = false;
+  if (text.startsWith("- ")) {
+    isListItem = true;
+    dashPrefix = "- ";
+    body = text.slice(2).trim();
+  } else if (text === "-") {
+    isListItem = true;
+    dashPrefix = "- ";
+    body = "";
+  }
+  const split = splitKeyValue(body);
+  return {
+    raw,
+    indent,
+    text,
+    body,
+    isBlank: false,
+    isComment: false,
+    isListItem,
+    dashPrefix,
+    key: split.key,
+    value: split.value,
+    hasMapping: split.key !== undefined,
+    literal: false,
+  };
+}
+
+function annotateLiteral(lines: YamlParsedLine[]): void {
+  let literalIndent = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (literalIndent >= 0) {
+      if (line.isBlank) continue;
+      if (line.indent > literalIndent) {
+        line.literal = true;
+        continue;
+      }
+      literalIndent = -1;
+    }
+    if (
+      literalIndent < 0 &&
+      !line.isBlank &&
+      !line.isComment &&
+      line.hasMapping &&
+      line.value &&
+      /^[|>][-+]?[0-9]*$/.test(line.value)
+    ) {
+      literalIndent = line.indent;
+    }
+  }
+}
+
+function filterManagedFields(parsed: YamlParsedLine[]): YamlParsedLine[] {
+  const result: YamlParsedLine[] = [];
+  let i = 0;
+  while (i < parsed.length) {
+    const line = parsed[i];
+    if (!line.isBlank && !line.isComment && line.hasMapping && line.key === "managedFields") {
+      const blockIndent = line.indent;
+      i++;
+      while (i < parsed.length) {
+        const next = parsed[i];
+        if (next.isBlank) { i++; continue; }
+        if (next.indent > blockIndent) { i++; continue; }
+        if (next.indent === blockIndent && next.isListItem) { i++; continue; }
+        break;
+      }
+      continue;
+    }
+    result.push(line);
+    i++;
+  }
+  return result;
+}
+
+function renderYamlLineContent(line: YamlParsedLine): ReactNode {
+  if (line.isBlank) return null;
+  if (line.isComment) return <span className="yaml-comment">{line.text}</span>;
+  if (line.literal) return <span className="yaml-value">{line.text}</span>;
+  const parts: ReactNode[] = [];
+  if (line.indent > 0) parts.push(<span key="ind" className="yaml-indent" aria-hidden="true">{"·".repeat(line.indent)}</span>);
+  if (line.dashPrefix) parts.push(<span key="dash" className="yaml-dash">{line.dashPrefix}</span>);
+  if (line.hasMapping && line.key !== undefined) {
+    parts.push(<span key="key" className="yaml-key">{line.key}:</span>);
+    if (line.value && line.value !== "") {
+      parts.push(" ");
+      parts.push(<span key="val" className="yaml-value">{line.value}</span>);
+    }
+  } else {
+    parts.push(<span key="val" className="yaml-value">{line.body}</span>);
+  }
+  return parts;
+}
+
+function YamlView({ yaml, showManagedFields }: { yaml: string; showManagedFields: boolean }) {
+  const parsed = useMemo(() => {
+    const lines = yaml.split("\n").map(parseYamlLine);
+    annotateLiteral(lines);
+    return showManagedFields ? lines : filterManagedFields(lines);
+  }, [yaml, showManagedFields]);
+
+  const isContainer = useMemo(() => {
+    const arr = new Array<boolean>(parsed.length).fill(false);
+    for (let i = 0; i < parsed.length; i++) {
+      const line = parsed[i];
+      if (line.isBlank || line.isComment) continue;
+      let j = i + 1;
+      while (j < parsed.length && (parsed[j].isBlank || parsed[j].isComment)) j++;
+      if (j < parsed.length) {
+        const next = parsed[j];
+        if (next.indent > line.indent) {
+          arr[i] = true;
+        } else if (next.indent === line.indent && next.isListItem && !line.isListItem && line.hasMapping && !line.value) {
+          arr[i] = true;
+        }
+      }
+    }
+    return arr;
+  }, [parsed]);
+
+  const [collapsed, setCollapsed] = useState<Set<number>>(() => new Set());
+  useEffect(() => { setCollapsed(new Set()); }, [yaml, showManagedFields]);
+
+  const visible = useMemo(() => {
+    const idx: number[] = [];
+    const stack: number[] = [];
+    for (let i = 0; i < parsed.length; i++) {
+      const line = parsed[i];
+      if (!line.isBlank) {
+        while (stack.length) {
+          const top = parsed[stack[stack.length - 1]];
+          if (top.indent < line.indent) break;
+          if (top.indent === line.indent && line.isListItem && !top.isListItem) break;
+          stack.pop();
+        }
+      }
+      if (stack.length === 0) idx.push(i);
+      if (isContainer[i] && collapsed.has(i)) stack.push(i);
+    }
+    return idx;
+  }, [parsed, isContainer, collapsed]);
+
+  const toggle = (i: number) => setCollapsed((prev) => {
+    const next = new Set(prev);
+    if (next.has(i)) next.delete(i);
+    else next.add(i);
+    return next;
+  });
+
+  const handleCopy = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
+    const text = selection.toString().replace(/·/g, " ");
+    event.preventDefault();
+    event.clipboardData.setData("text/plain", text);
+  };
+
+  return (
+    <div className="yaml-view" onCopy={handleCopy}>
+      {visible.map((i, displayNo) => {
+        const line = parsed[i];
+        const isCollapsed = collapsed.has(i);
+        return (
+          <div key={i} className="yaml-row">
+            <span className="yaml-line-no">{displayNo + 1}</span>
+            <span className="yaml-fold">
+              {isContainer[i] && (
+                <button
+                  type="button"
+                  className={`yaml-fold-btn${isCollapsed ? " is-collapsed" : ""}`}
+                  aria-label={isCollapsed ? "Expand" : "Collapse"}
+                  onClick={() => toggle(i)}
+                >
+                  {isCollapsed ? "▸" : "▾"}
+                </button>
+              )}
+            </span>
+            <span className="yaml-content">{renderYamlLineContent(line)}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 const RESOURCE_API_VERSIONS: Record<string, string> = {
   Pod: "v1",
   Deployment: "apps/v1",
@@ -422,6 +662,7 @@ export function App() {
   };
 
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
+  const [namespacesError, setNamespacesError] = useState<string>();
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
   const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
   const [activeView, setActiveView] = useState<ActiveView>("contexts");
@@ -482,6 +723,10 @@ export function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
   const [yamlDraft, setYamlDraft] = useState("");
+  const [yamlEditing, setYamlEditing] = useState(false);
+  const [yamlShowManagedFields, setShowYamlManagedFields] = useState(false);
+  const [yamlCopyHint, setYamlCopyHint] = useState<string>();
+  const yamlCopyHintTimer = useRef<number | undefined>(undefined);
   const [configMapDataDraft, setConfigMapDataDraft] = useState<Record<string, string>>({});
   const [secretDataDraft, setSecretDataDraft] = useState<Record<string, string>>({});
   const [revealedSecretData, setRevealedSecretData] = useState<Set<string>>(() => new Set());
@@ -1067,17 +1312,31 @@ export function App() {
       })
       .then((response: KubernetesListNamespacesResponse) => {
         setNamespaces(response.namespaces);
+        setNamespacesError(undefined);
         const preferred = preferredNamespaceRef.current;
         preferredNamespaceRef.current = "";
         setSelectedNamespace(response.namespaces.some((item) => item.name === preferred) ? preferred : "");
         finishSettingsRestore();
       })
-      .catch(() => {
+      .catch((reason: unknown) => {
+        const message = reason instanceof Error ? reason.message : String(reason);
         setNamespaces([]);
+        setNamespacesError(message);
         preferredNamespaceRef.current = "";
         finishSettingsRestore();
       });
   }, [selectedContext]);
+
+  const availableNamespaces = useMemo(() => {
+    const names = new Set<string>(namespaces.map((ns) => ns.name));
+    resources.forEach((resource) => {
+      if (resource.namespace) names.add(resource.namespace);
+    });
+    events.forEach((event) => {
+      if (event.namespace) names.add(event.namespace);
+    });
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [namespaces, resources, events]);
 
   useEffect(() => {
     if (activeView === "resources" && !selectedResource.namespaced && selectedNamespace) {
@@ -1390,6 +1649,8 @@ export function App() {
     setDetailLoading(true);
     setDetailError(undefined);
     setDetailTab("overview");
+    setYamlEditing(false);
+    setShowYamlManagedFields(false);
     setConfigMapDataDraft({});
     setSecretDataDraft({});
     setRevealedSecretData(new Set());
@@ -1553,6 +1814,22 @@ export function App() {
     } finally {
       setActionLoading(false);
     }
+  };
+
+  const copyYaml = async () => {
+    const lines = yamlDraft.split("\n").map(parseYamlLine);
+    annotateLiteral(lines);
+    const text = (yamlShowManagedFields ? lines : filterManagedFields(lines))
+      .map((line) => line.raw)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setYamlCopyHint("Copied!");
+    } catch {
+      setYamlCopyHint("Copy failed");
+    }
+    if (yamlCopyHintTimer.current) window.clearTimeout(yamlCopyHintTimer.current);
+    yamlCopyHintTimer.current = window.setTimeout(() => setYamlCopyHint(undefined), 1500);
   };
 
   const editConfigMapData = (name: string, value: string) => {
@@ -2747,10 +3024,11 @@ export function App() {
                   setSelectedNamespace(event.target.value);
                 }}
                 disabled={!selectedResource.namespaced}
+                title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
               >
                 <option value="">All namespaces</option>
-                {namespaces.map((ns: NamespaceItem) => (
-                  <option key={ns.name} value={ns.name}>{ns.name}</option>
+                {availableNamespaces.map((name) => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </select>
             </>}
@@ -2761,10 +3039,14 @@ export function App() {
                 value={resourceSearch}
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
-              <select value={selectedNamespace} onChange={(event) => setSelectedNamespace(event.target.value)}>
+              <select
+                value={selectedNamespace}
+                onChange={(event) => setSelectedNamespace(event.target.value)}
+                title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
+              >
                 <option value="">All namespaces</option>
-                {namespaces.map((namespace) => (
-                  <option key={namespace.name} value={namespace.name}>{namespace.name}</option>
+                {availableNamespaces.map((name) => (
+                  <option key={name} value={name}>{name}</option>
                 ))}
               </select>
               <select value={eventTypeFilter} onChange={(event) => setEventTypeFilter(event.target.value)}>
@@ -3142,12 +3424,39 @@ export function App() {
                 {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
                 {detailTab === "yaml" ? (
                   <div className="yaml-editor">
-                    <textarea value={yamlDraft} onChange={(event) => setYamlDraft(event.target.value)} spellCheck={false} />
+                    {yamlEditing ? (
+                      <textarea value={yamlDraft} onChange={(event) => setYamlDraft(event.target.value)} spellCheck={false} autoFocus />
+                    ) : (
+                      <>
+                        <p className="yaml-hint">Read-only — click Edit to modify</p>
+                        <YamlView yaml={yamlDraft} showManagedFields={yamlShowManagedFields} />
+                      </>
+                    )}
                     <div className="editor-actions">
-                      <button onClick={() => setYamlDraft(detail.yaml)} disabled={actionLoading}>Reset</button>
-                      <button onClick={() => void applyYaml()} disabled={actionLoading || yamlDraft === detail.yaml}>
-                        {actionLoading ? "Applying..." : "Apply"}
-                      </button>
+                      <div className="editor-actions-left">
+                        <button onClick={() => setYamlEditing((current) => !current)}>
+                          {yamlEditing ? "Done" : "Edit"}
+                        </button>
+                        <button onClick={() => void copyYaml()}>
+                          {yamlCopyHint ?? "Copy"}
+                        </button>
+                        {!yamlEditing && (
+                          <label className="yaml-checkbox">
+                            <input
+                              type="checkbox"
+                              checked={yamlShowManagedFields}
+                              onChange={(event) => setShowYamlManagedFields(event.target.checked)}
+                            />
+                            Managed Fields
+                          </label>
+                        )}
+                      </div>
+                      <div className="editor-actions-right">
+                        <button onClick={() => setYamlDraft(detail.yaml)} disabled={actionLoading}>Reset</button>
+                        <button onClick={() => void applyYaml()} disabled={actionLoading || yamlDraft === detail.yaml}>
+                          {actionLoading ? "Applying..." : "Apply"}
+                        </button>
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -3189,9 +3498,11 @@ export function App() {
                 autoFocus
               />
               <div className="editor-actions">
-                <button onClick={() => void createResource()} disabled={createLoading || !createYaml.trim()}>
-                  {createLoading ? "Applying..." : "Apply Resource"}
-                </button>
+                <div className="editor-actions-right">
+                  <button onClick={() => void createResource()} disabled={createLoading || !createYaml.trim()}>
+                    {createLoading ? "Applying..." : "Apply Resource"}
+                  </button>
+                </div>
               </div>
             </div>
           </div>

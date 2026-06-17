@@ -423,6 +423,8 @@ body.resizing-sidebar {
 }
 
 .topbar {
+  position: relative;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -469,6 +471,8 @@ body.resizing-sidebar {
 }
 
 .topbar-controls select {
+  position: relative;
+  z-index: 21;
   padding: 6px 8px;
   border: 1px solid #26313a;
   border-radius: 6px;
@@ -1596,7 +1600,20 @@ button.dashboard-card:hover {
 }
 
 .editor-actions {
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.editor-actions-left,
+.editor-actions-right {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.editor-actions-right {
+  margin-left: auto;
 }
 
 .editor-actions button,
@@ -1613,6 +1630,124 @@ button.dashboard-card:hover {
 .exec-controls button:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.yaml-checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #9eabb8;
+  font-size: 0.82rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.yaml-checkbox input {
+  cursor: pointer;
+}
+
+.yaml-hint {
+  flex: none;
+  margin: 0;
+  padding: 6px 18px;
+  color: #63717e;
+  font-size: 0.75rem;
+  border-bottom: 1px solid #26313a;
+  background: #0f1419;
+}
+
+.yaml-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0;
+  background: #0f1419;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.yaml-row {
+  display: flex;
+  align-items: flex-start;
+  white-space: nowrap;
+}
+
+.yaml-row:hover {
+  background: rgba(88, 209, 181, 0.06);
+}
+
+.yaml-fold {
+  flex: none;
+  width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.yaml-fold-btn {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #63717e;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.yaml-row:hover .yaml-fold-btn,
+.yaml-fold-btn.is-collapsed {
+  opacity: 1;
+}
+
+.yaml-fold-btn:hover {
+  color: #e8edf2;
+}
+
+.yaml-line-no {
+  flex: none;
+  min-width: 38px;
+  padding-right: 10px;
+  text-align: right;
+  color: #46535f;
+  user-select: none;
+}
+
+.yaml-content {
+  flex: 1;
+  white-space: pre;
+  overflow: visible;
+  padding-right: 18px;
+}
+
+.yaml-indent {
+  color: transparent;
+  white-space: pre;
+  user-select: text;
+}
+
+.yaml-indent::selection {
+  color: #63717e;
+  background: rgba(88, 209, 181, 0.18);
+}
+
+.yaml-dash {
+  color: #9eabb8;
+}
+
+.yaml-key {
+  color: #58d1b5;
+}
+
+.yaml-value {
+  color: #76b7ff;
+}
+
+.yaml-comment {
+  color: #63717e;
 }
 
 .log-panel {
