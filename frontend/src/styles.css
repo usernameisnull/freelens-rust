@@ -1667,6 +1667,10 @@ button.dashboard-card:hover {
   line-height: 1.5;
 }
 
+.yaml-view:focus {
+  outline: none;
+}
+
 .yaml-row {
   display: flex;
   align-items: flex-start;
@@ -1683,6 +1687,7 @@ button.dashboard-card:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  user-select: none;
 }
 
 .yaml-fold-btn {

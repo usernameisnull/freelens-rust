@@ -448,8 +448,21 @@ function YamlView({ yaml, showManagedFields }: { yaml: string; showManagedFields
     event.clipboardData.setData("text/plain", text);
   };
 
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if ((event.ctrlKey || event.metaKey) && (event.key === "a" || event.key === "A")) {
+      event.preventDefault();
+      const container = event.currentTarget;
+      const selection = window.getSelection();
+      if (!selection) return;
+      const range = document.createRange();
+      range.selectNodeContents(container);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  };
+
   return (
-    <div className="yaml-view" onCopy={handleCopy}>
+    <div className="yaml-view" tabIndex={-1} onCopy={handleCopy} onKeyDown={handleKeyDown}>
       {visible.map((i, displayNo) => {
         const line = parsed[i];
         const isCollapsed = collapsed.has(i);
