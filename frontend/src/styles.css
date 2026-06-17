@@ -1163,6 +1163,7 @@ button.dashboard-card:hover {
 
 .metrics-warning {
   color: #e5b454;
+  font-size: 0.78rem;
 }
 
 .events-list .event-message {

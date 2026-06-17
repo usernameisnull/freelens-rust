@@ -2721,6 +2721,16 @@ export function App() {
           <div className="title-with-status">
             <h2>{activeView === "overview" ? "Cluster Overview" : activeView === "events" ? "Events" : activeView === "health" ? healthTitle : resourceKindLabel(selectedKind)}</h2>
             {(activeView === "resources" || activeView === "events") && <span className={`watch-status ${watchStatus}`}>Watch: {watchStatus}</span>}
+            {activeView === "overview" && overview?.metricsError && (
+              <span className="metrics-warning" title={overview.metricsError}>
+                Metrics are unavailable. Resource and health summaries are still available.
+              </span>
+            )}
+            {activeView === "resources" && metricsError && (selectedKind === "Pod" || selectedKind === "Node") && (
+              <span className="metrics-warning" title={metricsError}>
+                Metrics are unavailable. Resource browsing is unaffected.
+              </span>
+            )}
           </div>
           <div className="topbar-controls">
             {activeView === "resources" && <>
@@ -2942,11 +2952,6 @@ export function App() {
                     <strong>{overview.unavailableWorkloads}</strong><span>Unavailable Workloads</span>
                   </button>
                 </section>
-                {overview.metricsError && (
-                  <p className="inline-message metrics-warning" title={overview.metricsError}>
-                    Metrics are unavailable. Resource and health summaries are still available.
-                  </p>
-                )}
               </>
             )}
           </section>
@@ -3026,11 +3031,6 @@ export function App() {
           >
             {actionError && <p className="inline-message error-message">{actionError}</p>}
             {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
-            {metricsError && (selectedKind === "Pod" || selectedKind === "Node") && (
-              <p className="inline-message metrics-warning" title={metricsError}>
-                Metrics are unavailable. Resource browsing is unaffected.
-              </p>
-            )}
             <table ref={resourceTableRef} className={virtualizeResources ? "virtualized-table" : undefined}>
               <thead>
                 <tr>
