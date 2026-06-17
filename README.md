@@ -45,3 +45,17 @@ cargo build -p freelens-app
 ```
 
 The executable is generated at `target\debug\freelens-app.exe`.
+
+## Build The Windows Package
+
+The release package path is documented in `docs\RELEASE_AND_ELECTRON_REMOVAL.md`.
+
+```powershell
+.\scripts\build-windows-release.ps1
+```
+
+The script expects `cargo tauri build` to be available. If it is missing:
+
+```powershell
+cargo install tauri-cli --version '^2'
+```

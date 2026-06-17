@@ -670,6 +670,10 @@ class MockTransport implements Transport {
         title: request.kind === "Deployment" ? "Replicas" : "Status",
         fields: [{ label: "Ready", value: "1" }, { label: "Desired", value: "1" }],
       }],
+      configMapData: request.kind === "ConfigMap" ? [
+        { name: "app.properties", value: "debug=true\nworkers=2" },
+        { name: "LOG_LEVEL", value: "info" },
+      ] : [],
       secretData: request.kind === "Secret" ? [
         { name: "password", value: "cm9vdEAxMjMh" },
         { name: "username", value: "cm9vdA==" },
@@ -677,13 +681,15 @@ class MockTransport implements Transport {
       containers: request.kind === "Pod" ? [{
         name: "app", image: "nginx:latest", ready: true, restarts: 0, state: "Running",
       }] : [],
-      events: request.kind === "Pod" ? [{
-        eventType: "Normal", reason: "Started", message: "Started container app", count: 1,
+      events: [{
+        eventType: "Normal", reason: "Synced", message: `${request.kind} ${request.name} observed`, count: 1,
         timestamp: new Date().toISOString(),
-      }] : [],
+      }],
       yaml: request.kind === "Secret"
         ? `apiVersion: ${request.apiVersion}\nkind: Secret\nmetadata:\n  name: ${request.name}\ntype: Opaque\ndata:\n  password: cm9vdEAxMjMh\n  username: cm9vdA==\n`
-        : `apiVersion: ${request.apiVersion}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
+        : request.kind === "ConfigMap"
+          ? `apiVersion: ${request.apiVersion}\nkind: ConfigMap\nmetadata:\n  name: ${request.name}\ndata:\n  app.properties: "debug=true\\nworkers=2"\n  LOG_LEVEL: "info"\n`
+          : `apiVersion: ${request.apiVersion}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
     };
   }
 

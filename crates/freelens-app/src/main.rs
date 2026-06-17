@@ -1,8 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use freelens_ipc::{
-    AppSettings, ContainerDetailItem, DetailFieldItem, DetailSectionItem, EventDetailItem,
-    HealthCheckRequest, HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError,
+    AppSettings, ConfigMapDataDetailItem, ContainerDetailItem, DetailFieldItem, DetailSectionItem,
+    EventDetailItem, HealthCheckRequest, HealthCheckResponse, HealthStatus, IPC_VERSION, IpcError,
     KubeconfigListRequest, KubeconfigListResponse, KubectlCancelRequest, KubectlInfoRequest,
     KubectlInfoResponse, KubectlInstallation, KubectlRunRequest, KubectlRunResponse,
     KubernetesApplyResourceRequest, KubernetesApplyResourceResponse,
@@ -729,6 +729,14 @@ async fn kubernetes_get_resource_detail(
                         value: item.value,
                     })
                     .collect(),
+            })
+            .collect(),
+        config_map_data: detail
+            .config_map_data
+            .into_iter()
+            .map(|item| ConfigMapDataDetailItem {
+                name: item.name,
+                value: item.value,
             })
             .collect(),
         secret_data: detail

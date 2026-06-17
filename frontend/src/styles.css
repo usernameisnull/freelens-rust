@@ -248,7 +248,8 @@ body.resizing-sidebar {
   opacity: 0.45;
 }
 
-.nav-group li > button,
+.overview-navigation li > button,
+.nav-resource-link,
 .nav-group-header {
   width: 100%;
   padding: 8px 16px;
@@ -259,11 +260,25 @@ body.resizing-sidebar {
   cursor: pointer;
 }
 
-.nav-group li > button {
+.nav-resource-row {
   display: flex;
   align-items: center;
+}
+
+.nav-resource-link {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex: 1;
   gap: 10px;
   padding-left: 28px;
+}
+
+.nav-resource-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .overview-navigation li > button {
@@ -288,11 +303,68 @@ body.resizing-sidebar {
   text-transform: none;
 }
 
-.nav-group li > button:hover,
-.nav-group li > button.active,
+.overview-navigation li > button:hover,
+.overview-navigation li > button.active,
+.nav-resource-row:hover,
+.nav-resource-link.active,
 .nav-group-header:hover {
   background: rgba(88, 209, 181, 0.12);
   color: #58d1b5;
+}
+
+.nav-resource-row:hover .nav-resource-link,
+.nav-resource-link.active {
+  color: #58d1b5;
+}
+
+.nav-pin-button {
+  width: 34px;
+  height: 34px;
+  margin-right: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #687887;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.nav-resource-row:hover .nav-pin-button,
+.nav-pin-button.pinned,
+.nav-pin-button:focus-visible {
+  opacity: 1;
+}
+
+.nav-pin-button:hover {
+  color: #e8edf2;
+  background: rgba(232, 237, 242, 0.08);
+}
+
+.nav-pin-button.pinned {
+  color: #e8edf2;
+}
+
+.pin-icon {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.pin-icon path:last-child {
+  fill: none;
+}
+
+.nav-empty-state {
+  padding: 8px 16px 12px 44px;
+  color: #63717e;
+  font-size: 0.82rem;
 }
 
 .navigation-icon {
@@ -807,6 +879,7 @@ button.dashboard-card:hover {
 }
 
 .sort-button {
+  width: 100%;
   padding: 0;
   border: none;
   background: transparent;
@@ -815,6 +888,47 @@ button.dashboard-card:hover {
   text-transform: inherit;
   letter-spacing: inherit;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-align: left;
+}
+
+.sort-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sort-indicator {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid currentColor;
+  opacity: 0;
+  transform: translateY(1px) rotate(180deg);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.sort-button.descending .sort-indicator {
+  transform: translateY(1px);
+}
+
+.sort-button.active .sort-indicator {
+  opacity: 1;
+}
+
+.sort-button:not(.active):hover .sort-indicator,
+.sort-button:not(.active):focus-visible .sort-indicator {
+  opacity: 0.7;
+}
+
+.sort-button:focus-visible {
+  outline: 1px solid #58d1b5;
+  outline-offset: 3px;
 }
 
 .resource-list tbody tr:hover {
@@ -1145,6 +1259,10 @@ button.dashboard-card:hover {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.secret-data-value.no-toggle {
+  display: block;
 }
 
 .secret-data-value textarea {

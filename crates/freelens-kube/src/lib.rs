@@ -236,6 +236,13 @@ pub struct SecretDataDetail {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConfigMapDataDetail {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClusterEvent {
     pub namespace: Option<String>,
     pub event_type: Option<String>,
@@ -256,6 +263,7 @@ pub struct ResourceDetail {
     pub name: String,
     pub namespace: Option<String>,
     pub sections: Vec<DetailSection>,
+    pub config_map_data: Vec<ConfigMapDataDetail>,
     pub secret_data: Vec<SecretDataDetail>,
     pub containers: Vec<ContainerDetail>,
     pub events: Vec<EventDetail>,
@@ -1396,6 +1404,7 @@ pub async fn get_resource_detail(
 ) -> Result<ResourceDetail, KubernetesError> {
     let yaml = get_resource_yaml(client.clone(), kind, api_version, namespace, name).await?;
     let mut sections = Vec::new();
+    let mut config_map_data = Vec::new();
     let mut secret_data = Vec::new();
     let mut containers = Vec::new();
     let mut events = Vec::new();
@@ -1467,31 +1476,14 @@ pub async fn get_resource_detail(
                 .collect();
 
             if let Some(uid) = pod.uid() {
-                let params = ListParams::default().fields(&format!("involvedObject.uid={uid}"));
-                let listed = Api::<Event>::namespaced(client, namespace)
-                    .list(&params)
-                    .await
-                    .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
-                events = listed
-                    .into_iter()
-                    .map(|event| EventDetail {
-                        event_type: event.type_,
-                        reason: event.reason,
-                        message: event.message,
-                        count: event.count,
-                        timestamp: event
-                            .last_timestamp
-                            .map(|time| time.0.to_rfc3339())
-                            .or_else(|| event.event_time.map(|time| time.0.to_rfc3339())),
-                    })
-                    .collect();
+                events = list_object_events(client, Some(namespace), &uid).await?;
             }
         }
         "Deployment" if is_builtin_resource(kind, api_version) => {
             let namespace = namespace.ok_or_else(|| {
                 KubernetesError::GetResourceFailed("Deployment namespace is required".into())
             })?;
-            let deployment: Deployment = Api::namespaced(client, namespace)
+            let deployment: Deployment = Api::namespaced(client.clone(), namespace)
                 .get(name)
                 .await
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
@@ -1533,12 +1525,15 @@ pub async fn get_resource_detail(
                         .unwrap_or("RollingUpdate"),
                 )],
             });
+            if let Some(uid) = deployment.uid() {
+                events = list_object_events(client, Some(namespace), &uid).await?;
+            }
         }
         "Service" if is_builtin_resource(kind, api_version) => {
             let namespace = namespace.ok_or_else(|| {
                 KubernetesError::GetResourceFailed("Service namespace is required".into())
             })?;
-            let service: Service = Api::namespaced(client, namespace)
+            let service: Service = Api::namespaced(client.clone(), namespace)
                 .get(name)
                 .await
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
@@ -1604,6 +1599,9 @@ pub async fn get_resource_detail(
                     ),
                 ],
             });
+            if let Some(uid) = service.uid() {
+                events = list_object_events(client, Some(namespace), &uid).await?;
+            }
         }
         _ => {
             let gvk = gvk_for_resource(kind, api_version)
@@ -1613,14 +1611,38 @@ pub async fn get_resource_detail(
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
             let api: Api<DynamicObject> =
                 match namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced) {
-                    Some(namespace) => Api::namespaced_with(client, namespace, &ar),
-                    None => Api::all_with(client, &ar),
+                    Some(namespace) => Api::namespaced_with(client.clone(), namespace, &ar),
+                    None => Api::all_with(client.clone(), &ar),
                 };
             let object = api
                 .get(name)
                 .await
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+            let object_namespace = object.namespace();
+            if let Some(uid) = object.uid() {
+                events =
+                    list_object_events(client.clone(), object_namespace.as_deref(), &uid).await?;
+            }
             let data = object.data;
+            if kind == "ConfigMap" {
+                config_map_data = data
+                    .get("data")
+                    .and_then(|value| value.as_object())
+                    .map(|values| {
+                        let mut values: Vec<ConfigMapDataDetail> = values
+                            .iter()
+                            .flat_map(|(name, value)| {
+                                value.as_str().map(|value| ConfigMapDataDetail {
+                                    name: name.clone(),
+                                    value: value.to_owned(),
+                                })
+                            })
+                            .collect();
+                        values.sort_by(|left, right| left.name.cmp(&right.name));
+                        values
+                    })
+                    .unwrap_or_default();
+            }
             if kind == "Secret" {
                 secret_data = data
                     .get("data")
@@ -1669,11 +1691,44 @@ pub async fn get_resource_detail(
         name: name.into(),
         namespace: namespace.map(str::to_owned),
         sections,
+        config_map_data,
         secret_data,
         containers,
         events,
         yaml,
     })
+}
+
+async fn list_object_events(
+    client: kube::Client,
+    namespace: Option<&str>,
+    uid: &str,
+) -> Result<Vec<EventDetail>, KubernetesError> {
+    let params = ListParams::default().fields(&format!("involvedObject.uid={uid}"));
+    let listed = match namespace {
+        Some(namespace) => {
+            Api::<Event>::namespaced(client, namespace)
+                .list(&params)
+                .await
+        }
+        None => Api::<Event>::all(client).list(&params).await,
+    }
+    .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+    let mut events: Vec<EventDetail> = listed
+        .into_iter()
+        .map(|event| EventDetail {
+            event_type: event.type_,
+            reason: event.reason,
+            message: event.message,
+            count: event.count,
+            timestamp: event
+                .last_timestamp
+                .map(|time| time.0.to_rfc3339())
+                .or_else(|| event.event_time.map(|time| time.0.to_rfc3339())),
+        })
+        .collect();
+    events.sort_by(|left, right| right.timestamp.cmp(&left.timestamp));
+    Ok(events)
 }
 
 async fn dynamic_api(

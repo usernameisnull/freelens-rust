@@ -106,10 +106,33 @@ function yamlKey(value: string): string {
   return /^[A-Za-z0-9._-]+$/.test(value) ? value : JSON.stringify(value);
 }
 
+function yamlString(value: string): string {
+  return JSON.stringify(value);
+}
+
 function updateSecretDataYaml(yaml: string, data: Array<{ name: string; value: string }>): string {
   const dataBlock = [
     "data:",
     ...data.map((item) => `  ${yamlKey(item.name)}: ${item.value}`),
+  ];
+  const lines = yaml.replace(/\r\n/g, "\n").split("\n");
+  const dataIndex = lines.findIndex((line) => line === "data:");
+  if (dataIndex >= 0) {
+    let endIndex = dataIndex + 1;
+    while (endIndex < lines.length && (/^\s+/.test(lines[endIndex]) || lines[endIndex] === "")) {
+      endIndex += 1;
+    }
+    lines.splice(dataIndex, endIndex - dataIndex, ...dataBlock);
+    return lines.join("\n").replace(/\n*$/, "\n");
+  }
+  const withoutTrailingBlanks = lines.filter((line, index) => line !== "" || index < lines.length - 1);
+  return [...withoutTrailingBlanks, ...dataBlock, ""].join("\n");
+}
+
+function updateConfigMapDataYaml(yaml: string, data: Array<{ name: string; value: string }>): string {
+  const dataBlock = [
+    "data:",
+    ...data.map((item) => `  ${yamlKey(item.name)}: ${yamlString(item.value)}`),
   ];
   const lines = yaml.replace(/\r\n/g, "\n").split("\n");
   const dataIndex = lines.findIndex((line) => line === "data:");
@@ -141,6 +164,8 @@ function uniqueKubeconfigSources(sources: string[]): string[] {
   return result;
 }
 
+const FAVORITES_GROUP_LABEL = "Favorites";
+
 const RESOURCE_GROUPS = [
   {
     label: "Cluster",
@@ -164,11 +189,12 @@ const RESOURCE_GROUPS = [
   },
 ];
 
-type NavigationIcon = "overview" | "events" | "cluster" | "workloads" | "network" | "config" | "storage" | "more" | "collapseAll" | "expandAll";
+type NavigationIcon = "overview" | "events" | "favorites" | "cluster" | "workloads" | "network" | "config" | "storage" | "more" | "collapseAll" | "expandAll";
 type ActiveView = "contexts" | "overview" | "events" | "health" | "resources";
 type ContextDisplayMode = "list" | "grid";
 
 const GROUP_ICONS: Record<string, NavigationIcon> = {
+  Favorites: "favorites",
   Cluster: "cluster",
   Workloads: "workloads",
   Network: "network",
@@ -181,6 +207,7 @@ function NavigationIcon({ name }: { name: NavigationIcon }) {
   const paths: Record<NavigationIcon, ReactNode> = {
     overview: <><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></>,
     events: <><circle cx="12" cy="12" r="9"/><path d="M12 7v6l4 2"/></>,
+    favorites: <path d="m12 3 2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.8 1-6.1-4.4-4.3 6.1-.9L12 3Z"/>,
     cluster: <><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="18" r="2.5"/><circle cx="19" cy="18" r="2.5"/><path d="M10.8 7.2 6.3 15.8M13.2 7.2l4.5 8.6M7.5 18h9"/></>,
     workloads: <><path d="m12 3 8 4.5-8 4.5-8-4.5L12 3Z"/><path d="m4 12 8 4.5 8-4.5M4 16.5 12 21l8-4.5"/></>,
     network: <><circle cx="5" cy="12" r="2"/><circle cx="19" cy="5" r="2"/><circle cx="19" cy="19" r="2"/><path d="m7 11 10-5M7 13l10 5"/></>,
@@ -191,6 +218,15 @@ function NavigationIcon({ name }: { name: NavigationIcon }) {
     expandAll: <><path d="m8 6 4 4 4-4M8 18l4-4 4 4"/><path d="M5 12h14"/></>,
   };
   return <svg className="navigation-icon" viewBox="0 0 24 24" aria-hidden="true">{paths[name]}</svg>;
+}
+
+function PinIcon({ pinned }: { pinned: boolean }) {
+  return (
+    <svg className="pin-icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m14 4 6 6-3.5 1.2-3.1 3.1 1.1 3.6-1.4 1.4-3.6-3.6L5 20l4.3-4.5-3.6-3.6 1.4-1.4 3.6 1.1 3.1-3.1L14 4Z" />
+      {pinned && <path d="M4 4l16 16" />}
+    </svg>
+  );
 }
 
 function ResourceIcon({ kind }: { kind: string }) {
@@ -351,6 +387,14 @@ export function App() {
     const saved = Number(window.localStorage.getItem("freelens.sidebarWidth"));
     return Number.isFinite(saved) && saved >= 180 && saved <= 420 ? saved : 220;
   });
+  const [favoriteResourceKeys, setFavoriteResourceKeys] = useState<string[]>(() => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem("freelens.favoriteResources") ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+    } catch {
+      return [];
+    }
+  });
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const sidebarResizeRef = useRef(false);
   const [settingsReady, setSettingsReady] = useState(false);
@@ -438,6 +482,7 @@ export function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
   const [yamlDraft, setYamlDraft] = useState("");
+  const [configMapDataDraft, setConfigMapDataDraft] = useState<Record<string, string>>({});
   const [secretDataDraft, setSecretDataDraft] = useState<Record<string, string>>({});
   const [revealedSecretData, setRevealedSecretData] = useState<Set<string>>(() => new Set());
   const [actionLoading, setActionLoading] = useState(false);
@@ -521,6 +566,10 @@ export function App() {
     window.localStorage.setItem("freelens.sidebarWidth", String(sidebarWidth));
   }, [sidebarWidth]);
 
+  useEffect(() => {
+    window.localStorage.setItem("freelens.favoriteResources", JSON.stringify(favoriteResourceKeys));
+  }, [favoriteResourceKeys]);
+
   const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
     event.preventDefault();
     sidebarResizeRef.current = true;
@@ -529,6 +578,23 @@ export function App() {
 
   const toggleNavigationGroup = (label: string) => {
     setCollapsedGroups((current) => ({ ...current, [label]: !current[label] }));
+  };
+
+  const selectResource = (resource: ResourceKindItem) => {
+    setSelectedResource(resource);
+    setActiveView("resources");
+    if (!resource.namespaced) setSelectedNamespace("");
+    resourceRequestRef.current += 1;
+    setDetail(undefined);
+  };
+
+  const toggleFavoriteResource = (resource: ResourceKindItem) => {
+    const key = resourceKey(resource);
+    setFavoriteResourceKeys((current) => (
+      current.includes(key)
+        ? current.filter((item) => item !== key)
+        : [...current, key]
+    ));
   };
 
   const updatePortForwards = useCallback((next: Record<string, {
@@ -1322,6 +1388,7 @@ export function App() {
     setDetailLoading(true);
     setDetailError(undefined);
     setDetailTab("overview");
+    setConfigMapDataDraft({});
     setSecretDataDraft({});
     setRevealedSecretData(new Set());
     transport
@@ -1337,6 +1404,7 @@ export function App() {
         if (requestNumber === detailRequestRef.current) {
           setDetail(response);
           setYamlDraft(response.yaml);
+          setConfigMapDataDraft(Object.fromEntries(response.configMapData.map((item) => [item.name, item.value])));
           setSecretDataDraft(Object.fromEntries(response.secretData.map((item) => [item.name, item.value])));
           setRevealedSecretData(new Set());
         }
@@ -1452,6 +1520,7 @@ export function App() {
     setDetailError(undefined);
     setActionError(undefined);
     setActionMessage(undefined);
+    setConfigMapDataDraft({});
     setSecretDataDraft({});
     setRevealedSecretData(new Set());
   };
@@ -1481,6 +1550,24 @@ export function App() {
       return false;
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const editConfigMapData = (name: string, value: string) => {
+    setConfigMapDataDraft((current) => ({
+      ...current,
+      [name]: value,
+    }));
+  };
+
+  const saveConfigMapData = async () => {
+    if (!detail) return;
+    const nextData = Object.entries(configMapDataDraft)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => ({ name, value }));
+    const nextYaml = updateConfigMapDataYaml(detail.yaml, nextData);
+    if (await applyYaml(nextYaml)) {
+      setDetail((current) => current ? { ...current, yaml: nextYaml, configMapData: nextData } : current);
     }
   };
 
@@ -2035,9 +2122,24 @@ export function App() {
     }
   };
 
-  const eventSortLabel = (key: string, label: string) => {
-    if (eventSortKey !== key) return `${label} ↕`;
-    return `${label} ${eventSortDirection === "asc" ? "↑" : "↓"}`;
+  const renderSortButton = (
+    key: string,
+    label: string,
+    activeKey: string,
+    direction: "asc" | "desc",
+    onChange: (key: string) => void,
+  ) => {
+    const active = activeKey === key;
+    return (
+      <button
+        className={`sort-button${active ? " active" : ""} ${active && direction === "desc" ? "descending" : "ascending"}`}
+        onClick={() => onChange(key)}
+        aria-label={`Sort by ${label}${active ? `, currently ${direction === "asc" ? "ascending" : "descending"}` : ""}`}
+      >
+        <span className="sort-label">{label}</span>
+        <span className="sort-indicator" aria-hidden="true" />
+      </button>
+    );
   };
 
   const openEventObject = (event: KubernetesEventItem) => {
@@ -2062,8 +2164,50 @@ export function App() {
     }
   };
 
-  const sortLabel = (key: string, label: string) =>
-    `${label}${sortKey === key ? (sortDirection === "asc" ? " ^" : " v") : ""}`;
+  const renderResourceSortButton = (key: string, label: string) =>
+    renderSortButton(key, label, sortKey, sortDirection, changeSort);
+
+  const renderEventSortButton = (key: string, label: string) =>
+    renderSortButton(key, label, eventSortKey, eventSortDirection, changeEventSort);
+
+  const renderConfigMapDataSection = () => {
+    if (!detail || detail.kind !== "ConfigMap" || detail.apiVersion !== "v1") return null;
+    const entries = Object.entries(configMapDataDraft).sort(([left], [right]) => left.localeCompare(right));
+    const originalEntries = detail.configMapData
+      .map((item) => [item.name, item.value] as const)
+      .sort(([left], [right]) => left.localeCompare(right));
+    const changed = JSON.stringify(entries) !== JSON.stringify(originalEntries);
+
+    return (
+      <section className="detail-section secret-data-section">
+        <h4>Data</h4>
+        {entries.length === 0 ? (
+          <p>No data</p>
+        ) : (
+          <>
+            {entries.map(([name, value]) => (
+              <div key={name} className="secret-data-entry">
+                <label htmlFor={`config-map-data-${name}`}>{name}</label>
+                <div className="secret-data-value no-toggle">
+                  <textarea
+                    id={`config-map-data-${name}`}
+                    value={value}
+                    onChange={(event) => editConfigMapData(name, event.target.value)}
+                    disabled={actionLoading}
+                    spellCheck={false}
+                    rows={Math.max(1, Math.min(8, value.split("\n").length))}
+                  />
+                </div>
+              </div>
+            ))}
+            <button className="primary-button" onClick={() => void saveConfigMapData()} disabled={actionLoading || !changed}>
+              {actionLoading ? "Saving..." : "Save"}
+            </button>
+          </>
+        )}
+      </section>
+    );
+  };
 
   const renderSecretDataSection = () => {
     if (!detail || detail.kind !== "Secret" || detail.apiVersion !== "v1") return null;
@@ -2282,6 +2426,27 @@ export function App() {
       ? [...coreGroups, { label: "More Resources", resources: moreResources }]
       : coreGroups;
   }, [resourceKinds, resourceCatalogSearch]);
+  const favoriteResources = useMemo(() => {
+    const query = resourceCatalogSearch.trim().toLowerCase();
+    const resourcesByKey = new Map<string, ResourceKindItem>();
+    for (const resource of [...FALLBACK_RESOURCE_KINDS, ...resourceKinds]) {
+      resourcesByKey.set(resourceKey(resource), resource);
+    }
+    return favoriteResourceKeys
+      .flatMap((key) => {
+        const resource = resourcesByKey.get(key);
+        if (!resource) return [];
+        if (!query) return [resource];
+        const values = [
+          resource.kind,
+          resourceKindLabel(resource.kind),
+          resource.plural,
+          resource.group,
+          resource.version,
+        ];
+        return values.some((value) => value.toLowerCase().includes(query)) ? [resource] : [];
+      });
+  }, [favoriteResourceKeys, resourceKinds, resourceCatalogSearch]);
   const filteredKubeconfigContexts = useMemo(() => {
     const query = kubeconfigSearch.trim().toLocaleLowerCase();
     if (!kubeconfig) return [];
@@ -2383,13 +2548,45 @@ export function App() {
     );
   };
   const hasResourceCatalogSearch = Boolean(resourceCatalogSearch.trim());
-  const allNavigationGroupsExpanded = navigationGroups.every((group) => !collapsedGroups[group.label]);
+  const allNavigationGroupsExpanded = !collapsedGroups[FAVORITES_GROUP_LABEL]
+    && navigationGroups.every((group) => !collapsedGroups[group.label]);
   const toggleAllNavigationGroups = () => {
     const nextCollapsed = allNavigationGroupsExpanded;
     setCollapsedGroups((current) => ({
       ...current,
+      [FAVORITES_GROUP_LABEL]: nextCollapsed,
       ...Object.fromEntries(navigationGroups.map((group) => [group.label, nextCollapsed])),
     }));
+  };
+  const renderResourceNavigationItem = (resource: ResourceKindItem, groupLabel: string) => {
+    const key = resourceKey(resource);
+    const isFavorite = favoriteResourceKeys.includes(key);
+    return (
+      <li key={key}>
+        <div className="nav-resource-row">
+          <button
+            type="button"
+            className={`nav-resource-link ${activeView === "resources" && resourceKey(selectedResource) === key ? "active" : ""}`}
+            title={resourceApiVersion(resource)}
+            onClick={() => selectResource(resource)}
+          >
+            <ResourceIcon kind={resource.kind} />
+            <span>{groupLabel === "More Resources" && resource.group
+              ? `${resourceKindLabel(resource.kind)} (${resource.group})`
+              : resourceKindLabel(resource.kind)}</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-pin-button ${isFavorite ? "pinned" : ""}`}
+            onClick={() => toggleFavoriteResource(resource)}
+            aria-label={`${isFavorite ? "Remove from" : "Add to"} favorites: ${resourceKindLabel(resource.kind)}`}
+            title={isFavorite ? "Remove from favorites" : "Add to favorites"}
+          >
+            <PinIcon pinned={isFavorite} />
+          </button>
+        </div>
+      </li>
+    );
   };
 
   return (
@@ -2445,12 +2642,30 @@ export function App() {
                   type="button"
                   className="nav-icon-button"
                   onClick={toggleAllNavigationGroups}
-                  disabled={hasResourceCatalogSearch || navigationGroups.length === 0}
+                  disabled={hasResourceCatalogSearch || (navigationGroups.length === 0 && favoriteResourceKeys.length === 0)}
                   aria-label={allNavigationGroupsExpanded ? "Collapse all resource groups" : "Expand all resource groups"}
                   title={allNavigationGroupsExpanded ? "Collapse all" : "Expand all"}
                 >
                   <NavigationIcon name={allNavigationGroupsExpanded ? "collapseAll" : "expandAll"} />
                 </button>
+              </div>
+              <div className="nav-group favorites-navigation">
+                <button
+                  className="nav-group-header"
+                  onClick={() => toggleNavigationGroup(FAVORITES_GROUP_LABEL)}
+                  aria-expanded={!collapsedGroups[FAVORITES_GROUP_LABEL] || hasResourceCatalogSearch}
+                >
+                  <NavigationIcon name="favorites" />
+                  <span>Favorites</span>
+                  <span className="nav-chevron">{collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                </button>
+                <ul hidden={collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch}>
+                  {favoriteResources.length > 0 ? (
+                    favoriteResources.map((resource) => renderResourceNavigationItem(resource, FAVORITES_GROUP_LABEL))
+                  ) : (
+                    <li className="nav-empty-state">{hasResourceCatalogSearch ? "No matching favorites" : "No favorites yet"}</li>
+                  )}
+                </ul>
               </div>
               {navigationGroups.map((group) => (
                 <div key={group.label} className="nav-group">
@@ -2464,26 +2679,7 @@ export function App() {
                     <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
                   </button>
                   <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
-                    {group.resources.map((resource) => (
-                      <li key={resourceKey(resource)}>
-                        <button
-                          className={activeView === "resources" && resourceKey(selectedResource) === resourceKey(resource) ? "active" : ""}
-                          title={resourceApiVersion(resource)}
-                          onClick={() => {
-                            setSelectedResource(resource);
-                            setActiveView("resources");
-                            if (!resource.namespaced) setSelectedNamespace("");
-                            resourceRequestRef.current += 1;
-                            setDetail(undefined);
-                          }}
-                        >
-                          <ResourceIcon kind={resource.kind} />
-                          <span>{group.label === "More Resources" && resource.group
-                            ? `${resourceKindLabel(resource.kind)} (${resource.group})`
-                            : resourceKindLabel(resource.kind)}</span>
-                        </button>
-                      </li>
-                    ))}
+                    {group.resources.map((resource) => renderResourceNavigationItem(resource, group.label))}
                   </ul>
                 </div>
               ))}
@@ -2755,7 +2951,7 @@ export function App() {
           eventsError ? <p className="error-message">{eventsError}</p> : (
             <section className="resource-list events-list">
               <table>
-                <thead><tr><th>Last Seen</th><th><button className="sort-button" onClick={() => changeEventSort("type")}>{eventSortLabel("type", "Type")}</button></th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
+                <thead><tr><th>Last Seen</th><th>{renderEventSortButton("type", "Type")}</th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
                 <tbody>
                   {visibleEvents.map((event, index) => (
                     <tr key={`${event.timestamp ?? ""}-${event.objectKind ?? ""}-${event.objectName ?? ""}-${index}`}>
@@ -2798,23 +2994,23 @@ export function App() {
             <table ref={resourceTableRef} className={virtualizeResources ? "virtualized-table" : undefined}>
               <thead>
                 <tr>
-                  <th><button className="sort-button" onClick={() => changeSort("name")}>{sortLabel("name", "Name")}</button></th>
+                  <th>{renderResourceSortButton("name", "Name")}</th>
                   {selectedKind === "Node" ? <>
                     {selectedColumns.slice(0, 2).map((column) => (
-                      <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                      <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
                     ))}
-                    <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
+                    <th>{renderResourceSortButton("age", "Age")}</th>
                     {selectedColumns.slice(2).map((column) => (
-                      <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                      <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
                     ))}
                     <th>CPU</th><th>Memory</th>
                   </> : <>
-                    <th><button className="sort-button" onClick={() => changeSort("namespace")}>{sortLabel("namespace", "Namespace")}</button></th>
+                    <th>{renderResourceSortButton("namespace", "Namespace")}</th>
                     {selectedColumns.map((column) => (
-                      <th key={column.key}><button className="sort-button" onClick={() => changeSort(column.key)}>{sortLabel(column.key, column.label)}</button></th>
+                      <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
                     ))}
                     {selectedKind === "Pod" && <><th>CPU</th><th>Memory</th></>}
-                    <th><button className="sort-button" onClick={() => changeSort("age")}>{sortLabel("age", "Age")}</button></th>
+                    <th>{renderResourceSortButton("age", "Age")}</th>
                   </>}
                   <th>Actions</th>
                 </tr>
@@ -2904,13 +3100,12 @@ export function App() {
                         <dl>{section.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
                       </section>
                     ))}
+                    {renderConfigMapDataSection()}
                     {renderSecretDataSection()}
                     {detail.containers.length > 0 && (
                       <section className="detail-section"><h4>Containers</h4><table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ready</th><th>Restarts</th></tr></thead><tbody>{detail.containers.map((container) => <tr key={container.name}><td>{container.name}</td><td>{container.image}</td><td>{container.state}</td><td>{container.ready ? "Yes" : "No"}</td><td>{container.restarts}</td></tr>)}</tbody></table></section>
                     )}
-                    {detail.kind === "Pod" && detail.apiVersion === "v1" && (
-                      <section className="detail-section"><h4>Events</h4>{detail.events.length === 0 ? <p>No events</p> : <table><thead><tr><th>Type</th><th>Reason</th><th>Message</th><th>Count</th><th>Last seen</th></tr></thead><tbody>{detail.events.map((event, index) => <tr key={`${event.reason}-${index}`}><td>{event.eventType ?? "-"}</td><td>{event.reason ?? "-"}</td><td>{event.message ?? "-"}</td><td>{event.count ?? "-"}</td><td>{event.timestamp ? new Date(event.timestamp).toLocaleString() : "-"}</td></tr>)}</tbody></table>}</section>
-                    )}
+                    <section className="detail-section"><h4>Events</h4>{detail.events.length === 0 ? <p>No events</p> : <table><thead><tr><th>Type</th><th>Reason</th><th>Message</th><th>Count</th><th>Last seen</th></tr></thead><tbody>{detail.events.map((event, index) => <tr key={`${event.reason}-${index}`}><td>{event.eventType ?? "-"}</td><td>{event.reason ?? "-"}</td><td>{event.message ?? "-"}</td><td>{event.count ?? "-"}</td><td>{event.timestamp ? new Date(event.timestamp).toLocaleString() : "-"}</td></tr>)}</tbody></table>}</section>
                   </div>
                 )}
               </>

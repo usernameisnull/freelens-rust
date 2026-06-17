@@ -413,6 +413,13 @@ pub struct SecretDataDetailItem {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ConfigMapDataDetailItem {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct KubernetesGetResourceDetailResponse {
     pub version: u16,
     pub request_id: String,
@@ -422,6 +429,7 @@ pub struct KubernetesGetResourceDetailResponse {
     pub name: String,
     pub namespace: Option<String>,
     pub sections: Vec<DetailSectionItem>,
+    pub config_map_data: Vec<ConfigMapDataDetailItem>,
     pub secret_data: Vec<SecretDataDetailItem>,
     pub containers: Vec<ContainerDetailItem>,
     pub events: Vec<EventDetailItem>,
