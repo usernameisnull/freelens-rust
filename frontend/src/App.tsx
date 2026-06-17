@@ -490,6 +490,8 @@ export function App() {
   const [actionMessage, setActionMessage] = useState<string>();
   const [resourceActionKey, setResourceActionKey] = useState<string>();
   const [openResourceActionMenu, setOpenResourceActionMenu] = useState<string>();
+  const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
+  const topbarMenuRef = useRef<HTMLDivElement>(null);
   const detailRequestRef = useRef(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [createYaml, setCreateYaml] = useState("");
@@ -2285,6 +2287,22 @@ export function App() {
 
   const closeResourceActionMenu = () => setOpenResourceActionMenu(undefined);
 
+  const runTopbarMenuAction = (action: () => void) => {
+    setTopbarMenuOpen(false);
+    action();
+  };
+
+  useEffect(() => {
+    if (!topbarMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (topbarMenuRef.current && !topbarMenuRef.current.contains(event.target as Node)) {
+        setTopbarMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [topbarMenuOpen]);
+
   const toggleResourceActionMenu = (event: ReactMouseEvent, item: ResourceItem) => {
     event.stopPropagation();
     const key = resourceActionMenuKey(item);
@@ -2769,9 +2787,31 @@ export function App() {
             >
               Refresh
             </button>
-            {activeView === "resources" && <button onClick={openCreate}>Create Resource</button>}
-            <button onClick={() => void openKubectl()}>Kubectl</button>
-            <button onClick={() => setLocalTerminalOpen(true)}>Shell</button>
+            <div className="topbar-action-menu" ref={topbarMenuRef}>
+              <button
+                type="button"
+                className="action-menu-trigger"
+                aria-label="More actions"
+                aria-haspopup="menu"
+                aria-expanded={topbarMenuOpen}
+                onClick={() => setTopbarMenuOpen((current) => !current)}
+              >
+                <span aria-hidden="true" />
+              </button>
+              {topbarMenuOpen && (
+                <div className="action-menu" role="menu">
+                  <button type="button" role="menuitem" onClick={() => runTopbarMenuAction(openCreate)}>
+                    Create Resource
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => runTopbarMenuAction(() => void openKubectl())}>
+                    Kubectl
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => runTopbarMenuAction(() => setLocalTerminalOpen(true))}>
+                    Shell
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </header>}
 

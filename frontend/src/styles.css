@@ -500,6 +500,89 @@ body.resizing-sidebar {
   cursor: not-allowed;
 }
 
+.topbar-action-menu {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.topbar-action-menu .action-menu-trigger {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #26313a;
+  border-radius: 4px;
+  background: #1c242d;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.topbar-action-menu .action-menu-trigger span,
+.topbar-action-menu .action-menu-trigger span::before,
+.topbar-action-menu .action-menu-trigger span::after {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #e8edf2;
+  display: block;
+}
+
+.topbar-action-menu .action-menu-trigger span {
+  position: relative;
+}
+
+.topbar-action-menu .action-menu-trigger span::before,
+.topbar-action-menu .action-menu-trigger span::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+
+.topbar-action-menu .action-menu-trigger span::before {
+  top: -7px;
+}
+
+.topbar-action-menu .action-menu-trigger span::after {
+  top: 7px;
+}
+
+.topbar-action-menu .action-menu-trigger:hover,
+.topbar-action-menu .action-menu-trigger[aria-expanded="true"] {
+  background: #26313a;
+}
+
+.topbar-action-menu .action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 150px;
+  padding: 6px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #151c23;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.topbar-action-menu .action-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #d6e0ea;
+  text-align: left;
+  cursor: pointer;
+}
+
+.topbar-action-menu .action-menu button:hover {
+  background: #26313a;
+  color: #e8edf2;
+}
+
 .resource-list {
   flex: 1;
   overflow: auto;
