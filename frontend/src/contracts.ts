@@ -307,6 +307,7 @@ export interface KubernetesGetResourceDetailResponse {
   name: string;
   namespace: string | null;
   sections: Array<{ title: string; fields: Array<{ label: string; value: string }> }>;
+  secretData: Array<{ name: string; value: string }>;
   containers: Array<{
     name: string;
     image: string;

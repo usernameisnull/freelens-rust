@@ -28,8 +28,8 @@ use freelens_ipc::{
     KubernetesTriggerCronJobResponse, KubernetesVersionRequest, KubernetesVersionResponse,
     LocalTerminalInputRequest, LocalTerminalInputResponse, LocalTerminalResizeRequest,
     LocalTerminalStartRequest, LocalTerminalStartResponse, LocalTerminalStopRequest, NamespaceItem,
-    ResourceItem, ResourceKindItem, ResourceMetricItem, SettingsLoadRequest, SettingsLoadResponse,
-    SettingsSaveRequest, SystemInfoResponse,
+    ResourceItem, ResourceKindItem, ResourceMetricItem, SecretDataDetailItem, SettingsLoadRequest,
+    SettingsLoadResponse, SettingsSaveRequest, SystemInfoResponse,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
@@ -729,6 +729,14 @@ async fn kubernetes_get_resource_detail(
                         value: item.value,
                     })
                     .collect(),
+            })
+            .collect(),
+        secret_data: detail
+            .secret_data
+            .into_iter()
+            .map(|item| SecretDataDetailItem {
+                name: item.name,
+                value: item.value,
             })
             .collect(),
         containers: detail

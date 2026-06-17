@@ -670,6 +670,10 @@ class MockTransport implements Transport {
         title: request.kind === "Deployment" ? "Replicas" : "Status",
         fields: [{ label: "Ready", value: "1" }, { label: "Desired", value: "1" }],
       }],
+      secretData: request.kind === "Secret" ? [
+        { name: "password", value: "cm9vdEAxMjMh" },
+        { name: "username", value: "cm9vdA==" },
+      ] : [],
       containers: request.kind === "Pod" ? [{
         name: "app", image: "nginx:latest", ready: true, restarts: 0, state: "Running",
       }] : [],
@@ -677,7 +681,9 @@ class MockTransport implements Transport {
         eventType: "Normal", reason: "Started", message: "Started container app", count: 1,
         timestamp: new Date().toISOString(),
       }] : [],
-      yaml: `apiVersion: ${request.apiVersion}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
+      yaml: request.kind === "Secret"
+        ? `apiVersion: ${request.apiVersion}\nkind: Secret\nmetadata:\n  name: ${request.name}\ntype: Opaque\ndata:\n  password: cm9vdEAxMjMh\n  username: cm9vdA==\n`
+        : `apiVersion: ${request.apiVersion}\nkind: ${request.kind}\nmetadata:\n  name: ${request.name}\n`,
     };
   }
 

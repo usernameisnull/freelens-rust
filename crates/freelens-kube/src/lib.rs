@@ -229,6 +229,13 @@ pub struct EventDetail {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SecretDataDetail {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ClusterEvent {
     pub namespace: Option<String>,
     pub event_type: Option<String>,
@@ -249,6 +256,7 @@ pub struct ResourceDetail {
     pub name: String,
     pub namespace: Option<String>,
     pub sections: Vec<DetailSection>,
+    pub secret_data: Vec<SecretDataDetail>,
     pub containers: Vec<ContainerDetail>,
     pub events: Vec<EventDetail>,
     pub yaml: String,
@@ -1388,6 +1396,7 @@ pub async fn get_resource_detail(
 ) -> Result<ResourceDetail, KubernetesError> {
     let yaml = get_resource_yaml(client.clone(), kind, api_version, namespace, name).await?;
     let mut sections = Vec::new();
+    let mut secret_data = Vec::new();
     let mut containers = Vec::new();
     let mut events = Vec::new();
 
@@ -1612,6 +1621,25 @@ pub async fn get_resource_detail(
                 .await
                 .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
             let data = object.data;
+            if kind == "Secret" {
+                secret_data = data
+                    .get("data")
+                    .and_then(|value| value.as_object())
+                    .map(|values| {
+                        let mut values: Vec<SecretDataDetail> = values
+                            .iter()
+                            .flat_map(|(name, value)| {
+                                value.as_str().map(|value| SecretDataDetail {
+                                    name: name.clone(),
+                                    value: value.to_owned(),
+                                })
+                            })
+                            .collect();
+                        values.sort_by(|left, right| left.name.cmp(&right.name));
+                        values
+                    })
+                    .unwrap_or_default();
+            }
             let columns = resource_columns(kind, &data);
             let mut overview = vec![field("API Version", api_version)];
             overview.extend(
@@ -1641,6 +1669,7 @@ pub async fn get_resource_detail(
         name: name.into(),
         namespace: namespace.map(str::to_owned),
         sections,
+        secret_data,
         containers,
         events,
         yaml,
@@ -1753,7 +1782,7 @@ pub async fn watch_resources(
     Ok((rx, task.abort_handle()))
 }
 
-/// Apply edited YAML to the same resource using server-side apply.
+/// Apply edited YAML to the same resource using a merge patch.
 pub async fn apply_resource_yaml(
     client: kube::Client,
     expected_kind: &str,
@@ -1762,7 +1791,7 @@ pub async fn apply_resource_yaml(
     expected_name: &str,
     yaml: &str,
 ) -> Result<String, KubernetesError> {
-    let object: DynamicObject = serde_yaml_ng::from_str(yaml)
+    let mut object: DynamicObject = serde_yaml_ng::from_str(yaml)
         .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
     let actual_kind = object
         .types
@@ -1800,16 +1829,31 @@ pub async fn apply_resource_yaml(
             "{expected_kind} namespace is required"
         )));
     }
+    sanitize_apply_object(&mut object);
     let applied = api
         .patch(
             expected_name,
-            &PatchParams::apply("freelens-rust"),
-            &Patch::Apply(&object),
+            &PatchParams::default(),
+            &Patch::Merge(&object),
         )
         .await
         .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))?;
     serde_yaml_ng::to_string(&applied)
         .map_err(|error| KubernetesError::ApplyResourceFailed(error.to_string()))
+}
+
+fn sanitize_apply_object(object: &mut DynamicObject) {
+    object.metadata.managed_fields = None;
+    object.metadata.resource_version = None;
+    object.metadata.uid = None;
+    object.metadata.generation = None;
+    object.metadata.creation_timestamp = None;
+    object.metadata.deletion_timestamp = None;
+    object.metadata.deletion_grace_period_seconds = None;
+    object.metadata.self_link = None;
+    if let Some(data) = object.data.as_object_mut() {
+        data.remove("status");
+    }
 }
 
 /// Create a resource from YAML using server-side apply and return its resolved identity.
@@ -2617,6 +2661,48 @@ mod tests {
         assert_eq!(
             watch_event_resource_version(&bookmark).as_deref(),
             Some("8")
+        );
+    }
+
+    #[test]
+    fn sanitize_apply_object_removes_server_owned_fields() {
+        let mut object: DynamicObject = serde_json::from_value(serde_json::json!({
+            "apiVersion": "v1",
+            "kind": "Secret",
+            "metadata": {
+                "name": "db-secret",
+                "namespace": "default",
+                "uid": "uid-1",
+                "resourceVersion": "42",
+                "generation": 7,
+                "creationTimestamp": "2026-06-15T12:00:00Z",
+                "deletionTimestamp": "2026-06-16T12:00:00Z",
+                "deletionGracePeriodSeconds": 30,
+                "managedFields": [{ "manager": "kubectl" }],
+                "selfLink": "/api/v1/namespaces/default/secrets/db-secret"
+            },
+            "data": { "username": "cm9vdA==" },
+            "status": { "phase": "Active" }
+        }))
+        .unwrap();
+
+        sanitize_apply_object(&mut object);
+
+        assert!(object.metadata.managed_fields.is_none());
+        assert!(object.metadata.resource_version.is_none());
+        assert!(object.metadata.uid.is_none());
+        assert!(object.metadata.generation.is_none());
+        assert!(object.metadata.creation_timestamp.is_none());
+        assert!(object.metadata.deletion_timestamp.is_none());
+        assert!(object.metadata.deletion_grace_period_seconds.is_none());
+        assert!(object.metadata.self_link.is_none());
+        assert!(object.data.get("status").is_none());
+        assert_eq!(
+            object
+                .data
+                .pointer("/data/username")
+                .and_then(|value| value.as_str()),
+            Some("cm9vdA==")
         );
     }
 

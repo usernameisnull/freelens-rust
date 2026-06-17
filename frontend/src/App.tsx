@@ -83,6 +83,48 @@ function parseCommandArguments(value: string): string[] {
   return argumentsList;
 }
 
+function encodeUtf8Base64(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function decodeUtf8Base64(value: string): string | undefined {
+  try {
+    const binary = atob(value);
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+function yamlKey(value: string): string {
+  return /^[A-Za-z0-9._-]+$/.test(value) ? value : JSON.stringify(value);
+}
+
+function updateSecretDataYaml(yaml: string, data: Array<{ name: string; value: string }>): string {
+  const dataBlock = [
+    "data:",
+    ...data.map((item) => `  ${yamlKey(item.name)}: ${item.value}`),
+  ];
+  const lines = yaml.replace(/\r\n/g, "\n").split("\n");
+  const dataIndex = lines.findIndex((line) => line === "data:");
+  if (dataIndex >= 0) {
+    let endIndex = dataIndex + 1;
+    while (endIndex < lines.length && (/^\s+/.test(lines[endIndex]) || lines[endIndex] === "")) {
+      endIndex += 1;
+    }
+    lines.splice(dataIndex, endIndex - dataIndex, ...dataBlock);
+    return lines.join("\n").replace(/\n*$/, "\n");
+  }
+  const withoutTrailingBlanks = lines.filter((line, index) => line !== "" || index < lines.length - 1);
+  return [...withoutTrailingBlanks, ...dataBlock, ""].join("\n");
+}
+
 function normalizeKubeconfigSource(value: string): string {
   return value.trim().replace(/^["']|["']$/g, "");
 }
@@ -396,6 +438,8 @@ export function App() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
   const [yamlDraft, setYamlDraft] = useState("");
+  const [secretDataDraft, setSecretDataDraft] = useState<Record<string, string>>({});
+  const [revealedSecretData, setRevealedSecretData] = useState<Set<string>>(() => new Set());
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
@@ -1278,6 +1322,8 @@ export function App() {
     setDetailLoading(true);
     setDetailError(undefined);
     setDetailTab("overview");
+    setSecretDataDraft({});
+    setRevealedSecretData(new Set());
     transport
       .kubernetesGetResourceDetail({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -1291,6 +1337,8 @@ export function App() {
         if (requestNumber === detailRequestRef.current) {
           setDetail(response);
           setYamlDraft(response.yaml);
+          setSecretDataDraft(Object.fromEntries(response.secretData.map((item) => [item.name, item.value])));
+          setRevealedSecretData(new Set());
         }
       })
       .catch((reason: unknown) => {
@@ -1404,9 +1452,11 @@ export function App() {
     setDetailError(undefined);
     setActionError(undefined);
     setActionMessage(undefined);
+    setSecretDataDraft({});
+    setRevealedSecretData(new Set());
   };
 
-  const applyYaml = async () => {
+  const applyYaml = async (nextYaml = yamlDraft) => {
     if (!detail || !selectedContext) return;
     setActionLoading(true);
     setActionError(undefined);
@@ -1419,16 +1469,45 @@ export function App() {
         apiVersion: detail.apiVersion,
         namespace: detail.namespace,
         name: detail.name,
-        yaml: yamlDraft,
+        yaml: nextYaml,
       });
       setYamlDraft(response.yaml);
       setDetail((current) => current ? { ...current, yaml: response.yaml } : current);
       setActionMessage("Resource applied successfully");
       loadResources();
+      return true;
     } catch (reason) {
       setActionError(errorMessage(reason));
+      return false;
     } finally {
       setActionLoading(false);
+    }
+  };
+
+  const editSecretData = (name: string, value: string) => {
+    setSecretDataDraft((current) => ({
+      ...current,
+      [name]: revealedSecretData.has(name) ? encodeUtf8Base64(value) : value,
+    }));
+  };
+
+  const toggleSecretDataReveal = (name: string) => {
+    setRevealedSecretData((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  };
+
+  const saveSecretData = async () => {
+    if (!detail) return;
+    const nextData = Object.entries(secretDataDraft)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, value]) => ({ name, value }));
+    const nextYaml = updateSecretDataYaml(detail.yaml, nextData);
+    if (await applyYaml(nextYaml)) {
+      setDetail((current) => current ? { ...current, yaml: nextYaml, secretData: nextData } : current);
     }
   };
 
@@ -1985,6 +2064,77 @@ export function App() {
 
   const sortLabel = (key: string, label: string) =>
     `${label}${sortKey === key ? (sortDirection === "asc" ? " ^" : " v") : ""}`;
+
+  const renderSecretDataSection = () => {
+    if (!detail || detail.kind !== "Secret" || detail.apiVersion !== "v1") return null;
+    const entries = Object.entries(secretDataDraft).sort(([left], [right]) => left.localeCompare(right));
+    const originalEntries = detail.secretData
+      .map((item) => [item.name, item.value] as const)
+      .sort(([left], [right]) => left.localeCompare(right));
+    const changed = JSON.stringify(entries) !== JSON.stringify(originalEntries);
+
+    return (
+      <section className="detail-section secret-data-section">
+        <h4>Data</h4>
+        {entries.length === 0 ? (
+          <p>No data</p>
+        ) : (
+          <>
+            {entries.map(([name, encodedValue]) => {
+              const decodedValue = decodeUtf8Base64(encodedValue);
+              const canReveal = typeof decodedValue === "string";
+              const revealed = canReveal && revealedSecretData.has(name);
+              const displayValue = revealed ? decodedValue : encodedValue;
+              return (
+                <div key={name} className="secret-data-entry">
+                  <label htmlFor={`secret-data-${name}`}>{name}</label>
+                  <div className="secret-data-value">
+                    <textarea
+                      id={`secret-data-${name}`}
+                      value={displayValue}
+                      onChange={(event) => editSecretData(name, event.target.value)}
+                      disabled={actionLoading}
+                      spellCheck={false}
+                      rows={Math.max(1, Math.min(6, displayValue.split("\n").length))}
+                    />
+                    {canReveal && (
+                      <button
+                        type="button"
+                        className={`secret-visibility-button ${revealed ? "revealed" : ""}`}
+                        onClick={() => toggleSecretDataReveal(name)}
+                        title={revealed ? "Hide" : "Show"}
+                        aria-label={`${revealed ? "Hide" : "Show"} ${name}`}
+                        disabled={actionLoading}
+                      >
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          {revealed ? (
+                            <>
+                              <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </>
+                          ) : (
+                            <>
+                              <path d="M3 3l18 18" />
+                              <path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a17.2 17.2 0 0 1-3.1 3.7" />
+                              <path d="M6.2 6.9C3.8 8.5 2.5 12 2.5 12s3.5 6 9.5 6a9.7 9.7 0 0 0 4.1-.9" />
+                              <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+                            </>
+                          )}
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+            <button className="primary-button" onClick={() => void saveSecretData()} disabled={actionLoading || !changed}>
+              {actionLoading ? "Saving..." : "Save"}
+            </button>
+          </>
+        )}
+      </section>
+    );
+  };
 
   const resourceActionMenuKey = (item: ResourceItem) =>
     `${item.apiVersion}/${item.kind}/${item.namespace ?? ""}/${item.name}`;
@@ -2754,6 +2904,7 @@ export function App() {
                         <dl>{section.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
                       </section>
                     ))}
+                    {renderSecretDataSection()}
                     {detail.containers.length > 0 && (
                       <section className="detail-section"><h4>Containers</h4><table><thead><tr><th>Name</th><th>Image</th><th>State</th><th>Ready</th><th>Restarts</th></tr></thead><tbody>{detail.containers.map((container) => <tr key={container.name}><td>{container.name}</td><td>{container.image}</td><td>{container.state}</td><td>{container.ready ? "Yes" : "No"}</td><td>{container.restarts}</td></tr>)}</tbody></table></section>
                     )}
