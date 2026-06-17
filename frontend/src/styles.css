@@ -588,27 +588,52 @@ body.resizing-sidebar {
 
 .resource-list {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.resource-list-banner {
+  flex: none;
+  padding: 12px 20px 0;
+}
+
+.resource-list-scroll {
+  flex: 1;
+  min-height: 0;
+  position: relative;
   overflow: auto;
   scrollbar-gutter: stable;
   scrollbar-color: #4f5c68 #0f1419;
 }
 
-.resource-list::-webkit-scrollbar {
+.resource-list-footer {
+  flex: none;
+  padding: 10px 20px;
+  text-align: left;
+}
+
+.resource-list-placeholder {
+  padding: 16px 20px;
+  color: #71808e;
+}
+
+.resource-list-scroll::-webkit-scrollbar {
   width: 11px;
   height: 11px;
 }
 
-.resource-list::-webkit-scrollbar-track {
+.resource-list-scroll::-webkit-scrollbar-track {
   background: #0f1419;
 }
 
-.resource-list::-webkit-scrollbar-thumb {
+.resource-list-scroll::-webkit-scrollbar-thumb {
   border-color: #0f1419;
   background: #4f5c68;
   background-clip: content-box;
 }
 
-.resource-list::-webkit-scrollbar-thumb:hover {
+.resource-list-scroll::-webkit-scrollbar-thumb:hover {
   background: #65727f;
   background-clip: content-box;
 }
@@ -939,19 +964,20 @@ button.dashboard-card:hover {
 }
 
 .resource-list thead {
-  background: #0f1419;
+  background: #1c242d;
 }
 
 .resource-list th {
   position: sticky;
   top: 0;
   z-index: 10;
-  color: #71808e;
+  padding: 15px 20px;
+  color: #9eabb8;
   font-weight: 600;
   font-size: 0.8rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  background: #0f1419;
+  background: #1c242d;
 }
 
 .resource-list th::after {
@@ -1017,8 +1043,12 @@ button.dashboard-card:hover {
   outline-offset: 3px;
 }
 
+.resource-list tbody tr {
+  background: #0f1419;
+}
+
 .resource-list tbody tr:hover {
-  background: rgba(88, 209, 181, 0.04);
+  background: rgba(88, 209, 181, 0.08);
 }
 
 .resource-list .clickable-resource-row {

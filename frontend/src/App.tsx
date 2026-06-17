@@ -466,7 +466,7 @@ export function App() {
   });
   const [sortKey, setSortKey] = useState("name");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
-  const resourceListRef = useRef<HTMLElement | null>(null);
+  const resourceListRef = useRef<HTMLDivElement | null>(null);
   const resourceTableRef = useRef<HTMLTableElement | null>(null);
   const [resourceScrollTop, setResourceScrollTop] = useState(0);
   const [resourceViewportHeight, setResourceViewportHeight] = useState(0);
@@ -2958,132 +2958,150 @@ export function App() {
         ) : activeView === "health" ? (
           healthError ? <p className="error-message">{healthError}</p> : (
             <section className="resource-list health-drilldown">
-              <table>
-                <thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Age</th><th>Actions</th></tr></thead>
-                <tbody>
-                  {visibleHealthItems.map((item) => (
-                    <tr
-                      key={`${item.kind}/${item.namespace ?? ""}/${item.name}`}
-                      className="clickable-resource-row"
-                      tabIndex={0}
-                      onClick={() => {
-                        closeResourceActionMenu();
-                        openDetail(item);
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        event.preventDefault();
-                        closeResourceActionMenu();
-                        openDetail(item);
-                      }}
-                    >
-                      <td>{item.kind}</td>
-                      <td>{item.name}</td>
-                      <td>{item.namespace ?? "-"}</td>
-                      <td>{item.columns.status ?? item.columns.available ?? "-"}</td>
-                      <td>{item.columns.ready ?? item.columns.available ?? "-"}</td>
-                      <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-                      {renderResourceActionsMenu(item)}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {healthLoading && healthItems.length === 0 && <p>Loading {healthTitle.toLowerCase()}…</p>}
-              {!healthLoading && visibleHealthItems.length === 0 && <p>No matching {healthTitle.toLowerCase()}.</p>}
+              <div className="resource-list-scroll">
+                <table>
+                  <thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Age</th><th>Actions</th></tr></thead>
+                  <tbody>
+                    {visibleHealthItems.map((item) => (
+                      <tr
+                        key={`${item.kind}/${item.namespace ?? ""}/${item.name}`}
+                        className="clickable-resource-row"
+                        tabIndex={0}
+                        onClick={() => {
+                          closeResourceActionMenu();
+                          openDetail(item);
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key !== "Enter" && event.key !== " ") return;
+                          event.preventDefault();
+                          closeResourceActionMenu();
+                          openDetail(item);
+                        }}
+                      >
+                        <td>{item.kind}</td>
+                        <td>{item.name}</td>
+                        <td>{item.namespace ?? "-"}</td>
+                        <td>{item.columns.status ?? item.columns.available ?? "-"}</td>
+                        <td>{item.columns.ready ?? item.columns.available ?? "-"}</td>
+                        <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
+                        {renderResourceActionsMenu(item)}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {(healthLoading && healthItems.length === 0) || (!healthLoading && visibleHealthItems.length === 0) ? (
+                <div className="resource-list-footer">
+                  {healthLoading && healthItems.length === 0 && <p>Loading {healthTitle.toLowerCase()}…</p>}
+                  {!healthLoading && visibleHealthItems.length === 0 && <p>No matching {healthTitle.toLowerCase()}.</p>}
+                </div>
+              ) : null}
             </section>
           )
         ) : activeView === "events" ? (
           eventsError ? <p className="error-message">{eventsError}</p> : (
             <section className="resource-list events-list">
-              <table>
-                <thead><tr><th>Last Seen</th><th>{renderEventSortButton("type", "Type")}</th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
-                <tbody>
-                  {visibleEvents.map((event, index) => (
-                    <tr key={`${event.timestamp ?? ""}-${event.objectKind ?? ""}-${event.objectName ?? ""}-${index}`}>
-                      <td title={event.timestamp ? new Date(event.timestamp).toLocaleString() : undefined}>{formatAge(event.timestamp)}</td>
-                      <td><span className={`event-type ${event.eventType?.toLowerCase() ?? ""}`}>{event.eventType ?? "-"}</span></td>
-                      <td>{event.reason ?? "-"}</td>
-                      <td>
-                        {event.objectKind && event.objectName ? (
-                          <button className="event-object" onClick={() => openEventObject(event)}>
-                            {event.objectKind}/{event.objectName}
-                          </button>
-                        ) : "-"}
-                      </td>
-                      <td>{event.namespace ?? event.objectNamespace ?? "-"}</td>
-                      <td className="event-message">{event.message ?? "-"}</td>
-                      <td>{event.count ?? "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {eventsLoading && events.length === 0 && <p>Loading events…</p>}
-              {!eventsLoading && visibleEvents.length === 0 && <p>No matching events.</p>}
+              <div className="resource-list-scroll">
+                <table>
+                  <thead><tr><th>Last Seen</th><th>{renderEventSortButton("type", "Type")}</th><th>Reason</th><th>Object</th><th>Namespace</th><th>Message</th><th>Count</th></tr></thead>
+                  <tbody>
+                    {visibleEvents.map((event, index) => (
+                      <tr key={`${event.timestamp ?? ""}-${event.objectKind ?? ""}-${event.objectName ?? ""}-${index}`}>
+                        <td title={event.timestamp ? new Date(event.timestamp).toLocaleString() : undefined}>{formatAge(event.timestamp)}</td>
+                        <td><span className={`event-type ${event.eventType?.toLowerCase() ?? ""}`}>{event.eventType ?? "-"}</span></td>
+                        <td>{event.reason ?? "-"}</td>
+                        <td>
+                          {event.objectKind && event.objectName ? (
+                            <button className="event-object" onClick={() => openEventObject(event)}>
+                              {event.objectKind}/{event.objectName}
+                            </button>
+                          ) : "-"}
+                        </td>
+                        <td>{event.namespace ?? event.objectNamespace ?? "-"}</td>
+                        <td className="event-message">{event.message ?? "-"}</td>
+                        <td>{event.count ?? "-"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {(eventsLoading && events.length === 0) || (!eventsLoading && visibleEvents.length === 0) ? (
+                <div className="resource-list-footer">
+                  {eventsLoading && events.length === 0 && <p>Loading events…</p>}
+                  {!eventsLoading && visibleEvents.length === 0 && <p>No matching events.</p>}
+                </div>
+              ) : null}
             </section>
           )
         ) : resourcesError ? (
           <p className="error-message">{resourcesError}</p>
         ) : (
-          <section
-            className="resource-list"
-            ref={resourceListRef}
-            onScroll={handleResourceListScroll}
-          >
-            {actionError && <p className="inline-message error-message">{actionError}</p>}
-            {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
-            <table ref={resourceTableRef} className={virtualizeResources ? "virtualized-table" : undefined}>
-              <thead>
-                <tr>
-                  <th>{renderResourceSortButton("name", "Name")}</th>
-                  {selectedKind === "Node" ? <>
-                    {selectedColumns.slice(0, 2).map((column) => (
-                      <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
-                    ))}
-                    <th>{renderResourceSortButton("age", "Age")}</th>
-                    {selectedColumns.slice(2).map((column) => (
-                      <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
-                    ))}
-                    <th>CPU</th><th>Memory</th>
-                  </> : <>
-                    <th>{renderResourceSortButton("namespace", "Namespace")}</th>
-                    {selectedColumns.map((column) => (
-                      <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
-                    ))}
-                    {selectedKind === "Pod" && <><th>CPU</th><th>Memory</th></>}
-                    <th>{renderResourceSortButton("age", "Age")}</th>
-                  </>}
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {resourceTopSpacerHeight > 0 && (
-                  <tr className="virtual-spacer-row" aria-hidden="true">
-                    <td colSpan={resourceColumnCount} style={{ height: resourceTopSpacerHeight }} />
-                  </tr>
-                )}
-                {renderedResources.map(renderResourceRow)}
-                {resourceBottomSpacerHeight > 0 && (
-                  <tr className="virtual-spacer-row" aria-hidden="true">
-                    <td colSpan={resourceColumnCount} style={{ height: resourceBottomSpacerHeight }} />
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            {continueToken && !resourceSearch.trim() && (
-              <button
-                className="load-more"
-                onClick={() => loadResources(continueToken)}
-                disabled={resourcesLoading}
-              >
-                Load more
-              </button>
+          <section className="resource-list">
+            {(actionError || actionMessage) && (
+              <div className="resource-list-banner">
+                {actionError && <p className="inline-message error-message">{actionError}</p>}
+                {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
+              </div>
             )}
-            {resourceSearch.trim() && continueToken && (
-              <p className="pagination-status">
-                {resourcesLoading ? "Searching remaining pages..." : "Preparing next search page..."}
-              </p>
+            <div className="resource-list-scroll" ref={resourceListRef} onScroll={handleResourceListScroll}>
+              <table ref={resourceTableRef} className={virtualizeResources ? "virtualized-table" : undefined}>
+                <thead>
+                  <tr>
+                    <th>{renderResourceSortButton("name", "Name")}</th>
+                    {selectedKind === "Node" ? <>
+                      {selectedColumns.slice(0, 2).map((column) => (
+                        <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
+                      ))}
+                      <th>{renderResourceSortButton("age", "Age")}</th>
+                      {selectedColumns.slice(2).map((column) => (
+                        <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
+                      ))}
+                      <th>CPU</th><th>Memory</th>
+                    </> : <>
+                      <th>{renderResourceSortButton("namespace", "Namespace")}</th>
+                      {selectedColumns.map((column) => (
+                        <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
+                      ))}
+                      {selectedKind === "Pod" && <><th>CPU</th><th>Memory</th></>}
+                      <th>{renderResourceSortButton("age", "Age")}</th>
+                    </>}
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {resourceTopSpacerHeight > 0 && (
+                    <tr className="virtual-spacer-row" aria-hidden="true">
+                      <td colSpan={resourceColumnCount} style={{ height: resourceTopSpacerHeight }} />
+                    </tr>
+                  )}
+                  {renderedResources.map(renderResourceRow)}
+                  {resourceBottomSpacerHeight > 0 && (
+                    <tr className="virtual-spacer-row" aria-hidden="true">
+                      <td colSpan={resourceColumnCount} style={{ height: resourceBottomSpacerHeight }} />
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              {resourcesLoading && resources.length === 0 && <p className="resource-list-placeholder">Loading…</p>}
+            </div>
+            {(continueToken || (resourceSearch.trim() && continueToken)) && (
+              <div className="resource-list-footer">
+                {continueToken && !resourceSearch.trim() && (
+                  <button
+                    className="load-more"
+                    onClick={() => loadResources(continueToken)}
+                    disabled={resourcesLoading}
+                  >
+                    Load more
+                  </button>
+                )}
+                {resourceSearch.trim() && continueToken && (
+                  <p className="pagination-status">
+                    {resourcesLoading ? "Searching remaining pages..." : "Preparing next search page..."}
+                  </p>
+                )}
+              </div>
             )}
-            {resourcesLoading && resources.length === 0 && <p>Loading…</p>}
           </section>
         )}
       </main>
