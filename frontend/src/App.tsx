@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode, UIEvent as ReactUIEvent } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+  UIEvent as ReactUIEvent,
+} from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
@@ -395,6 +400,7 @@ export function App() {
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
   const [resourceActionKey, setResourceActionKey] = useState<string>();
+  const [openResourceActionMenu, setOpenResourceActionMenu] = useState<string>();
   const detailRequestRef = useRef(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [createYaml, setCreateYaml] = useState("");
@@ -1874,6 +1880,10 @@ export function App() {
     setResourceScrollTop(0);
   }, [activeView, resourceSearch, selectedKind, selectedNamespace, sortKey, sortDirection]);
 
+  useEffect(() => {
+    closeResourceActionMenu();
+  }, [activeView, resourceSearch, selectedKind, selectedNamespace, sortKey, sortDirection, resources.length, healthItems.length]);
+
   const resourceColumnCount = selectedKind === "Node"
     ? selectedColumns.length + 4
     : selectedColumns.length + (selectedKind === "Pod" ? 6 : 4);
@@ -1976,8 +1986,104 @@ export function App() {
   const sortLabel = (key: string, label: string) =>
     `${label}${sortKey === key ? (sortDirection === "asc" ? " ^" : " v") : ""}`;
 
+  const resourceActionMenuKey = (item: ResourceItem) =>
+    `${item.apiVersion}/${item.kind}/${item.namespace ?? ""}/${item.name}`;
+
+  const closeResourceActionMenu = () => setOpenResourceActionMenu(undefined);
+
+  const toggleResourceActionMenu = (event: ReactMouseEvent, item: ResourceItem) => {
+    event.stopPropagation();
+    const key = resourceActionMenuKey(item);
+    setOpenResourceActionMenu((current) => current === key ? undefined : key);
+  };
+
+  const runResourceMenuAction = (event: ReactMouseEvent, action: () => void) => {
+    event.stopPropagation();
+    closeResourceActionMenu();
+    action();
+  };
+
+  const renderResourceActionsMenu = (item: ResourceItem) => {
+    const key = resourceActionMenuKey(item);
+    const isOpen = openResourceActionMenu === key;
+    return (
+      <td className="actions" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          className="action-menu-trigger"
+          aria-label={`Actions for ${item.kind} ${item.name}`}
+          aria-haspopup="menu"
+          aria-expanded={isOpen}
+          onClick={(event) => toggleResourceActionMenu(event, item)}
+        >
+          <span aria-hidden="true" />
+        </button>
+        {isOpen && (
+          <div className="action-menu" role="menu">
+            {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
+              <>
+                <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => startLogs(item))}>
+                  Logs
+                </button>
+                <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => void openExec(item))}>
+                  Terminal
+                </button>
+                {portForwards[portForwardKey(item)] ? (
+                  <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => void stopPortForward(item))}>
+                    Stop {portForwards[portForwardKey(item)].localPort}:{portForwards[portForwardKey(item)].remotePort}
+                  </button>
+                ) : (
+                  <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => void startPortForward(item))}>
+                    Port Forward
+                  </button>
+                )}
+              </>
+            )}
+            {(item.kind === "Deployment" || item.kind === "StatefulSet")
+              && item.apiVersion === "apps/v1" && item.namespace
+              && <button type="button" role="menuitem" disabled={Boolean(resourceActionKey)} onClick={(event) => runResourceMenuAction(event, () => void scaleWorkload(item))}>
+                {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/scale` ? "Scaling..." : "Scale"}
+              </button>}
+            {(item.kind === "Deployment" || item.kind === "StatefulSet" || item.kind === "DaemonSet")
+              && item.apiVersion === "apps/v1" && item.namespace
+              && <button type="button" role="menuitem" disabled={Boolean(resourceActionKey)} onClick={(event) => runResourceMenuAction(event, () => void restartWorkload(item))}>
+                {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/restart` ? "Restarting..." : "Restart"}
+              </button>}
+            {item.kind === "CronJob" && item.apiVersion === "batch/v1" && item.namespace
+              && <button type="button" role="menuitem" disabled={Boolean(resourceActionKey)} onClick={(event) => runResourceMenuAction(event, () => void triggerCronJob(item))}>
+                {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/trigger` ? "Starting..." : "Run now"}
+              </button>}
+            <button
+              type="button"
+              role="menuitem"
+              className="danger-button"
+              disabled={Boolean(resourceActionKey)}
+              onClick={(event) => runResourceMenuAction(event, () => void deleteResource(item))}
+            >
+              {resourceActionKey === `${item.kind}/${item.namespace ?? ""}/${item.name}/delete` ? "Deleting..." : "Delete"}
+            </button>
+          </div>
+        )}
+      </td>
+    );
+  };
+
   const renderResourceRow = (item: ResourceItem) => (
-    <tr key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}>
+    <tr
+      key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}
+      className="clickable-resource-row"
+      tabIndex={0}
+      onClick={() => {
+        closeResourceActionMenu();
+        openDetail(item);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        closeResourceActionMenu();
+        openDetail(item);
+      }}
+    >
       <td>{item.name}</td>
       {selectedKind === "Node" ? <>
         {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
@@ -1994,39 +2100,7 @@ export function App() {
         </>}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
       </>}
-      <td className="actions">
-        <button onClick={() => openDetail(item)}>Details</button>
-        {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
-          <>
-            <button onClick={() => startLogs(item)}>Logs</button>
-            <button onClick={() => void openExec(item)}>Terminal</button>
-            {portForwards[portForwardKey(item)] ? (
-              <button onClick={() => void stopPortForward(item)}>
-                Stop {portForwards[portForwardKey(item)].localPort}:{portForwards[portForwardKey(item)].remotePort}
-              </button>
-            ) : (
-              <button onClick={() => void startPortForward(item)}>Port Forward</button>
-            )}
-          </>
-        )}
-        {(item.kind === "Deployment" || item.kind === "StatefulSet")
-          && item.apiVersion === "apps/v1" && item.namespace
-          && <button disabled={Boolean(resourceActionKey)} onClick={() => void scaleWorkload(item)}>
-            {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/scale` ? "Scaling..." : "Scale"}
-          </button>}
-        {(item.kind === "Deployment" || item.kind === "StatefulSet" || item.kind === "DaemonSet")
-          && item.apiVersion === "apps/v1" && item.namespace
-          && <button disabled={Boolean(resourceActionKey)} onClick={() => void restartWorkload(item)}>
-            {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/restart` ? "Restarting..." : "Restart"}
-          </button>}
-        {item.kind === "CronJob" && item.apiVersion === "batch/v1" && item.namespace
-          && <button disabled={Boolean(resourceActionKey)} onClick={() => void triggerCronJob(item)}>
-            {resourceActionKey === `${item.kind}/${item.namespace}/${item.name}/trigger` ? "Starting..." : "Run now"}
-          </button>}
-        <button className="danger-button" disabled={Boolean(resourceActionKey)} onClick={() => void deleteResource(item)}>
-          {resourceActionKey === `${item.kind}/${item.namespace ?? ""}/${item.name}/delete` ? "Deleting..." : "Delete"}
-        </button>
-      </td>
+      {renderResourceActionsMenu(item)}
     </tr>
   );
 
@@ -2497,14 +2571,28 @@ export function App() {
                 <thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Age</th><th>Actions</th></tr></thead>
                 <tbody>
                   {visibleHealthItems.map((item) => (
-                    <tr key={`${item.kind}/${item.namespace ?? ""}/${item.name}`}>
+                    <tr
+                      key={`${item.kind}/${item.namespace ?? ""}/${item.name}`}
+                      className="clickable-resource-row"
+                      tabIndex={0}
+                      onClick={() => {
+                        closeResourceActionMenu();
+                        openDetail(item);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter" && event.key !== " ") return;
+                        event.preventDefault();
+                        closeResourceActionMenu();
+                        openDetail(item);
+                      }}
+                    >
                       <td>{item.kind}</td>
                       <td>{item.name}</td>
                       <td>{item.namespace ?? "-"}</td>
                       <td>{item.columns.status ?? item.columns.available ?? "-"}</td>
                       <td>{item.columns.ready ?? item.columns.available ?? "-"}</td>
                       <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-                      <td className="actions"><button onClick={() => openDetail(item)}>Details</button></td>
+                      {renderResourceActionsMenu(item)}
                     </tr>
                   ))}
                 </tbody>

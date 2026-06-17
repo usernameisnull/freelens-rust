@@ -753,31 +753,105 @@ button.dashboard-card:hover {
   background: rgba(88, 209, 181, 0.04);
 }
 
-.resource-list .actions {
-  display: flex;
-  gap: 8px;
-}
-
-.resource-list .actions button {
-  padding: 4px 10px;
-  border: 1px solid #26313a;
-  border-radius: 4px;
-  background: #1c242d;
-  color: #9eabb8;
+.resource-list .clickable-resource-row {
   cursor: pointer;
 }
 
-.resource-list .actions button:hover {
+.resource-list .clickable-resource-row:focus {
+  outline: 1px solid #58d1b5;
+  outline-offset: -1px;
+}
+
+.resource-list .actions {
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  overflow: visible !important;
+}
+
+.resource-list .action-menu-trigger {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #26313a;
+  border-radius: 4px;
+  background: #1c242d;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.resource-list .action-menu-trigger span,
+.resource-list .action-menu-trigger span::before,
+.resource-list .action-menu-trigger span::after {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: #e8edf2;
+  display: block;
+}
+
+.resource-list .action-menu-trigger span {
+  position: relative;
+}
+
+.resource-list .action-menu-trigger span::before,
+.resource-list .action-menu-trigger span::after {
+  content: "";
+  position: absolute;
+  left: 0;
+}
+
+.resource-list .action-menu-trigger span::before {
+  top: -7px;
+}
+
+.resource-list .action-menu-trigger span::after {
+  top: 7px;
+}
+
+.resource-list .action-menu-trigger:hover,
+.resource-list .action-menu-trigger[aria-expanded="true"] {
+  background: #26313a;
+}
+
+.resource-list .action-menu {
+  position: absolute;
+  top: calc(100% - 6px);
+  right: 20px;
+  z-index: 30;
+  min-width: 150px;
+  padding: 6px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #151c23;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.resource-list .action-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #d6e0ea;
+  text-align: left;
+  cursor: pointer;
+}
+
+.resource-list .action-menu button:hover {
   background: #26313a;
   color: #e8edf2;
 }
 
-.resource-list .actions button:disabled {
+.resource-list .action-menu button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.resource-list .actions .danger-button,
+.resource-list .action-menu .danger-button,
 .danger-button {
   color: #ff8a8a;
 }
