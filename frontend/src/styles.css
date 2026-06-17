@@ -282,6 +282,9 @@ body.resizing-sidebar {
 }
 
 .overview-navigation li > button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   padding-left: 16px;
 }
 
