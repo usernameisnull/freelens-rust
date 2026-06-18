@@ -659,7 +659,8 @@ body.resizing-sidebar {
   top: calc(100% + 6px);
   right: 0;
   z-index: 30;
-  min-width: 150px;
+  width: max-content;
+  min-width: 0;
   padding: 6px;
   border: 1px solid #26313a;
   border-radius: 6px;
@@ -1386,7 +1387,8 @@ button.dashboard-card:hover {
   top: calc(100% - 6px);
   right: 20px;
   z-index: 30;
-  min-width: 150px;
+  width: max-content;
+  min-width: 0;
   padding: 6px;
   border: 1px solid #26313a;
   border-radius: 6px;
