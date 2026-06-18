@@ -640,6 +640,9 @@ export function App() {
     const saved = Number(window.localStorage.getItem("freelens.sidebarWidth"));
     return Number.isFinite(saved) && saved >= 180 && saved <= 420 ? saved : 220;
   });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    window.localStorage.getItem("freelens.sidebarCollapsed") === "true"
+  );
   const [favoriteResourceKeys, setFavoriteResourceKeys] = useState<string[]>(() => {
     try {
       const parsed = JSON.parse(window.localStorage.getItem("freelens.favoriteResources") ?? "[]");
@@ -829,10 +832,15 @@ export function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    window.localStorage.setItem("freelens.sidebarCollapsed", String(sidebarCollapsed));
+  }, [sidebarCollapsed]);
+
+  useEffect(() => {
     window.localStorage.setItem("freelens.favoriteResources", JSON.stringify(favoriteResourceKeys));
   }, [favoriteResourceKeys]);
 
   const startSidebarResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (sidebarCollapsed) return;
     event.preventDefault();
     sidebarResizeRef.current = true;
     document.body.classList.add("resizing-sidebar");
@@ -2908,108 +2916,140 @@ export function App() {
     <div className="app-shell">
       {activeView !== "contexts" && (
         <>
-          <aside className="sidebar" style={{ width: sidebarWidth }}>
-            <div className="sidebar-header">
-              <h1>Freelens</h1>
+          {!sidebarCollapsed && (
+            <>
+              <aside className="sidebar" style={{ width: sidebarWidth }}>
+                <div className="sidebar-header">
+                  <div className="sidebar-title-row">
+                    <h1>Freelens</h1>
+                    <button
+                      type="button"
+                      className="sidebar-toggle"
+                      onClick={() => setSidebarCollapsed(true)}
+                      aria-label="Collapse sidebar"
+                      title="Collapse sidebar"
+                    >
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="m15 6-6 6 6 6" />
+                      </svg>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    className="sidebar-context-card"
+                    onClick={() => setActiveView("contexts")}
+                    title="Back to contexts"
+                  >
+                    <span className="sidebar-context-home">{"<"}</span>
+                    <span className="sidebar-context-name">{selectedContext || "No context"}</span>
+                  </button>
+                  <input
+                    className="resource-catalog-search"
+                    type="search"
+                    placeholder="Find resource type"
+                    value={resourceCatalogSearch}
+                    onChange={(event) => setResourceCatalogSearch(event.target.value)}
+                  />
+                </div>
+
+                <nav className="sidebar-nav">
+                  <div className="nav-group overview-navigation">
+                    <ul>
+                      <li>
+                        <button
+                          className={activeView === "overview" ? "active" : ""}
+                          onClick={() => setActiveView("overview")}
+                        >
+                          <NavigationIcon name="overview" />
+                          <span>Overview</span>
+                        </button>
+                      </li>
+                      <li>
+                        <button
+                          className={activeView === "events" ? "active" : ""}
+                          onClick={() => setActiveView("events")}
+                        >
+                          <NavigationIcon name="events" />
+                          <span>Events</span>
+                        </button>
+                      </li>
+                    </ul>
+                  </div>
+                  <div className="nav-group-tools">
+                    <button
+                      type="button"
+                      className="nav-icon-button"
+                      onClick={toggleAllNavigationGroups}
+                      disabled={hasResourceCatalogSearch || (navigationGroups.length === 0 && favoriteResourceKeys.length === 0)}
+                      aria-label={allNavigationGroupsExpanded ? "Collapse all resource groups" : "Expand all resource groups"}
+                      title={allNavigationGroupsExpanded ? "Collapse all" : "Expand all"}
+                    >
+                      <NavigationIcon name={allNavigationGroupsExpanded ? "collapseAll" : "expandAll"} />
+                    </button>
+                  </div>
+                  <div className="nav-group favorites-navigation">
+                    <button
+                      className="nav-group-header"
+                      onClick={() => toggleNavigationGroup(FAVORITES_GROUP_LABEL)}
+                      aria-expanded={!collapsedGroups[FAVORITES_GROUP_LABEL] || hasResourceCatalogSearch}
+                    >
+                      <NavigationIcon name="favorites" />
+                      <span>Favorites</span>
+                      <span className="nav-chevron">{collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                    </button>
+                    <ul hidden={collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch}>
+                      {favoriteResources.length > 0 ? (
+                        favoriteResources.map((resource) => renderResourceNavigationItem(resource, FAVORITES_GROUP_LABEL))
+                      ) : (
+                        <li className="nav-empty-state">{hasResourceCatalogSearch ? "No matching favorites" : "No favorites yet"}</li>
+                      )}
+                    </ul>
+                  </div>
+                  {navigationGroups.map((group) => (
+                    <div key={group.label} className="nav-group">
+                      <button
+                        className="nav-group-header"
+                        onClick={() => toggleNavigationGroup(group.label)}
+                        aria-expanded={!collapsedGroups[group.label] || hasResourceCatalogSearch}
+                      >
+                        <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
+                        <span>{group.label}</span>
+                        <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                      </button>
+                      <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
+                        {group.resources.map((resource) => renderResourceNavigationItem(resource, group.label))}
+                      </ul>
+                    </div>
+                  ))}
+                  {resourceDiscoveryError && (
+                    <p className="sidebar-warning" title={resourceDiscoveryError}>Using built-in resource catalog</p>
+                  )}
+                </nav>
+              </aside>
+              <div
+                className="sidebar-resizer"
+                role="separator"
+                aria-label="Resize sidebar"
+                aria-orientation="vertical"
+                onPointerDown={startSidebarResize}
+              />
+            </>
+          )}
+          {sidebarCollapsed && (
+            <div className="sidebar-toggle-rail collapsed">
               <button
                 type="button"
-                className="sidebar-context-card"
-                onClick={() => setActiveView("contexts")}
-                title="Back to contexts"
+                className="sidebar-toggle"
+                onClick={() => setSidebarCollapsed(false)}
+                aria-label="Expand sidebar"
+                title="Expand sidebar"
               >
-                <span className="sidebar-context-home">{"<"}</span>
-                <span className="sidebar-context-name">{selectedContext || "No context"}</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m9 6 6 6-6 6" />
+                </svg>
               </button>
-              <input
-                className="resource-catalog-search"
-                type="search"
-                placeholder="Find resource type"
-                value={resourceCatalogSearch}
-                onChange={(event) => setResourceCatalogSearch(event.target.value)}
-              />
             </div>
-
-            <nav className="sidebar-nav">
-              <div className="nav-group overview-navigation">
-                <ul>
-                  <li>
-                    <button
-                      className={activeView === "overview" ? "active" : ""}
-                      onClick={() => setActiveView("overview")}
-                    >
-                      <NavigationIcon name="overview" />
-                      <span>Overview</span>
-                    </button>
-                  </li>
-                  <li>
-                    <button
-                      className={activeView === "events" ? "active" : ""}
-                      onClick={() => setActiveView("events")}
-                    >
-                      <NavigationIcon name="events" />
-                      <span>Events</span>
-                    </button>
-                  </li>
-                </ul>
-              </div>
-              <div className="nav-group-tools">
-                <button
-                  type="button"
-                  className="nav-icon-button"
-                  onClick={toggleAllNavigationGroups}
-                  disabled={hasResourceCatalogSearch || (navigationGroups.length === 0 && favoriteResourceKeys.length === 0)}
-                  aria-label={allNavigationGroupsExpanded ? "Collapse all resource groups" : "Expand all resource groups"}
-                  title={allNavigationGroupsExpanded ? "Collapse all" : "Expand all"}
-                >
-                  <NavigationIcon name={allNavigationGroupsExpanded ? "collapseAll" : "expandAll"} />
-                </button>
-              </div>
-              <div className="nav-group favorites-navigation">
-                <button
-                  className="nav-group-header"
-                  onClick={() => toggleNavigationGroup(FAVORITES_GROUP_LABEL)}
-                  aria-expanded={!collapsedGroups[FAVORITES_GROUP_LABEL] || hasResourceCatalogSearch}
-                >
-                  <NavigationIcon name="favorites" />
-                  <span>Favorites</span>
-                  <span className="nav-chevron">{collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch ? ">" : "v"}</span>
-                </button>
-                <ul hidden={collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch}>
-                  {favoriteResources.length > 0 ? (
-                    favoriteResources.map((resource) => renderResourceNavigationItem(resource, FAVORITES_GROUP_LABEL))
-                  ) : (
-                    <li className="nav-empty-state">{hasResourceCatalogSearch ? "No matching favorites" : "No favorites yet"}</li>
-                  )}
-                </ul>
-              </div>
-              {navigationGroups.map((group) => (
-                <div key={group.label} className="nav-group">
-                  <button
-                    className="nav-group-header"
-                    onClick={() => toggleNavigationGroup(group.label)}
-                    aria-expanded={!collapsedGroups[group.label] || hasResourceCatalogSearch}
-                  >
-                    <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
-                    <span>{group.label}</span>
-                    <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
-                  </button>
-                  <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
-                    {group.resources.map((resource) => renderResourceNavigationItem(resource, group.label))}
-                  </ul>
-                </div>
-              ))}
-              {resourceDiscoveryError && (
-                <p className="sidebar-warning" title={resourceDiscoveryError}>Using built-in resource catalog</p>
-              )}
-            </nav>
-          </aside>
-          <div
-            className="sidebar-resizer"
-            role="separator"
-            aria-label="Resize sidebar"
-            aria-orientation="vertical"
-            onPointerDown={startSidebarResize}
-          />
+          )}
         </>
       )}
 
@@ -3037,20 +3077,21 @@ export function App() {
                 value={resourceSearch}
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
-              <select
-                value={selectedNamespace}
-                onChange={(event) => {
-                  resourceRequestRef.current += 1;
-                  setSelectedNamespace(event.target.value);
-                }}
-                disabled={!selectedResource.namespaced}
-                title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
-              >
-                <option value="">All namespaces</option>
-                {availableNamespaces.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
+              {selectedResource.namespaced && (
+                <select
+                  value={selectedNamespace}
+                  onChange={(event) => {
+                    resourceRequestRef.current += 1;
+                    setSelectedNamespace(event.target.value);
+                  }}
+                  title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
+                >
+                  <option value="">All namespaces</option>
+                  {availableNamespaces.map((name) => (
+                    <option key={name} value={name}>{name}</option>
+                  ))}
+                </select>
+              )}
             </>}
             {activeView === "events" && <>
               <input
