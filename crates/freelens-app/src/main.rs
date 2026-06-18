@@ -1741,9 +1741,13 @@ async fn run_kubectl_process(request: &KubectlRunRequest) -> Result<KubectlRunRe
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
-    if let Some(kubeconfig_path) =
-        freelens_kubeconfig::resolve_kubeconfig_file_for_context(&request.context)
-    {
+    if let Some(kubeconfig_path) = freelens_kubeconfig::resolve_kubeconfig_file_for_context(
+        &request.context,
+    )
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })? {
         command.arg("--kubeconfig").arg(kubeconfig_path);
     }
     if let Some(namespace) = request
@@ -1844,11 +1848,12 @@ fn find_on_path(names: &[&str]) -> Option<PathBuf> {
 }
 
 const KUBECTL_WRAPPER_SCRIPT: &str = concat!(
-    "function kubectl {\n",
+    "function global:kubectl {\n",
     "  $ka = @('--context', $env:FREELENS_CONTEXT)\n",
     "  if ($env:FREELENS_NAMESPACE) { $ka += @('--namespace', $env:FREELENS_NAMESPACE) }\n",
     "  $ka += $args\n",
-    "  & kubectl.exe @ka\n",
+    "  $kubectl = if ($env:FREELENS_KUBECTL_PATH) { $env:FREELENS_KUBECTL_PATH } else { 'kubectl' }\n",
+    "  & $kubectl @ka\n",
     "}\n",
     "Write-Host -ForegroundColor DarkGray \"[Freelens] kubectl wrapper active: context='$env:FREELENS_CONTEXT' namespace='$env:FREELENS_NAMESPACE'\"\n",
 );
@@ -1867,6 +1872,11 @@ fn write_wrapper_script() -> Result<PathBuf, IpcError> {
     Ok(path)
 }
 
+fn powershell_dot_source_command(path: &Path) -> String {
+    let path = path.to_string_lossy().replace('\'', "''");
+    format!(". '{path}'")
+}
+
 #[tauri::command]
 fn local_terminal_start(
     request: LocalTerminalStartRequest,
@@ -1879,6 +1889,7 @@ fn local_terminal_start(
         message: "Neither pwsh.exe nor powershell.exe was found on PATH".into(),
     })?;
     let wrapper_script_path = write_wrapper_script()?;
+    let kubectl_path = kubectl_candidates().into_iter().next();
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -1894,16 +1905,26 @@ fn local_terminal_start(
     let mut command = CommandBuilder::new(&shell);
     command.arg("-NoLogo");
     command.arg("-NoExit");
-    command.arg("-File");
-    command.arg(wrapper_script_path.to_string_lossy().to_string());
+    command.arg("-Command");
+    command.arg(powershell_dot_source_command(&wrapper_script_path));
     command.env("FREELENS_CONTEXT", &request.context);
     command.env(
         "FREELENS_NAMESPACE",
         request.namespace.as_deref().unwrap_or(""),
     );
-    if let Some(kubeconfig_path) =
-        freelens_kubeconfig::resolve_kubeconfig_file_for_context(&request.context)
-    {
+    if let Some(kubectl_path) = kubectl_path {
+        command.env(
+            "FREELENS_KUBECTL_PATH",
+            kubectl_path.to_string_lossy().to_string(),
+        );
+    }
+    if let Some(kubeconfig_path) = freelens_kubeconfig::resolve_kubeconfig_file_for_context(
+        &request.context,
+    )
+    .map_err(|error| IpcError {
+        code: error.code().into(),
+        message: error.to_string(),
+    })? {
         command.env("KUBECONFIG", kubeconfig_path.to_string_lossy().to_string());
     }
     let mut child = pair

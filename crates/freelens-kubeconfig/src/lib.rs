@@ -248,26 +248,35 @@ pub fn resolve_kubeconfig_files_from_sources(
 /// reuse the same cluster/user names (e.g. `kubernetes` / `kubernetes-admin`),
 /// and merging them via `KUBECONFIG` causes kubectl to resolve the wrong
 /// cluster for a given context.
-pub fn resolve_kubeconfig_file_for_context(context_name: &str) -> Option<PathBuf> {
+pub fn resolve_kubeconfig_file_for_context(
+    context_name: &str,
+) -> Result<Option<PathBuf>, KubeconfigError> {
     let env_value = std::env::var_os("KUBECONFIG");
     let paths: Vec<PathBuf> = if let Some(value) = env_value {
         split_kubeconfig_env(&value.to_string_lossy())
     } else {
         let default = default_kubeconfig_path();
-        if default.exists() { vec![default] } else { vec![] }
+        if default.exists() {
+            vec![default]
+        } else {
+            vec![]
+        }
     };
 
+    resolve_kubeconfig_file_for_context_in_paths(context_name, paths)
+}
+
+fn resolve_kubeconfig_file_for_context_in_paths(
+    context_name: &str,
+    paths: Vec<PathBuf>,
+) -> Result<Option<PathBuf>, KubeconfigError> {
     for path in paths {
-        match load_single_file(&path) {
-            Ok(file) => {
-                if file.contexts.iter().any(|named| named.name == context_name) {
-                    return Some(path);
-                }
-            }
-            Err(_) => continue,
+        let file = load_single_file(&path)?;
+        if file.contexts.iter().any(|named| named.name == context_name) {
+            return Ok(Some(path));
         }
     }
-    None
+    Ok(None)
 }
 
 fn summarize_contexts(
@@ -716,5 +725,16 @@ contexts: []
             err.to_string()
                 .contains("conflicting kubeconfig apiVersion")
         );
+    }
+
+    #[test]
+    fn resolving_context_file_surfaces_parse_errors() {
+        let invalid = write_temp("not: valid: yaml: [");
+
+        let result =
+            resolve_kubeconfig_file_for_context_in_paths("dev", vec![invalid.path().to_path_buf()]);
+
+        let err = result.unwrap_err();
+        assert_eq!(err.code(), "kubeconfig_parse_failed");
     }
 }
