@@ -3360,7 +3360,7 @@ export function App() {
               {topbarMenuOpen && (
                 <div className="action-menu" role="menu">
                   <button type="button" role="menuitem" onClick={() => runTopbarMenuAction(openCreate)}>
-                    Create Resource
+                    Apply
                   </button>
                   <button type="button" role="menuitem" onClick={() => runTopbarMenuAction(() => void openKubectl())}>
                     Kubectl
@@ -3760,7 +3760,7 @@ export function App() {
         <div className="detail-panel-overlay" onClick={() => !createLoading && setCreateOpen(false)}>
           <div className="detail-panel create-panel" onClick={(event) => event.stopPropagation()}>
             <header>
-              <h3>Create Resource</h3>
+              <h3>Apply</h3>
               <button onClick={() => setCreateOpen(false)} disabled={createLoading}>Close</button>
             </header>
             <p className="panel-hint">Apply one Kubernetes resource to {selectedContext}.</p>
