@@ -220,6 +220,20 @@ pub struct ResourceItem {
     pub uid: Option<String>,
     pub created: Option<String>,
     pub columns: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_containers: Option<Vec<PodContainerSummary>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodContainerSummary {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub ready: bool,
+    pub restart_count: i32,
+    pub state: BTreeMap<String, serde_json::Value>,
+    pub last_state: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -935,6 +949,47 @@ mod tests {
         assert_eq!(json["requestId"], "r4");
         assert_eq!(json["namespaces"][0]["name"], "default");
         assert_eq!(json["namespaces"][0]["status"], "Active");
+    }
+
+    #[test]
+    fn resource_list_response_serializes_pod_containers_as_camel_case() {
+        let response = KubernetesListResourcesResponse {
+            version: IPC_VERSION,
+            request_id: "r-resources".into(),
+            context: "dev".into(),
+            kind: "Pod".into(),
+            items: vec![ResourceItem {
+                kind: "Pod".into(),
+                api_version: "v1".into(),
+                name: "web-0".into(),
+                namespace: Some("default".into()),
+                uid: Some("uid-web".into()),
+                created: Some("2026-06-18T10:00:00Z".into()),
+                columns: BTreeMap::from([("status".into(), "Running".into())]),
+                pod_containers: Some(vec![PodContainerSummary {
+                    name: "app".into(),
+                    type_: "containers".into(),
+                    ready: true,
+                    restart_count: 1,
+                    state: BTreeMap::from([(
+                        "running".into(),
+                        serde_json::json!({ "startedAt": "2026-06-18T10:00:00Z" }),
+                    )]),
+                    last_state: BTreeMap::new(),
+                }]),
+            }],
+            continue_token: None,
+        };
+
+        let json = serde_json::to_value(response).unwrap();
+        assert_eq!(json["requestId"], "r-resources");
+        assert_eq!(json["items"][0]["apiVersion"], "v1");
+        assert_eq!(json["items"][0]["podContainers"][0]["type"], "containers");
+        assert_eq!(json["items"][0]["podContainers"][0]["restartCount"], 1);
+        assert_eq!(
+            json["items"][0]["podContainers"][0]["state"]["running"]["startedAt"],
+            "2026-06-18T10:00:00Z"
+        );
     }
 
     #[test]

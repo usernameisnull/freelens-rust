@@ -28,8 +28,8 @@ use freelens_ipc::{
     KubernetesTriggerCronJobResponse, KubernetesVersionRequest, KubernetesVersionResponse,
     LocalTerminalInputRequest, LocalTerminalInputResponse, LocalTerminalResizeRequest,
     LocalTerminalStartRequest, LocalTerminalStartResponse, LocalTerminalStopRequest, NamespaceItem,
-    ResourceItem, ResourceKindItem, ResourceMetricItem, SecretDataDetailItem, SettingsLoadRequest,
-    SettingsLoadResponse, SettingsSaveRequest, SystemInfoResponse,
+    PodContainerSummary, ResourceItem, ResourceKindItem, ResourceMetricItem, SecretDataDetailItem,
+    SettingsLoadRequest, SettingsLoadResponse, SettingsSaveRequest, SystemInfoResponse,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
@@ -508,6 +508,19 @@ async fn kubernetes_list_resources(
                 uid: item.uid,
                 created: item.created,
                 columns: item.columns,
+                pod_containers: item.pod_containers.map(|containers| {
+                    containers
+                        .into_iter()
+                        .map(|container| PodContainerSummary {
+                            name: container.name,
+                            type_: container.type_,
+                            ready: container.ready,
+                            restart_count: container.restart_count,
+                            state: container.state,
+                            last_state: container.last_state,
+                        })
+                        .collect()
+                }),
             })
             .collect(),
         continue_token: list.continue_token,

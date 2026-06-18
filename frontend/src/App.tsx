@@ -25,6 +25,7 @@ import {
   ResourceItem,
   ResourceMetricItem,
   ResourceKindItem,
+  PodContainerSummary,
 } from "./contracts";
 import { createTransport } from "./transport";
 import "@xterm/xterm/css/xterm.css";
@@ -525,6 +526,7 @@ const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = 
   Pod: [
     { key: "status", label: "Status" },
     { key: "ready", label: "Ready" },
+    { key: "containers", label: "Containers" },
     { key: "restarts", label: "Restarts" },
     { key: "node", label: "Node" },
   ],
@@ -679,6 +681,94 @@ function renderResourceStatusValue(kind: string, columnKey: string, columns: Rec
   return <span className={`resource-status resource-status-${tone}`}>{value}</span>;
 }
 
+function activeContainerStateKey(container: PodContainerSummary): keyof PodContainerSummary["state"] | "" {
+  return Object.keys(container.state ?? {})[0] as keyof PodContainerSummary["state"] | "";
+}
+
+function lastContainerStateKey(container: PodContainerSummary): keyof PodContainerSummary["lastState"] | "" {
+  return Object.keys(container.lastState ?? {})[0] as keyof PodContainerSummary["lastState"] | "";
+}
+
+function podContainerStatusClassName(container: PodContainerSummary): string {
+  const state = activeContainerStateKey(container);
+  const lastState = lastContainerStateKey(container);
+
+  if (state === "terminated") return "terminated";
+  if (container.type === "ephemeralContainers" && lastState === "terminated") return "terminated";
+  if (container.type === "ephemeralContainers") return "container-ephemeral";
+  if (container.ready && container.restartCount > 0) return "restarted";
+  if (container.ready) return "running";
+  if (state === "running") return "waiting";
+  return state;
+}
+
+function startCase(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function formatContainerDetailValue(value: string | number | boolean | null): string {
+  if (value === null) return "";
+  return String(value);
+}
+
+function renderPodContainerTooltip(container: PodContainerSummary) {
+  const state = activeContainerStateKey(container);
+  if (!state) return null;
+  const stateDetails = container.state[state] ?? {};
+  const terminated = state === "terminated" ? container.state.terminated : undefined;
+  const terminatedReason = terminated?.reason;
+  const terminatedExitCode = terminated?.exitCode;
+
+  return (
+    <div className="pod-container-tooltip" role="tooltip">
+      <div className="title">
+        {container.name}{" "}
+        <span className="text-secondary">
+          {state}
+          {container.type === "initContainers" ? ", init" : ""}
+          {container.type === "ephemeralContainers" ? ", ephemeral" : ""}
+          {container.restartCount ? ", restarted" : ""}
+          {container.ready ? ", ready" : ""}
+          {terminated ? ` - ${terminatedReason ?? ""} (exit code: ${terminatedExitCode ?? ""})` : ""}
+        </span>
+      </div>
+      {Object.entries(stateDetails).map(([name, value]) => (
+        <span key={name} className="pod-container-tooltip-row">
+          <span className="name">{startCase(name)}</span>
+          <span className="value">{formatContainerDetailValue(value)}</span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function renderPodContainers(containers: PodContainerSummary[] | undefined) {
+  if (!containers?.length) return "-";
+  return (
+    <span className="pod-containers">
+      {containers.map((container) => {
+        const tooltip = renderPodContainerTooltip(container);
+        return (
+          <span key={`${container.type}/${container.name}`} className="pod-container-brick-wrap">
+            <span className={`pod-container-brick ${podContainerStatusClassName(container)}`} aria-label={container.name} />
+            {tooltip}
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+function renderResourceColumnValue(item: ResourceItem, columnKey: string) {
+  if (item.kind === "Pod" && columnKey === "containers") {
+    return renderPodContainers(item.podContainers);
+  }
+  return renderResourceStatusValue(item.kind, columnKey, item.columns);
+}
+
 function resourceKindLabel(kind: string): string {
   if (kind.endsWith("s") || kind.endsWith("x") || kind.endsWith("ch") || kind.endsWith("sh")) {
     return `${kind}es`;
@@ -721,6 +811,40 @@ function formatMemory(value: number | null | undefined): string {
     unit += 1;
   }
   return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+}
+
+type RefreshControlProps = {
+  refreshSeconds: number;
+  onRefreshSecondsChange: (value: number) => void;
+  onRefresh: () => void | Promise<void>;
+  disabled: boolean;
+  ariaLabel?: string;
+};
+
+function RefreshControl({
+  refreshSeconds,
+  onRefreshSecondsChange,
+  onRefresh,
+  disabled,
+  ariaLabel = "Refresh resources",
+}: RefreshControlProps) {
+  return (
+    <div className="refresh-control" aria-label={ariaLabel}>
+      <select
+        value={refreshSeconds}
+        onChange={(event) => onRefreshSecondsChange(Number(event.target.value))}
+        aria-label="Auto refresh interval"
+      >
+        <option value={0}>Auto refresh: Off</option>
+        <option value={5}>Every 5s</option>
+        <option value={15}>Every 15s</option>
+        <option value={30}>Every 30s</option>
+      </select>
+      <button type="button" onClick={onRefresh} disabled={disabled}>
+        Refresh
+      </button>
+    </div>
+  );
 }
 
 export function App() {
@@ -2393,6 +2517,7 @@ export function App() {
       if (sortKey === "name") return item.name;
       if (sortKey === "namespace") return item.namespace ?? "";
       if (sortKey === "age") return item.created ?? "";
+      if (sortKey === "containers") return String(item.podContainers?.length ?? 0);
       return item.columns[sortKey] ?? "";
     };
     return [...filtered].sort((left, right) => {
@@ -2787,14 +2912,14 @@ export function App() {
     >
       <td>{item.name}</td>
       {selectedKind === "Node" ? <>
-        {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{renderResourceStatusValue(item.kind, column.key, item.columns)}</td>)}
+        {selectedColumns.slice(0, 2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-        {selectedColumns.slice(2).map((column) => <td key={column.key}>{renderResourceStatusValue(item.kind, column.key, item.columns)}</td>)}
+        {selectedColumns.slice(2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
         <td>{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
         <td>{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
       </> : <>
         <td>{item.namespace ?? "-"}</td>
-        {selectedColumns.map((column) => <td key={column.key}>{renderResourceStatusValue(item.kind, column.key, item.columns)}</td>)}
+        {selectedColumns.map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
         {selectedKind === "Pod" && <>
           <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
           <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
@@ -3210,22 +3335,17 @@ export function App() {
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
             )}
-            <select value={refreshSeconds} onChange={(event) => setRefreshSeconds(Number(event.target.value))}>
-              <option value={0}>Auto refresh: Off</option>
-              <option value={5}>Every 5s</option>
-              <option value={15}>Every 15s</option>
-              <option value={30}>Every 30s</option>
-            </select>
-            <button
-              onClick={() => activeView === "overview" ? loadOverview()
+            <RefreshControl
+              refreshSeconds={refreshSeconds}
+              onRefreshSecondsChange={setRefreshSeconds}
+              onRefresh={() => activeView === "overview" ? loadOverview()
                 : activeView === "events" ? loadEvents()
                   : activeView === "health" && healthTitle === "Abnormal Pods" ? openAbnormalPods()
                     : activeView === "health" && healthTitle === "Unavailable Workloads" ? openUnavailableWorkloads()
-                      : loadResources()}
+                      : loadResources()
+              }
               disabled={activeView === "overview" ? overviewLoading : activeView === "events" ? eventsLoading : activeView === "health" ? healthLoading : resourcesLoading}
-            >
-              Refresh
-            </button>
+            />
             <div className="topbar-action-menu" ref={topbarMenuRef}>
               <button
                 type="button"

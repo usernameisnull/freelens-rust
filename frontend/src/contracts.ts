@@ -167,6 +167,24 @@ export interface ResourceItem {
   uid: string | null;
   created: string | null;
   columns: Record<string, string>;
+  podContainers?: PodContainerSummary[];
+}
+
+export type PodContainerType = "containers" | "initContainers" | "ephemeralContainers";
+
+export interface PodContainerState {
+  running?: Record<string, string | number | boolean | null>;
+  waiting?: Record<string, string | number | boolean | null>;
+  terminated?: Record<string, string | number | boolean | null>;
+}
+
+export interface PodContainerSummary {
+  name: string;
+  type: PodContainerType;
+  ready: boolean;
+  restartCount: number;
+  state: PodContainerState;
+  lastState: PodContainerState;
 }
 
 export interface KubernetesListResourcesResponse {

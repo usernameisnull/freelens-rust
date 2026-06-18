@@ -562,6 +562,26 @@ class MockTransport implements Transport {
           uid: `uid-${index}`,
           created,
           columns: columnsByKind[request.kind] ?? {},
+          podContainers: request.kind === "Pod"
+            ? [
+                {
+                  name: "app",
+                  type: "containers" as const,
+                  ready: true,
+                  restartCount: index % 5 === 0 ? 1 : 0,
+                  state: { running: { startedAt: created } },
+                  lastState: {},
+                },
+                {
+                  name: "init-db",
+                  type: "initContainers" as const,
+                  ready: false,
+                  restartCount: 0,
+                  state: { terminated: { reason: "Completed", exitCode: 0 } },
+                  lastState: {},
+                },
+              ]
+            : undefined,
         };
       }),
       continueToken: null,

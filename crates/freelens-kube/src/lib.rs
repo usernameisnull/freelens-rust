@@ -124,6 +124,20 @@ pub struct ResourceSummary {
     pub uid: Option<String>,
     pub created: Option<String>,
     pub columns: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pod_containers: Option<Vec<PodContainerSummary>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodContainerSummary {
+    pub name: String,
+    #[serde(rename = "type")]
+    pub type_: String,
+    pub ready: bool,
+    pub restart_count: i32,
+    pub state: BTreeMap<String, serde_json::Value>,
+    pub last_state: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -432,6 +446,71 @@ fn pod_status_message(data: &serde_json::Value) -> String {
         .and_then(serde_json::Value::as_str)
         .unwrap_or("Waiting")
         .to_string()
+}
+
+fn json_object_map(value: Option<&serde_json::Value>) -> BTreeMap<String, serde_json::Value> {
+    value
+        .and_then(serde_json::Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn pod_container_summaries(data: &serde_json::Value) -> Vec<PodContainerSummary> {
+    [
+        (
+            "containers",
+            "/spec/containers",
+            "/status/containerStatuses",
+        ),
+        (
+            "initContainers",
+            "/spec/initContainers",
+            "/status/initContainerStatuses",
+        ),
+        (
+            "ephemeralContainers",
+            "/spec/ephemeralContainers",
+            "/status/ephemeralContainerStatuses",
+        ),
+    ]
+    .into_iter()
+    .flat_map(|(type_, spec_path, status_path)| {
+        let statuses = data
+            .pointer(status_path)
+            .and_then(serde_json::Value::as_array);
+        data.pointer(spec_path)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(move |container| {
+                let name = container.get("name")?.as_str()?.to_string();
+                let status = statuses.into_iter().flatten().find(|status| {
+                    status.get("name").and_then(serde_json::Value::as_str) == Some(&name)
+                });
+                Some(PodContainerSummary {
+                    name,
+                    type_: type_.into(),
+                    ready: status
+                        .and_then(|status| status.get("ready"))
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false),
+                    restart_count: status
+                        .and_then(|status| status.get("restartCount"))
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(0)
+                        .try_into()
+                        .unwrap_or(0),
+                    state: json_object_map(status.and_then(|status| status.get("state"))),
+                    last_state: json_object_map(status.and_then(|status| status.get("lastState"))),
+                })
+            })
+    })
+    .collect()
 }
 
 fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, String> {
@@ -1084,6 +1163,7 @@ pub async fn list_resources(
             } else {
                 custom_resource_columns(&obj.data, column_definitions)
             };
+            let pod_containers = (item_kind == "Pod").then(|| pod_container_summaries(&obj.data));
             ResourceSummary {
                 kind: item_kind,
                 api_version: obj
@@ -1096,6 +1176,7 @@ pub async fn list_resources(
                 uid: obj.uid(),
                 created: obj.creation_timestamp().map(|t| t.0.to_rfc3339()),
                 columns,
+                pod_containers,
             }
         })
         .collect();
@@ -2840,11 +2921,13 @@ mod tests {
             uid: Some("uid-1".into()),
             created: Some("2024-01-01T00:00:00Z".into()),
             columns: BTreeMap::from([("status".into(), "Running".into())]),
+            pod_containers: None,
         };
         let json = k8s_openapi::serde_json::to_value(summary).unwrap();
         assert_eq!(json["apiVersion"], "v1");
         assert_eq!(json["columns"]["status"], "Running");
         assert_eq!(json["namespace"], "default");
+        assert!(json.get("podContainers").is_none());
     }
 
     #[test]
@@ -2952,9 +3035,60 @@ mod tests {
         });
 
         assert_eq!(resource_columns("Pod", &evicted)["status"], "Evicted");
-        assert_eq!(resource_columns("Pod", &terminating)["status"], "Terminating");
+        assert_eq!(
+            resource_columns("Pod", &terminating)["status"],
+            "Terminating"
+        );
         assert_eq!(resource_columns("Pod", &finalizing)["status"], "Finalizing");
         assert_eq!(resource_columns("Pod", &waiting)["status"], "Waiting");
+    }
+
+    #[test]
+    fn pod_container_summaries_include_all_container_types_in_freelens_order() {
+        let pod = serde_json::json!({
+            "spec": {
+                "containers": [{ "name": "app" }],
+                "initContainers": [{ "name": "setup" }],
+                "ephemeralContainers": [{ "name": "debug" }]
+            },
+            "status": {
+                "containerStatuses": [{
+                    "name": "app",
+                    "ready": true,
+                    "restartCount": 2,
+                    "state": { "running": { "startedAt": "2026-06-18T09:00:00Z" } },
+                    "lastState": {}
+                }],
+                "initContainerStatuses": [{
+                    "name": "setup",
+                    "ready": false,
+                    "restartCount": 0,
+                    "state": { "terminated": { "reason": "Completed", "exitCode": 0 } },
+                    "lastState": {}
+                }],
+                "ephemeralContainerStatuses": [{
+                    "name": "debug",
+                    "ready": false,
+                    "restartCount": 0,
+                    "state": { "running": { "startedAt": "2026-06-18T10:00:00Z" } },
+                    "lastState": { "terminated": { "reason": "Completed", "exitCode": 0 } }
+                }]
+            }
+        });
+
+        let containers = pod_container_summaries(&pod);
+        assert_eq!(containers.len(), 3);
+        assert_eq!(containers[0].name, "app");
+        assert_eq!(containers[0].type_, "containers");
+        assert!(containers[0].ready);
+        assert_eq!(containers[0].restart_count, 2);
+        assert!(containers[0].state.contains_key("running"));
+        assert_eq!(containers[1].name, "setup");
+        assert_eq!(containers[1].type_, "initContainers");
+        assert!(containers[1].state.contains_key("terminated"));
+        assert_eq!(containers[2].name, "debug");
+        assert_eq!(containers[2].type_, "ephemeralContainers");
+        assert!(containers[2].last_state.contains_key("terminated"));
     }
 
     #[test]
