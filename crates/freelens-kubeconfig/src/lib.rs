@@ -240,6 +240,36 @@ pub fn resolve_kubeconfig_files_from_sources(
     Ok(result)
 }
 
+/// Find the kubeconfig file that defines the given context name.
+///
+/// Reads `KUBECONFIG` from the environment (or falls back to the default
+/// `~/.kube/config`) and returns the first file whose `contexts` list contains
+/// `context_name`. This is needed because multiple kubeconfig files often
+/// reuse the same cluster/user names (e.g. `kubernetes` / `kubernetes-admin`),
+/// and merging them via `KUBECONFIG` causes kubectl to resolve the wrong
+/// cluster for a given context.
+pub fn resolve_kubeconfig_file_for_context(context_name: &str) -> Option<PathBuf> {
+    let env_value = std::env::var_os("KUBECONFIG");
+    let paths: Vec<PathBuf> = if let Some(value) = env_value {
+        split_kubeconfig_env(&value.to_string_lossy())
+    } else {
+        let default = default_kubeconfig_path();
+        if default.exists() { vec![default] } else { vec![] }
+    };
+
+    for path in paths {
+        match load_single_file(&path) {
+            Ok(file) => {
+                if file.contexts.iter().any(|named| named.name == context_name) {
+                    return Some(path);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    None
+}
+
 fn summarize_contexts(
     config: Kubeconfig,
     sources: Vec<KubeconfigSourceSummary>,

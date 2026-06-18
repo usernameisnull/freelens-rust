@@ -1741,6 +1741,11 @@ async fn run_kubectl_process(request: &KubectlRunRequest) -> Result<KubectlRunRe
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
+    if let Some(kubeconfig_path) =
+        freelens_kubeconfig::resolve_kubeconfig_file_for_context(&request.context)
+    {
+        command.arg("--kubeconfig").arg(kubeconfig_path);
+    }
     if let Some(namespace) = request
         .namespace
         .as_deref()
@@ -1838,6 +1843,30 @@ fn find_on_path(names: &[&str]) -> Option<PathBuf> {
     None
 }
 
+const KUBECTL_WRAPPER_SCRIPT: &str = concat!(
+    "function kubectl {\n",
+    "  $ka = @('--context', $env:FREELENS_CONTEXT)\n",
+    "  if ($env:FREELENS_NAMESPACE) { $ka += @('--namespace', $env:FREELENS_NAMESPACE) }\n",
+    "  $ka += $args\n",
+    "  & kubectl.exe @ka\n",
+    "}\n",
+    "Write-Host -ForegroundColor DarkGray \"[Freelens] kubectl wrapper active: context='$env:FREELENS_CONTEXT' namespace='$env:FREELENS_NAMESPACE'\"\n",
+);
+
+fn write_wrapper_script() -> Result<PathBuf, IpcError> {
+    let dir = std::env::temp_dir().join("freelens");
+    std::fs::create_dir_all(&dir).map_err(|error| IpcError {
+        code: "local_terminal_start_failed".into(),
+        message: format!("failed to create temp dir: {error}"),
+    })?;
+    let path = dir.join("kubectl-wrapper.ps1");
+    std::fs::write(&path, KUBECTL_WRAPPER_SCRIPT).map_err(|error| IpcError {
+        code: "local_terminal_start_failed".into(),
+        message: format!("failed to write wrapper script: {error}"),
+    })?;
+    Ok(path)
+}
+
 #[tauri::command]
 fn local_terminal_start(
     request: LocalTerminalStartRequest,
@@ -1849,6 +1878,7 @@ fn local_terminal_start(
         code: "local_terminal_shell_not_found".into(),
         message: "Neither pwsh.exe nor powershell.exe was found on PATH".into(),
     })?;
+    let wrapper_script_path = write_wrapper_script()?;
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -1863,11 +1893,19 @@ fn local_terminal_start(
         })?;
     let mut command = CommandBuilder::new(&shell);
     command.arg("-NoLogo");
+    command.arg("-NoExit");
+    command.arg("-File");
+    command.arg(wrapper_script_path.to_string_lossy().to_string());
     command.env("FREELENS_CONTEXT", &request.context);
     command.env(
         "FREELENS_NAMESPACE",
         request.namespace.as_deref().unwrap_or(""),
     );
+    if let Some(kubeconfig_path) =
+        freelens_kubeconfig::resolve_kubeconfig_file_for_context(&request.context)
+    {
+        command.env("KUBECONFIG", kubeconfig_path.to_string_lossy().to_string());
+    }
     let mut child = pair
         .slave
         .spawn_command(command)
