@@ -761,23 +761,37 @@ pub async fn create_client_from_kubeconfig(
     kube::Client::try_from(config).map_err(|error| KubernetesError::ClientFailed(error.to_string()))
 }
 
-/// List namespaces in the cluster connected by `client`.
+/// List all namespaces in the cluster connected by `client`.
 pub async fn list_namespaces(
     client: kube::Client,
 ) -> Result<Vec<NamespaceSummary>, KubernetesError> {
     let api: Api<Namespace> = Api::all(client);
-    let namespaces = api
-        .list(&ListParams::default())
-        .await
-        .map_err(|error| KubernetesError::ListNamespacesFailed(error.to_string()))?;
+    let mut all_namespaces = Vec::new();
+    let mut continue_token: Option<String> = None;
 
-    Ok(namespaces
-        .into_iter()
-        .map(|ns| NamespaceSummary {
+    loop {
+        let mut params = ListParams::default().limit(500);
+        if let Some(token) = &continue_token {
+            params = params.continue_token(token);
+        }
+
+        let list = api
+            .list(&params)
+            .await
+            .map_err(|error| KubernetesError::ListNamespacesFailed(error.to_string()))?;
+
+        continue_token = list.metadata.continue_.clone().filter(|s| !s.is_empty());
+        all_namespaces.extend(list.into_iter().map(|ns| NamespaceSummary {
             name: ns.name_any(),
             status: ns.status.and_then(|s| s.phase),
-        })
-        .collect())
+        }));
+
+        if continue_token.is_none() {
+            break;
+        }
+    }
+
+    Ok(all_namespaces)
 }
 
 /// Discover resource kinds available on the cluster.

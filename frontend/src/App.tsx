@@ -676,6 +676,8 @@ export function App() {
 
   const [namespaces, setNamespaces] = useState<NamespaceItem[]>([]);
   const [namespacesError, setNamespacesError] = useState<string>();
+  const [namespaceReloadToken, setNamespaceReloadToken] = useState(0);
+  const contextLoadRequestRef = useRef(0);
   const [selectedNamespace, setSelectedNamespace] = useState<string>("");
   const [resourceKinds, setResourceKinds] = useState<ResourceKindItem[]>(FALLBACK_RESOURCE_KINDS);
   const [activeView, setActiveView] = useState<ActiveView>("contexts");
@@ -1291,6 +1293,7 @@ export function App() {
   }, [localTerminalOpen, localTerminalSize, selectedContext, selectedNamespace, syncLocalTerminalSize]);
 
   useEffect(() => {
+    const loadRequest = ++contextLoadRequestRef.current;
     if (!selectedContext) return;
     setResourceDiscoveryError(undefined);
     transport
@@ -1299,7 +1302,7 @@ export function App() {
         context: selectedContext,
       })
       .then((response) => {
-        if (selectedContextRef.current !== selectedContext) return;
+        if (selectedContextRef.current !== selectedContext || contextLoadRequestRef.current !== loadRequest) return;
         const discovered = response.kinds.length > 0 ? response.kinds : FALLBACK_RESOURCE_KINDS;
         setResourceKinds(discovered);
         setSelectedResource((current) => {
@@ -1313,7 +1316,7 @@ export function App() {
         finishSettingsRestore();
       })
       .catch((reason: unknown) => {
-        if (selectedContextRef.current !== selectedContext) return;
+        if (selectedContextRef.current !== selectedContext || contextLoadRequestRef.current !== loadRequest) return;
         setResourceKinds(FALLBACK_RESOURCE_KINDS);
         setResourceDiscoveryError(errorMessage(reason));
         finishSettingsRestore();
@@ -1324,6 +1327,7 @@ export function App() {
         context: selectedContext,
       })
       .then((response: KubernetesListNamespacesResponse) => {
+        if (selectedContextRef.current !== selectedContext || contextLoadRequestRef.current !== loadRequest) return;
         setNamespaces(response.namespaces);
         setNamespacesError(undefined);
         const preferred = preferredNamespaceRef.current;
@@ -1332,13 +1336,14 @@ export function App() {
         finishSettingsRestore();
       })
       .catch((reason: unknown) => {
+        if (selectedContextRef.current !== selectedContext || contextLoadRequestRef.current !== loadRequest) return;
         const message = reason instanceof Error ? reason.message : String(reason);
         setNamespaces([]);
         setNamespacesError(message);
         preferredNamespaceRef.current = "";
         finishSettingsRestore();
       });
-  }, [selectedContext]);
+  }, [selectedContext, namespaceReloadToken]);
 
   const availableNamespaces = useMemo(() => {
     const names = new Set<string>(namespaces.map((ns) => ns.name));
@@ -2785,6 +2790,7 @@ export function App() {
     closeTerminal();
     setLogs([]);
     resourceRequestRef.current += 1;
+    setNamespaceReloadToken((n) => n + 1);
     closeLogs();
   };
   const reloadKubeconfigFromSources = async (sources: string[]) => {
@@ -2807,6 +2813,7 @@ export function App() {
     setDetail(undefined);
     setLogs([]);
     resourceRequestRef.current += 1;
+    setNamespaceReloadToken((n) => n + 1);
     closeLogs();
     closeTerminal();
     closeLocalTerminal();
