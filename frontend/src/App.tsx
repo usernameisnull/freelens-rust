@@ -851,6 +851,7 @@ export function App() {
   };
 
   const selectResource = (resource: ResourceKindItem) => {
+    preferredResourceRef.current = "";
     setSelectedResource(resource);
     setActiveView("resources");
     if (!resource.namespaced) setSelectedNamespace("");
@@ -1632,10 +1633,7 @@ export function App() {
   const openResourceKind = (kind: string) => {
     const resource = resourceForKind(kind);
     if (!resource) return;
-    setSelectedResource(resource);
-    if (!resource.namespaced) setSelectedNamespace("");
-    setActiveView("resources");
-    setDetail(undefined);
+    selectResource(resource);
   };
 
   useEffect(() => {

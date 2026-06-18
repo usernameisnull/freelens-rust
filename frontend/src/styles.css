@@ -995,6 +995,14 @@ button.dashboard-card:hover {
   border-bottom: 1px solid #26313a;
 }
 
+.resource-list th:last-child,
+.resource-list td.actions {
+  width: 92px;
+  min-width: 92px;
+  max-width: 92px;
+  text-align: right;
+}
+
 .resource-list:not(.events-list) tbody tr {
   height: 44px;
 }
@@ -1118,8 +1126,6 @@ button.dashboard-card:hover {
 
 .resource-list .actions {
   position: relative;
-  display: flex;
-  justify-content: flex-end;
   overflow: visible !important;
 }
 
