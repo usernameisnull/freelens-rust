@@ -390,6 +390,50 @@ fn json_string(value: &serde_json::Value, path: &[&str]) -> String {
         .to_string()
 }
 
+fn pod_status_message(data: &serde_json::Value) -> String {
+    if data
+        .pointer("/status/reason")
+        .and_then(serde_json::Value::as_str)
+        == Some("Evicted")
+    {
+        return "Evicted".into();
+    }
+
+    if data
+        .pointer("/metadata/deletionTimestamp")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+    {
+        let has_running_or_waiting_container = data
+            .pointer("/status/containerStatuses")
+            .and_then(serde_json::Value::as_array)
+            .map(|statuses| {
+                statuses.iter().any(|status| {
+                    status.pointer("/state/running").is_some()
+                        || status.pointer("/state/waiting").is_some()
+                })
+            })
+            .unwrap_or(false);
+        if has_running_or_waiting_container {
+            return "Terminating".into();
+        }
+
+        let has_finalizers = data
+            .pointer("/metadata/finalizers")
+            .and_then(serde_json::Value::as_array)
+            .map(|finalizers| !finalizers.is_empty())
+            .unwrap_or(false);
+        if has_finalizers {
+            return "Finalizing".into();
+        }
+    }
+
+    data.pointer("/status/phase")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("Waiting")
+        .to_string()
+}
+
 fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, String> {
     let mut columns = BTreeMap::new();
     match kind {
@@ -412,7 +456,7 @@ fn resource_columns(kind: &str, data: &serde_json::Value) -> BTreeMap<String, St
                     .map(|item| json_i64(item, &["restartCount"]))
                     .sum()
             });
-            columns.insert("status".into(), json_string(data, &["status", "phase"]));
+            columns.insert("status".into(), pod_status_message(data));
             columns.insert("ready".into(), format!("{ready}/{total}"));
             columns.insert("restarts".into(), restarts.to_string());
             columns.insert("node".into(), json_string(data, &["spec", "nodeName"]));
@@ -2869,6 +2913,48 @@ mod tests {
         assert_eq!(columns["osImage"], "Ubuntu 22.04.5 LTS");
         assert_eq!(columns["kernelVersion"], "5.15.0-168-generic");
         assert_eq!(columns["containerRuntime"], "docker://28.3.3");
+    }
+
+    #[test]
+    fn pod_status_matches_freelens_status_message_priority() {
+        let evicted = serde_json::json!({
+            "metadata": {},
+            "status": {
+                "phase": "Failed",
+                "reason": "Evicted",
+                "containerStatuses": []
+            }
+        });
+        let terminating = serde_json::json!({
+            "metadata": { "deletionTimestamp": "2026-06-18T10:00:00Z" },
+            "status": {
+                "phase": "Running",
+                "containerStatuses": [{
+                    "ready": true,
+                    "restartCount": 0,
+                    "state": { "running": { "startedAt": "2026-06-18T09:00:00Z" } }
+                }]
+            }
+        });
+        let finalizing = serde_json::json!({
+            "metadata": {
+                "deletionTimestamp": "2026-06-18T10:00:00Z",
+                "finalizers": ["example.com/finalizer"]
+            },
+            "status": {
+                "phase": "Running",
+                "containerStatuses": []
+            }
+        });
+        let waiting = serde_json::json!({
+            "metadata": {},
+            "status": {}
+        });
+
+        assert_eq!(resource_columns("Pod", &evicted)["status"], "Evicted");
+        assert_eq!(resource_columns("Pod", &terminating)["status"], "Terminating");
+        assert_eq!(resource_columns("Pod", &finalizing)["status"], "Finalizing");
+        assert_eq!(resource_columns("Pod", &waiting)["status"], "Waiting");
     }
 
     #[test]

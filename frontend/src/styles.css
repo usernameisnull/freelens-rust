@@ -1124,6 +1124,40 @@ button.dashboard-card:hover {
   outline-offset: -1px;
 }
 
+.resource-status {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+}
+
+.resource-status-success {
+  color: #58d1b5;
+}
+
+.resource-status-warning {
+  color: #e5b454;
+}
+
+.resource-status-error {
+  color: #ff8a8a;
+}
+
+.resource-status-info {
+  color: #76b7ff;
+}
+
+.resource-status-muted {
+  color: #71808e;
+}
+
+.resource-status-neutral {
+  color: inherit;
+  font-weight: inherit;
+}
+
 .resource-list .actions {
   position: relative;
   overflow: visible !important;

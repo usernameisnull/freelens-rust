@@ -591,6 +591,94 @@ const RESOURCE_COLUMNS: Record<string, Array<{ key: string; label: string }>> = 
   ],
 };
 
+type ResourceStatusTone = "success" | "warning" | "error" | "info" | "muted" | "neutral";
+
+function parseReplicaPair(value: string | undefined): { current: number; desired: number } | undefined {
+  const [current, desired] = (value ?? "").split("/", 2).map((part) => Number(part));
+  if (!Number.isFinite(current) || !Number.isFinite(desired)) return undefined;
+  return { current, desired };
+}
+
+function replicaTone(current: number, desired: number): ResourceStatusTone {
+  if (desired <= 0) return "muted";
+  if (current >= desired) return "success";
+  if (current <= 0) return "error";
+  return "warning";
+}
+
+function statusTextTone(value: string): ResourceStatusTone {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized || normalized === "-") return "neutral";
+  if (["running", "ready", "active", "bound", "available", "complete", "completed", "succeeded", "scheduled"].includes(normalized)) {
+    return "success";
+  }
+  if (["pending", "waiting", "restarted", "suspended", "unschedulable"].includes(normalized)) {
+    return "warning";
+  }
+  if (
+    ["failed", "error", "evicted", "notready", "not ready", "crashloopbackoff", "crash-loop-back-off", "replicafailure", "failuretarget"].includes(normalized)
+    || normalized.includes("error")
+    || normalized.includes("fail")
+    || normalized.includes("crash")
+  ) {
+    return "error";
+  }
+  if (["containercreating", "container-creating", "progressing"].includes(normalized)) {
+    return "info";
+  }
+  if (["terminating", "terminated", "finalizing", "unknown", "<none>"].includes(normalized)) {
+    return "muted";
+  }
+  return "neutral";
+}
+
+function resourceColumnTone(kind: string, columnKey: string, columns: Record<string, string>): ResourceStatusTone {
+  const value = columns[columnKey] ?? "";
+
+  if (columnKey === "status") {
+    return statusTextTone(value);
+  }
+
+  if ((kind === "Deployment" || kind === "StatefulSet") && columnKey === "ready") {
+    const pair = parseReplicaPair(value);
+    return pair ? replicaTone(pair.current, pair.desired) : "neutral";
+  }
+
+  if ((kind === "Deployment" || kind === "StatefulSet") && (columnKey === "available" || columnKey === "upToDate")) {
+    const pair = parseReplicaPair(columns.ready);
+    const desired = pair?.desired ?? Number(columns.ready ?? 0);
+    const current = Number(value);
+    return Number.isFinite(current) && Number.isFinite(desired) ? replicaTone(current, desired) : "neutral";
+  }
+
+  if (kind === "DaemonSet" && ["current", "ready", "available"].includes(columnKey)) {
+    const desired = Number(columns.desired ?? 0);
+    const current = Number(value);
+    return Number.isFinite(current) && Number.isFinite(desired) ? replicaTone(current, desired) : "neutral";
+  }
+
+  if (kind === "Job") {
+    if (columnKey === "failed") return Number(value) > 0 ? "error" : "muted";
+    if (columnKey === "active") return Number(value) > 0 ? "info" : "muted";
+    if (columnKey === "completions") {
+      const pair = parseReplicaPair(value);
+      return pair ? replicaTone(pair.current, pair.desired) : "neutral";
+    }
+  }
+
+  if (kind === "CronJob" && columnKey === "suspend") {
+    return value === "true" ? "muted" : "success";
+  }
+
+  return "neutral";
+}
+
+function renderResourceStatusValue(kind: string, columnKey: string, columns: Record<string, string>, fallback = "-") {
+  const value = columns[columnKey] ?? fallback;
+  const tone = resourceColumnTone(kind, columnKey, columns);
+  return <span className={`resource-status resource-status-${tone}`}>{value}</span>;
+}
+
 function resourceKindLabel(kind: string): string {
   if (kind.endsWith("s") || kind.endsWith("x") || kind.endsWith("ch") || kind.endsWith("sh")) {
     return `${kind}es`;
@@ -2699,14 +2787,14 @@ export function App() {
     >
       <td>{item.name}</td>
       {selectedKind === "Node" ? <>
-        {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+        {selectedColumns.slice(0, 2).map((column) => <td key={column.key}>{renderResourceStatusValue(item.kind, column.key, item.columns)}</td>)}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-        {selectedColumns.slice(2).map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+        {selectedColumns.slice(2).map((column) => <td key={column.key}>{renderResourceStatusValue(item.kind, column.key, item.columns)}</td>)}
         <td>{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
         <td>{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
       </> : <>
         <td>{item.namespace ?? "-"}</td>
-        {selectedColumns.map((column) => <td key={column.key}>{item.columns[column.key] ?? "-"}</td>)}
+        {selectedColumns.map((column) => <td key={column.key}>{renderResourceStatusValue(item.kind, column.key, item.columns)}</td>)}
         {selectedKind === "Pod" && <>
           <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
           <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
@@ -3322,8 +3410,16 @@ export function App() {
                         <td>{item.kind}</td>
                         <td>{item.name}</td>
                         <td>{item.namespace ?? "-"}</td>
-                        <td>{item.columns.status ?? item.columns.available ?? "-"}</td>
-                        <td>{item.columns.ready ?? item.columns.available ?? "-"}</td>
+                        <td>
+                          {item.columns.status !== undefined
+                            ? renderResourceStatusValue(item.kind, "status", item.columns)
+                            : renderResourceStatusValue(item.kind, "available", item.columns)}
+                        </td>
+                        <td>
+                          {item.columns.ready !== undefined
+                            ? renderResourceStatusValue(item.kind, "ready", item.columns)
+                            : renderResourceStatusValue(item.kind, "available", item.columns)}
+                        </td>
                         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
                         {renderResourceActionsMenu(item)}
                       </tr>
