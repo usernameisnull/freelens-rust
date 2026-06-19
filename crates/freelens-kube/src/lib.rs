@@ -371,6 +371,31 @@ fn field(label: &str, value: impl ToString) -> DetailField {
     }
 }
 
+fn append_metadata_sections(
+    sections: &mut Vec<DetailSection>,
+    labels: Option<&BTreeMap<String, String>>,
+    annotations: Option<&BTreeMap<String, String>>,
+) {
+    if let Some(labels) = labels.filter(|values| !values.is_empty()) {
+        sections.push(DetailSection {
+            title: "Labels".into(),
+            fields: labels
+                .iter()
+                .map(|(label, value)| field(label, value))
+                .collect(),
+        });
+    }
+    if let Some(annotations) = annotations.filter(|values| !values.is_empty()) {
+        sections.push(DetailSection {
+            title: "Annotations".into(),
+            fields: annotations
+                .iter()
+                .map(|(label, value)| field(label, value))
+                .collect(),
+        });
+    }
+}
+
 fn container_state(status: &k8s_openapi::api::core::v1::ContainerStatus) -> String {
     let Some(state) = &status.state else {
         return "Unknown".into();
@@ -1586,6 +1611,11 @@ pub async fn get_resource_detail(
                     ),
                 ],
             });
+            append_metadata_sections(
+                &mut sections,
+                pod.metadata.labels.as_ref(),
+                pod.metadata.annotations.as_ref(),
+            );
             let images: HashMap<String, String> = pod
                 .spec
                 .as_ref()
@@ -1664,6 +1694,11 @@ pub async fn get_resource_detail(
                         .unwrap_or("RollingUpdate"),
                 )],
             });
+            append_metadata_sections(
+                &mut sections,
+                deployment.metadata.labels.as_ref(),
+                deployment.metadata.annotations.as_ref(),
+            );
             if let Some(uid) = deployment.uid() {
                 events = list_object_events(client, Some(namespace), &uid).await?;
             }
@@ -1738,6 +1773,11 @@ pub async fn get_resource_detail(
                     ),
                 ],
             });
+            append_metadata_sections(
+                &mut sections,
+                service.metadata.labels.as_ref(),
+                service.metadata.annotations.as_ref(),
+            );
             if let Some(uid) = service.uid() {
                 events = list_object_events(client, Some(namespace), &uid).await?;
             }
@@ -1812,16 +1852,11 @@ pub async fn get_resource_detail(
                 title: "Overview".into(),
                 fields: overview,
             });
-            let labels = object.metadata.labels.unwrap_or_default();
-            if !labels.is_empty() {
-                sections.push(DetailSection {
-                    title: "Labels".into(),
-                    fields: labels
-                        .into_iter()
-                        .map(|(label, value)| field(&label, value))
-                        .collect(),
-                });
-            }
+            append_metadata_sections(
+                &mut sections,
+                object.metadata.labels.as_ref(),
+                object.metadata.annotations.as_ref(),
+            );
         }
     }
 

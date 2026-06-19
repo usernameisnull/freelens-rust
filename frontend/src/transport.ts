@@ -689,6 +689,12 @@ class MockTransport implements Transport {
       sections: [{
         title: request.kind === "Deployment" ? "Replicas" : "Status",
         fields: [{ label: "Ready", value: "1" }, { label: "Desired", value: "1" }],
+      }, {
+        title: "Labels",
+        fields: [{ label: "app.kubernetes.io/name", value: request.name }, { label: "freelens.dev/kind", value: request.kind }],
+      }, {
+        title: "Annotations",
+        fields: [{ label: "freelens.dev/last-viewed", value: new Date().toISOString() }],
       }],
       configMapData: request.kind === "ConfigMap" ? [
         { name: "app.properties", value: "debug=true\nworkers=2" },
