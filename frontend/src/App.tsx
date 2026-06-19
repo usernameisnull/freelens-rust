@@ -237,6 +237,98 @@ function ResourceIcon({ kind }: { kind: string }) {
   return <span className={`resource-icon resource-icon-${kind.toLowerCase()}`}>{letters}</span>;
 }
 
+function NamespaceCombobox({
+  namespaces,
+  value,
+  onChange,
+  title,
+}: {
+  namespaces: string[];
+  value: string;
+  onChange: (namespace: string) => void;
+  title?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [inputValue, setInputValue] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const displayValue = inputValue;
+  const filterValue = displayValue.trim().toLowerCase();
+  const filteredNamespaces = useMemo(() => {
+    if (!filterValue) return namespaces;
+    return namespaces.filter((namespace) => namespace.toLowerCase().includes(filterValue));
+  }, [filterValue, namespaces]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setInputValue("");
+        setOpen(false);
+      }
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [open]);
+
+  const chooseNamespace = (namespace: string) => {
+    setInputValue("");
+    onChange(namespace);
+    setOpen(false);
+  };
+
+  return (
+    <div className="namespace-combobox" ref={rootRef} title={title}>
+      <input
+        type="text"
+        value={displayValue}
+        placeholder={value || "All namespaces"}
+        onFocus={() => setOpen(true)}
+        onChange={(event) => {
+          const next = event.target.value;
+          setInputValue(next);
+          onChange(next.trim());
+          setOpen(true);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            setInputValue("");
+            setOpen(false);
+          } else if (event.key === "Enter") {
+            setInputValue("");
+            setOpen(false);
+          }
+        }}
+        aria-label="Namespace"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+      />
+      {open && (
+        <div className="namespace-combobox-menu" role="listbox">
+          <button
+            type="button"
+            className={!value ? "active" : undefined}
+            onClick={() => chooseNamespace("")}
+          >
+            All namespaces
+          </button>
+          {filteredNamespaces.length === 0 ? (
+            <p>No namespaces found</p>
+          ) : filteredNamespaces.map((namespace) => (
+            <button
+              type="button"
+              key={namespace}
+              className={namespace === value ? "active" : undefined}
+              onClick={() => chooseNamespace(namespace)}
+            >
+              {namespace}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 interface YamlParsedLine {
   raw: string;
   indent: number;
@@ -3289,19 +3381,15 @@ export function App() {
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
               {selectedResource.namespaced && (
-                <select
+                <NamespaceCombobox
+                  namespaces={availableNamespaces}
                   value={selectedNamespace}
-                  onChange={(event) => {
+                  onChange={(namespace) => {
                     resourceRequestRef.current += 1;
-                    setSelectedNamespace(event.target.value);
+                    setSelectedNamespace(namespace);
                   }}
                   title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
-                >
-                  <option value="">All namespaces</option>
-                  {availableNamespaces.map((name) => (
-                    <option key={name} value={name}>{name}</option>
-                  ))}
-                </select>
+                />
               )}
             </>}
             {activeView === "events" && <>
@@ -3311,16 +3399,12 @@ export function App() {
                 value={resourceSearch}
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
-              <select
+              <NamespaceCombobox
+                namespaces={availableNamespaces}
                 value={selectedNamespace}
-                onChange={(event) => setSelectedNamespace(event.target.value)}
+                onChange={setSelectedNamespace}
                 title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
-              >
-                <option value="">All namespaces</option>
-                {availableNamespaces.map((name) => (
-                  <option key={name} value={name}>{name}</option>
-                ))}
-              </select>
+              />
               <select value={eventTypeFilter} onChange={(event) => setEventTypeFilter(event.target.value)}>
                 <option value="">All event types</option>
                 <option value="Normal">Normal</option>
