@@ -1049,6 +1049,8 @@ export function App() {
   const [yamlShowManagedFields, setShowYamlManagedFields] = useState(false);
   const [yamlCopyHint, setYamlCopyHint] = useState<string>();
   const yamlCopyHintTimer = useRef<number | undefined>(undefined);
+  const [metadataCopyHint, setMetadataCopyHint] = useState<string>();
+  const metadataCopyHintTimer = useRef<number | undefined>(undefined);
   const [configMapDataDraft, setConfigMapDataDraft] = useState<Record<string, string>>({});
   const [secretDataDraft, setSecretDataDraft] = useState<Record<string, string>>({});
   const [revealedSecretData, setRevealedSecretData] = useState<Set<string>>(() => new Set());
@@ -2114,6 +2116,7 @@ export function App() {
     setConfigMapDataDraft({});
     setSecretDataDraft({});
     setRevealedSecretData(new Set());
+    setMetadataCopyHint(undefined);
   };
 
   const applyYaml = async (nextYaml = yamlDraft) => {
@@ -2158,6 +2161,65 @@ export function App() {
     }
     if (yamlCopyHintTimer.current) window.clearTimeout(yamlCopyHintTimer.current);
     yamlCopyHintTimer.current = window.setTimeout(() => setYamlCopyHint(undefined), 1500);
+  };
+
+  const copyMetadataSection = async (
+    section: { title: string; fields: Array<{ label: string; value: string }> },
+  ) => {
+    const text = section.fields.map((field) => `${field.label}: ${field.value}`).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      setMetadataCopyHint(section.title);
+    } catch {
+      setMetadataCopyHint("failed");
+    }
+    if (metadataCopyHintTimer.current) window.clearTimeout(metadataCopyHintTimer.current);
+    metadataCopyHintTimer.current = window.setTimeout(() => setMetadataCopyHint(undefined), 1500);
+  };
+
+  const renderDetailSection = (section: { title: string; fields: Array<{ label: string; value: string }> }) => {
+    const isMetadata = section.title === "Labels" || section.title === "Annotations";
+    if (!isMetadata) {
+      return (
+        <section key={section.title} className="detail-section">
+          <h4>{section.title}</h4>
+          <dl>{section.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
+        </section>
+      );
+    }
+
+    const copied = metadataCopyHint === section.title;
+    const copyFailed = metadataCopyHint === "failed";
+    return (
+      <section key={section.title} className="detail-section metadata-section">
+        <div className="detail-section-heading">
+          <h4>{section.title}</h4>
+          <button
+            type="button"
+            onClick={() => void copyMetadataSection(section)}
+            disabled={section.fields.length === 0}
+          >
+            {copied ? "Copied" : copyFailed ? "Copy failed" : "Copy"}
+          </button>
+        </div>
+        {section.fields.length === 0 ? (
+          <p>No {section.title.toLowerCase()}</p>
+        ) : (
+          <div className="metadata-list">
+            {section.fields.map((field) => {
+              const line = `${field.label}: ${field.value}`;
+              return (
+                <div key={field.label} className="metadata-row" title={line}>
+                  <span className="metadata-key">{field.label}</span>
+                  <span className="metadata-separator">:</span>
+                  <span className="metadata-value">{field.value}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    );
   };
 
   const editConfigMapData = (name: string, value: string) => {
@@ -3820,12 +3882,7 @@ export function App() {
                   </div>
                 ) : (
                   <div className="detail-overview">
-                    {detail.sections.map((section) => (
-                      <section key={section.title} className="detail-section">
-                        <h4>{section.title}</h4>
-                        <dl>{section.fields.map((field) => <div key={field.label}><dt>{field.label}</dt><dd>{field.value}</dd></div>)}</dl>
-                      </section>
-                    ))}
+                    {detail.sections.map(renderDetailSection)}
                     {renderConfigMapDataSection()}
                     {renderSecretDataSection()}
                     {detail.containers.length > 0 && (

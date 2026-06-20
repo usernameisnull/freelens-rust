@@ -1640,6 +1640,31 @@ button.dashboard-card:hover {
   color: #e8edf2;
 }
 
+.detail-section-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.detail-section-heading h4 {
+  margin: 0;
+}
+
+.detail-section-heading button {
+  padding: 4px 8px;
+  border: 1px solid #26313a;
+  border-radius: 4px;
+  background: #1c242d;
+  color: #d6e0ea;
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+.detail-section-heading button:hover:not(:disabled) {
+  background: #26313a;
+}
+
 .detail-section dl {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1664,6 +1689,44 @@ button.dashboard-card:hover {
 .detail-section dd {
   margin: 0;
   overflow-wrap: anywhere;
+}
+
+.metadata-list {
+  display: grid;
+  gap: 6px;
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8rem;
+}
+
+.metadata-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 38%) auto minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid #26313a;
+  border-radius: 4px;
+  background: #0f1419;
+}
+
+.metadata-key,
+.metadata-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metadata-key {
+  color: #d6e0ea;
+}
+
+.metadata-separator {
+  color: #71808e;
+}
+
+.metadata-value {
+  color: #aeb8c2;
 }
 
 .detail-section table {
