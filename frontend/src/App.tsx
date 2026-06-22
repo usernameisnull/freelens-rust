@@ -3168,7 +3168,7 @@ export function App() {
         openDetail(item);
       }}
     >
-      <td>{item.name}</td>
+      <td className="resource-name-cell" title={item.name}>{item.name}</td>
       {selectedKind === "Node" ? <>
         {selectedColumns.slice(0, 2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
@@ -3864,10 +3864,16 @@ export function App() {
               </div>
             )}
             <div className="resource-list-scroll" ref={resourceListRef} onScroll={handleResourceListScroll}>
-              <table ref={resourceTableRef} className={virtualizeResources ? "virtualized-table" : undefined}>
+              <table
+                ref={resourceTableRef}
+                className={[
+                  virtualizeResources ? "virtualized-table" : "",
+                  selectedKind === "Pod" ? "pod-resource-table" : "",
+                ].filter(Boolean).join(" ")}
+              >
                 <thead>
                   <tr>
-                    <th>{renderResourceSortButton("name", "Name")}</th>
+                    <th className="resource-name-cell">{renderResourceSortButton("name", "Name")}</th>
                     {selectedKind === "Node" ? <>
                       {selectedColumns.slice(0, 2).map((column) => (
                         <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
@@ -3885,7 +3891,7 @@ export function App() {
                       {selectedKind === "Pod" && <><th>CPU</th><th>Memory</th></>}
                       <th>{renderResourceSortButton("age", "Age")}</th>
                     </>}
-                    <th>Actions</th>
+                    <th className="actions">Actions</th>
                   </tr>
                 </thead>
                 <tbody>

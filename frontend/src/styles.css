@@ -1181,12 +1181,22 @@ button.dashboard-card:hover {
   border-bottom: 1px solid #26313a;
 }
 
-.resource-list th:last-child,
+.resource-list th.actions,
 .resource-list td.actions {
   width: 92px;
   min-width: 92px;
   max-width: 92px;
   text-align: right;
+}
+
+.resource-list table.pod-resource-table .resource-name-cell {
+  width: clamp(220px, 24vw, 360px);
+  max-width: clamp(220px, 24vw, 360px);
+}
+
+.resource-list table.pod-resource-table th:not(.resource-name-cell):not(.actions),
+.resource-list table.pod-resource-table td:not(.resource-name-cell):not(.actions) {
+  width: 1%;
 }
 
 .resource-list:not(.events-list) tbody tr {
@@ -1201,6 +1211,10 @@ button.dashboard-card:hover {
 .resource-list:not(.events-list) td {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.resource-list:not(.events-list) .resource-name-cell {
+  min-width: 0;
 }
 
 .resource-list .virtual-spacer-row,
@@ -1473,9 +1487,22 @@ button.dashboard-card:hover {
   overflow: visible;
 }
 
-.resource-list .actions {
-  position: relative;
+.resource-list th.actions,
+.resource-list td.actions {
+  position: sticky;
+  right: 0;
+  z-index: 4;
+  background: #0f1419;
   overflow: visible !important;
+}
+
+.resource-list th.actions {
+  z-index: 6;
+  background: #1c242d;
+}
+
+.resource-list tbody tr:hover td.actions {
+  background: #151d23;
 }
 
 .resource-list .action-menu-trigger {
