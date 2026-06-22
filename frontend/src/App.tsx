@@ -3771,8 +3771,8 @@ export function App() {
           healthError ? <p className="error-message">{healthError}</p> : (
             <section className="resource-list health-drilldown">
               <div className="resource-list-scroll">
-                <table>
-                  <thead><tr><th>Kind</th><th>Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Age</th><th>Actions</th></tr></thead>
+                <table className="resource-table">
+                  <thead><tr><th>Kind</th><th className="resource-name-cell">Name</th><th>Namespace</th><th>Status</th><th>Ready</th><th>Age</th><th className="actions">Actions</th></tr></thead>
                   <tbody>
                     {visibleHealthItems.map((item) => (
                       <tr
@@ -3791,7 +3791,7 @@ export function App() {
                         }}
                       >
                         <td>{item.kind}</td>
-                        <td>{item.name}</td>
+                        <td className="resource-name-cell" title={item.name}>{item.name}</td>
                         <td>{item.namespace ?? "-"}</td>
                         <td>
                           {item.columns.status !== undefined
@@ -3867,8 +3867,8 @@ export function App() {
               <table
                 ref={resourceTableRef}
                 className={[
+                  "resource-table",
                   virtualizeResources ? "virtualized-table" : "",
-                  selectedKind === "Pod" ? "pod-resource-table" : "",
                 ].filter(Boolean).join(" ")}
               >
                 <thead>

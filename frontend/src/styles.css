@@ -1189,13 +1189,13 @@ button.dashboard-card:hover {
   text-align: right;
 }
 
-.resource-list table.pod-resource-table .resource-name-cell {
+.resource-list table.resource-table .resource-name-cell {
   width: clamp(220px, 24vw, 360px);
   max-width: clamp(220px, 24vw, 360px);
 }
 
-.resource-list table.pod-resource-table th:not(.resource-name-cell):not(.actions),
-.resource-list table.pod-resource-table td:not(.resource-name-cell):not(.actions) {
+.resource-list table.resource-table th:not(.resource-name-cell):not(.actions),
+.resource-list table.resource-table td:not(.resource-name-cell):not(.actions) {
   width: 1%;
 }
 
