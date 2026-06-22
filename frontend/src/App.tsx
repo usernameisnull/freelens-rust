@@ -8,6 +8,12 @@ import type {
 import { FitAddon } from "@xterm/addon-fit";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
+import { basicSetup } from "codemirror";
+import { yaml as yamlLanguage } from "@codemirror/lang-yaml";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { tags } from "@lezer/highlight";
+import { Compartment, EditorState } from "@codemirror/state";
+import { EditorView } from "@codemirror/view";
 import {
   IPC_VERSION,
   KubernetesEventItem,
@@ -457,6 +463,83 @@ function filterManagedFields(parsed: YamlParsedLine[]): YamlParsedLine[] {
     i++;
   }
   return result;
+}
+
+
+function yamlForManagedFieldsPreference(yaml: string, showManagedFields: boolean): string {
+  if (showManagedFields) return yaml;
+  const lines = yaml.split("\n").map(parseYamlLine);
+  annotateLiteral(lines);
+  return filterManagedFields(lines).map((line) => line.raw).join("\n");
+}
+
+function YamlCodeEditor({ value, editable, onChange }: {
+  value: string;
+  editable: boolean;
+  onChange: (value: string) => void;
+}) {
+  const hostRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef<EditorView | null>(null);
+  const editableCompartmentRef = useRef(new Compartment());
+  const onChangeRef = useRef(onChange);
+  const syncingValueRef = useRef(false);
+  onChangeRef.current = onChange;
+
+  useEffect(() => {
+    if (!hostRef.current) return;
+    const editableCompartment = editableCompartmentRef.current;
+    const view = new EditorView({
+      parent: hostRef.current,
+      state: EditorState.create({
+        doc: value,
+        extensions: [
+          basicSetup,
+          yamlLanguage(),
+          syntaxHighlighting(HighlightStyle.define([
+            { tag: [tags.keyword, tags.propertyName, tags.typeName], color: "#58d1b5" },
+            { tag: [tags.string, tags.number, tags.bool, tags.null], color: "#79a8ff" },
+            { tag: tags.comment, color: "#63717e" },
+          ])),
+          editableCompartment.of([
+            EditorState.readOnly.of(!editable),
+            EditorView.editable.of(editable),
+          ]),
+          EditorView.updateListener.of((update) => {
+            if (update.docChanged && !syncingValueRef.current) {
+              onChangeRef.current(update.state.doc.toString());
+            }
+          }),
+        ],
+      }),
+    });
+    viewRef.current = view;
+    return () => {
+      view.destroy();
+      viewRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: editableCompartmentRef.current.reconfigure([
+        EditorState.readOnly.of(!editable),
+        EditorView.editable.of(editable),
+      ]),
+    });
+    if (editable) view.focus();
+  }, [editable]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view || view.state.doc.toString() === value) return;
+    syncingValueRef.current = true;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+    syncingValueRef.current = false;
+  }, [value]);
+
+  return <div className="yaml-code-editor" ref={hostRef} />;
 }
 
 function renderYamlLineContent(line: YamlParsedLine): ReactNode {
@@ -2147,6 +2230,18 @@ export function App() {
     }
   };
 
+  const displayedYamlDraft = yamlForManagedFieldsPreference(yamlDraft, yamlShowManagedFields);
+  const displayedDetailYaml = detail ? yamlForManagedFieldsPreference(detail.yaml, yamlShowManagedFields) : "";
+
+  const toggleYamlEditing = () => {
+    setYamlEditing((current) => {
+      if (!current) {
+        setYamlDraft(yamlForManagedFieldsPreference(yamlDraft, yamlShowManagedFields));
+      }
+      return !current;
+    });
+  };
+
   const copyYaml = async () => {
     const lines = yamlDraft.split("\n").map(parseYamlLine);
     annotateLiteral(lines);
@@ -3305,8 +3400,21 @@ export function App() {
                     onClick={() => setActiveView("contexts")}
                     title="Back to contexts"
                   >
-                    <span className="sidebar-context-home">{"<"}</span>
-                    <span className="sidebar-context-name">{selectedContext || "No context"}</span>
+                    <span className="sidebar-context-home">
+                      <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M19 12H5M11 6l-6 6 6 6" />
+                      </svg>
+                      <span>Back</span>
+                    </span>
+                    <span className="sidebar-context-name">
+                      <span className="sidebar-context-cluster-icon" aria-hidden="true">
+                        <svg viewBox="0 0 24 24">
+                          <circle cx="12" cy="12" r="10" />
+                          <path d="M12 4v16M5.1 8l13.8 8M18.9 8 5.1 16M8 6.4l8 11.2M16 6.4 8 17.6" />
+                        </svg>
+                      </span>
+                      <span className="sidebar-context-label">{selectedContext || "No context"}</span>
+                    </span>
                   </button>
                   <input
                     className="resource-catalog-search"
@@ -3846,7 +3954,11 @@ export function App() {
                 {detailTab === "yaml" ? (
                   <div className="yaml-editor">
                     {yamlEditing ? (
-                      <textarea value={yamlDraft} onChange={(event) => setYamlDraft(event.target.value)} spellCheck={false} autoFocus />
+                      <YamlCodeEditor
+                        value={displayedYamlDraft}
+                        editable
+                        onChange={setYamlDraft}
+                      />
                     ) : (
                       <>
                         <p className="yaml-hint">Read-only — click Edit to modify</p>
@@ -3855,7 +3967,7 @@ export function App() {
                     )}
                     <div className="editor-actions">
                       <div className="editor-actions-left">
-                        <button onClick={() => setYamlEditing((current) => !current)}>
+                        <button onClick={toggleYamlEditing}>
                           {yamlEditing ? "Done" : "Edit"}
                         </button>
                         <button onClick={() => void copyYaml()}>
@@ -3874,7 +3986,13 @@ export function App() {
                       </div>
                       <div className="editor-actions-right">
                         <button onClick={() => setYamlDraft(detail.yaml)} disabled={actionLoading}>Reset</button>
-                        <button onClick={() => void applyYaml()} disabled={actionLoading || yamlDraft === detail.yaml}>
+                        <button
+                          onClick={() => void applyYaml(displayedYamlDraft)}
+                          disabled={
+                            actionLoading ||
+                            displayedYamlDraft === displayedDetailYaml
+                          }
+                        >
                           {actionLoading ? "Applying..." : "Apply"}
                         </button>
                       </div>
