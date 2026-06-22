@@ -2123,6 +2123,89 @@ button.dashboard-card:hover {
 
 .yaml-code-editor .tok-comment { color: #63717e; }
 
+.yaml-mode-bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 34px;
+  padding: 5px 18px;
+  color: #8f9caa;
+  font-size: 0.75rem;
+  border-bottom: 1px solid #26313a;
+  background: #0f1419;
+}
+
+.yaml-mode-bar > button,
+.yaml-save-group > button,
+.yaml-save-menu summary,
+.yaml-save-menu button,
+.editor-actions button,
+.exec-controls button {
+  padding: 6px 14px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #1c242d;
+  color: #e8edf2;
+  cursor: pointer;
+}
+
+.yaml-save-group {
+  display: inline-flex;
+  align-items: stretch;
+}
+
+.yaml-save-group > button {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.yaml-save-menu {
+  position: relative;
+}
+
+.yaml-save-menu summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 100%;
+  padding: 0;
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  list-style: none;
+}
+
+.yaml-save-menu summary::-webkit-details-marker {
+  display: none;
+}
+
+.yaml-save-menu summary span {
+  font-size: 0.62rem;
+  transform: scaleX(1.15);
+}
+
+.yaml-save-menu button {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 5px);
+  z-index: 12;
+  width: max-content;
+  min-width: 130px;
+  box-shadow: 0 12px 24px rgba(0, 0, 0, 0.28);
+}
+
+.yaml-mode-bar > button:hover,
+.yaml-save-group > button:hover,
+.yaml-save-menu summary:hover,
+.yaml-save-menu button:hover,
+.editor-actions button:hover:not(:disabled),
+.exec-controls button:hover:not(:disabled) {
+  border-color: rgba(88, 209, 181, 0.55);
+}
+
 .editor-actions,
 .exec-controls {
   display: flex;
@@ -2148,16 +2231,7 @@ button.dashboard-card:hover {
   margin-left: auto;
 }
 
-.editor-actions button,
-.exec-controls button {
-  padding: 6px 14px;
-  border: 1px solid #26313a;
-  border-radius: 6px;
-  background: #1c242d;
-  color: #e8edf2;
-  cursor: pointer;
-}
-
+.yaml-save-menu button:disabled,
 .editor-actions button:disabled,
 .exec-controls button:disabled {
   opacity: 0.5;
@@ -2176,16 +2250,6 @@ button.dashboard-card:hover {
 
 .yaml-checkbox input {
   cursor: pointer;
-}
-
-.yaml-hint {
-  flex: none;
-  margin: 0;
-  padding: 6px 18px;
-  color: #63717e;
-  font-size: 0.75rem;
-  border-bottom: 1px solid #26313a;
-  background: #0f1419;
 }
 
 .yaml-view {

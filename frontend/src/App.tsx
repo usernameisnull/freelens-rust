@@ -2242,6 +2242,15 @@ export function App() {
     });
   };
 
+  const saveYamlDraft = () => {
+    setYamlEditing(false);
+  };
+
+  const saveAndApplyYamlDraft = async () => {
+    const applied = await applyYaml(displayedYamlDraft);
+    if (applied) setYamlEditing(false);
+  };
+
   const copyYaml = async () => {
     const lines = yamlDraft.split("\n").map(parseYamlLine);
     annotateLiteral(lines);
@@ -3953,6 +3962,29 @@ export function App() {
                 {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
                 {detailTab === "yaml" ? (
                   <div className="yaml-editor">
+                    <div className="yaml-mode-bar">
+                      <span>{yamlEditing ? "Editing mode" : "Read-only — click Edit to modify"}</span>
+                      {yamlEditing ? (
+                        <div className="yaml-save-group">
+                          <button type="button" onClick={saveYamlDraft}>Save</button>
+                          <details className="yaml-save-menu">
+                            <summary aria-label="More save actions"><span aria-hidden="true">v</span></summary>
+                            <button
+                              type="button"
+                              onClick={() => void saveAndApplyYamlDraft()}
+                              disabled={
+                                actionLoading ||
+                                displayedYamlDraft === displayedDetailYaml
+                              }
+                            >
+                              {actionLoading ? "Applying..." : "Save & Apply"}
+                            </button>
+                          </details>
+                        </div>
+                      ) : (
+                        <button type="button" onClick={toggleYamlEditing}>Edit</button>
+                      )}
+                    </div>
                     {yamlEditing ? (
                       <YamlCodeEditor
                         value={displayedYamlDraft}
@@ -3961,15 +3993,11 @@ export function App() {
                       />
                     ) : (
                       <>
-                        <p className="yaml-hint">Read-only — click Edit to modify</p>
                         <YamlView yaml={yamlDraft} showManagedFields={yamlShowManagedFields} />
                       </>
                     )}
                     <div className="editor-actions">
                       <div className="editor-actions-left">
-                        <button onClick={toggleYamlEditing}>
-                          {yamlEditing ? "Done" : "Edit"}
-                        </button>
                         <button onClick={() => void copyYaml()}>
                           {yamlCopyHint ?? "Copy"}
                         </button>
