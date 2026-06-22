@@ -2080,6 +2080,20 @@ button.dashboard-card:hover {
 
 .yaml-code-editor .cm-editor.cm-focused { outline: none; }
 
+.yaml-code-editor .cm-content {
+  caret-color: #f8fbff;
+}
+
+.yaml-code-editor .cm-cursor,
+.yaml-code-editor .cm-dropCursor {
+  border-left-color: #f8fbff;
+}
+
+.yaml-code-editor .cm-selectionBackground,
+.yaml-code-editor .cm-focused .cm-selectionBackground {
+  background: rgba(121, 168, 255, 0.28);
+}
+
 .yaml-code-editor .cm-scroller {
   overflow: auto;
   font-family: inherit;
