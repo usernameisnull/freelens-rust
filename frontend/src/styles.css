@@ -2130,8 +2130,15 @@ button.dashboard-card:hover {
 }
 
 .yaml-code-editor .cm-selectionBackground,
-.yaml-code-editor .cm-focused .cm-selectionBackground {
-  background: rgba(121, 168, 255, 0.28);
+.yaml-code-editor .cm-editor.cm-focused > .cm-scroller > .cm-selectionLayer .cm-selectionBackground {
+  background: #21433f;
+}
+
+.yaml-code-editor .cm-selected-indent {
+  background-image: radial-gradient(circle at 50% 55%, #9eabb8 18%, transparent 20%);
+  background-position: center;
+  background-repeat: repeat-x;
+  background-size: 1ch 100%;
 }
 
 .yaml-code-editor .cm-scroller {
@@ -2474,6 +2481,10 @@ button.dashboard-card:hover {
   outline: none;
 }
 
+.yaml-view ::selection {
+  background: rgba(88, 209, 181, 0.24);
+}
+
 .yaml-row {
   display: flex;
   align-items: flex-start;
@@ -2538,8 +2549,7 @@ button.dashboard-card:hover {
 }
 
 .yaml-indent::selection {
-  color: #63717e;
-  background: rgba(88, 209, 181, 0.18);
+  color: #9eabb8;
 }
 
 .yaml-dash {

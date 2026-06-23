@@ -27,8 +27,9 @@ import {
 } from "@codemirror/search";
 import { tags } from "@lezer/highlight";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
-import type { Panel } from "@codemirror/view";
-import { EditorView, keymap } from "@codemirror/view";
+import type { Range } from "@codemirror/state";
+import type { DecorationSet, Panel } from "@codemirror/view";
+import { Decoration, EditorView, keymap, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import {
   IPC_VERSION,
   KubernetesEventItem,
@@ -699,6 +700,39 @@ interface YamlCodeEditorHandle {
   openSearch: () => void;
 }
 
+function selectedIndentDecorations(view: EditorView): DecorationSet {
+  const decorations: Range<Decoration>[] = [];
+  for (const range of view.state.selection.ranges) {
+    if (range.empty) continue;
+    const firstLine = view.state.doc.lineAt(range.from).number;
+    const lastLine = view.state.doc.lineAt(range.to).number;
+    for (let lineNumber = firstLine; lineNumber <= lastLine; lineNumber++) {
+      const line = view.state.doc.line(lineNumber);
+      const indentLength = line.text.match(/^[ \t]+/)?.[0].length ?? 0;
+      const from = Math.max(range.from, line.from);
+      const to = Math.min(range.to, line.from + indentLength);
+      if (from < to) decorations.push(Decoration.mark({ class: "cm-selected-indent" }).range(from, to));
+    }
+  }
+  return Decoration.set(decorations, true);
+}
+
+const selectedIndentMarkers = ViewPlugin.fromClass(class {
+  decorations: DecorationSet;
+
+  constructor(view: EditorView) {
+    this.decorations = selectedIndentDecorations(view);
+  }
+
+  update(update: ViewUpdate) {
+    if (update.docChanged || update.selectionSet) {
+      this.decorations = selectedIndentDecorations(update.view);
+    }
+  }
+}, {
+  decorations: (plugin) => plugin.decorations,
+});
+
 const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
   value: string;
   editable: boolean;
@@ -740,6 +774,7 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
           basicSetup,
           search({ top: true, createPanel: (view) => new YamlSearchPanel(view) }),
           yamlLanguage(),
+          selectedIndentMarkers,
           syntaxHighlighting(HighlightStyle.define([
             { tag: [tags.keyword, tags.propertyName, tags.typeName], color: "#58d1b5" },
             { tag: [tags.string, tags.number, tags.bool, tags.null], color: "#79a8ff" },
