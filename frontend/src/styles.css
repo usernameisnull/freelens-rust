@@ -1501,6 +1501,10 @@ button.dashboard-card:hover {
   background: #1c242d;
 }
 
+.resource-list td.actions.action-menu-open {
+  z-index: 40;
+}
+
 .resource-list tbody tr:hover td.actions {
   background: #151d23;
 }

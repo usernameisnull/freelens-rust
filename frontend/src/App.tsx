@@ -3350,7 +3350,7 @@ export function App() {
     const key = resourceActionMenuKey(item);
     const isOpen = openResourceActionMenu === key;
     return (
-      <td className="actions" onClick={(event) => event.stopPropagation()}>
+      <td className={`actions${isOpen ? " action-menu-open" : ""}`} onClick={(event) => event.stopPropagation()}>
         <button
           type="button"
           className="action-menu-trigger"
