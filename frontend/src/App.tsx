@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -11,9 +11,24 @@ import { Terminal } from "@xterm/xterm";
 import { basicSetup } from "codemirror";
 import { yaml as yamlLanguage } from "@codemirror/lang-yaml";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import {
+  closeSearchPanel,
+  findNext,
+  findPrevious,
+  getSearchQuery,
+  openSearchPanel,
+  replaceAll,
+  replaceNext,
+  search,
+  SearchQuery,
+  searchKeymap,
+  selectMatches,
+  setSearchQuery,
+} from "@codemirror/search";
 import { tags } from "@lezer/highlight";
-import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { Compartment, EditorState, Prec } from "@codemirror/state";
+import type { Panel } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import {
   IPC_VERSION,
   KubernetesEventItem,
@@ -473,17 +488,238 @@ function yamlForManagedFieldsPreference(yaml: string, showManagedFields: boolean
   return filterManagedFields(lines).map((line) => line.raw).join("\n");
 }
 
-function YamlCodeEditor({ value, editable, onChange }: {
+function buttonElement(name: string, label: string, title: string, onClick: () => void): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.name = name;
+  button.title = title;
+  button.setAttribute("aria-label", title);
+  button.textContent = label;
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function optionButtonElement(
+  label: string,
+  title: string,
+  pressed: boolean,
+  onClick: () => void,
+): HTMLButtonElement {
+  const button = buttonElement("option", label, title, onClick);
+  button.setAttribute("aria-pressed", String(pressed));
+  return button;
+}
+
+class YamlSearchPanel implements Panel {
+  readonly dom: HTMLDivElement;
+  private readonly searchField: HTMLInputElement;
+  private readonly replaceField: HTMLInputElement;
+  private readonly countLabel: HTMLSpanElement;
+  private readonly replaceToggle: HTMLButtonElement;
+  private readonly replaceRow: HTMLDivElement;
+  private readonly caseButton: HTMLButtonElement;
+  private readonly regexpButton: HTMLButtonElement;
+  private readonly wordButton: HTMLButtonElement;
+  private query: SearchQuery;
+  private replaceOpen = false;
+
+  constructor(private readonly view: EditorView) {
+    this.query = getSearchQuery(view.state);
+    this.dom = document.createElement("div");
+    this.dom.className = "cm-search yaml-search-panel";
+    this.dom.addEventListener("keydown", (event) => this.handleKeydown(event));
+
+    this.replaceToggle = buttonElement("toggleReplace", "\u203a", "Show replace", () => {
+      if (this.view.state.readOnly) return;
+      this.replaceOpen = !this.replaceOpen;
+      this.renderReplaceState();
+      if (this.replaceOpen) this.replaceField.focus();
+    });
+    this.dom.append(this.replaceToggle);
+
+    const fields = document.createElement("div");
+    fields.className = "yaml-search-fields";
+
+    const searchRow = document.createElement("div");
+    searchRow.className = "yaml-search-row";
+    this.searchField = document.createElement("input");
+    this.searchField.name = "yaml-find-query";
+    this.searchField.placeholder = "Find";
+    this.searchField.setAttribute("aria-label", "Find");
+    this.searchField.autocomplete = "off";
+    this.searchField.autocapitalize = "off";
+    this.searchField.spellcheck = false;
+    this.searchField.setAttribute("data-lpignore", "true");
+    this.searchField.setAttribute("data-form-type", "other");
+    this.searchField.value = this.query.search;
+    this.searchField.addEventListener("input", () => this.commit());
+    searchRow.append(this.searchField);
+    fields.append(searchRow);
+
+    this.replaceRow = document.createElement("div");
+    this.replaceRow.className = "yaml-search-row yaml-replace-row";
+    this.replaceField = document.createElement("input");
+    this.replaceField.name = "yaml-find-replace";
+    this.replaceField.placeholder = "Replace";
+    this.replaceField.setAttribute("aria-label", "Replace");
+    this.replaceField.autocomplete = "off";
+    this.replaceField.autocapitalize = "off";
+    this.replaceField.spellcheck = false;
+    this.replaceField.setAttribute("data-lpignore", "true");
+    this.replaceField.setAttribute("data-form-type", "other");
+    this.replaceField.value = this.query.replace;
+    this.replaceField.addEventListener("input", () => this.commit());
+    this.replaceRow.append(
+      this.replaceField,
+      buttonElement("replace", "AB", "Replace", () => replaceNext(this.view)),
+      buttonElement("replaceAll", "AB*", "Replace all", () => replaceAll(this.view)),
+    );
+    fields.append(this.replaceRow);
+    this.dom.append(fields);
+
+    this.countLabel = document.createElement("span");
+    this.countLabel.className = "yaml-search-count";
+    const actions = document.createElement("div");
+    actions.className = "yaml-search-actions";
+    actions.append(
+      this.countLabel,
+      buttonElement("prev", "\u2191", "Previous match", () => findPrevious(this.view)),
+      buttonElement("next", "\u2193", "Next match", () => findNext(this.view)),
+      buttonElement("select", "\u2261", "Select all matches", () => selectMatches(this.view)),
+    );
+
+    this.caseButton = optionButtonElement("Aa", "Match case", this.query.caseSensitive, () => {
+      this.updateQuery({ caseSensitive: !this.query.caseSensitive });
+    });
+    this.regexpButton = optionButtonElement(".*", "Use regular expression", this.query.regexp, () => {
+      this.updateQuery({ regexp: !this.query.regexp });
+    });
+    this.wordButton = optionButtonElement("W", "Match whole word", this.query.wholeWord, () => {
+      this.updateQuery({ wholeWord: !this.query.wholeWord });
+    });
+    actions.append(
+      this.caseButton,
+      this.regexpButton,
+      this.wordButton,
+      buttonElement("close", "\u00d7", "Close search", () => closeSearchPanel(this.view)),
+    );
+    this.dom.append(actions);
+
+    this.renderReplaceState();
+    this.updateCount();
+  }
+
+  mount() {
+    this.searchField.select();
+  }
+
+  update() {
+    const query = getSearchQuery(this.view.state);
+    if (!query.eq(this.query)) this.setQuery(query);
+    this.updateCount();
+    this.renderReplaceState();
+  }
+
+  get top() {
+    return true;
+  }
+
+  private commit() {
+    this.updateQuery({
+      search: this.searchField.value,
+      replace: this.replaceField.value,
+    });
+  }
+
+  private updateQuery(update: Partial<ConstructorParameters<typeof SearchQuery>[0]>) {
+    const query = new SearchQuery({
+      search: this.query.search,
+      replace: this.query.replace,
+      caseSensitive: this.query.caseSensitive,
+      regexp: this.query.regexp,
+      wholeWord: this.query.wholeWord,
+      ...update,
+    });
+    this.query = query;
+    this.view.dispatch({ effects: setSearchQuery.of(query) });
+    this.setQuery(query);
+  }
+
+  private setQuery(query: SearchQuery) {
+    this.query = query;
+    this.searchField.value = query.search;
+    this.replaceField.value = query.replace;
+    this.caseButton.setAttribute("aria-pressed", String(query.caseSensitive));
+    this.regexpButton.setAttribute("aria-pressed", String(query.regexp));
+    this.wordButton.setAttribute("aria-pressed", String(query.wholeWord));
+    this.updateCount();
+  }
+
+  private updateCount() {
+    if (!this.query.valid) {
+      this.countLabel.textContent = "0/0";
+      return;
+    }
+    const selection = this.view.state.selection.main;
+    let total = 0;
+    let current = 0;
+    const cursor = this.query.getCursor(this.view.state);
+    for (let cursorResult = cursor.next(); !cursorResult.done; cursorResult = cursor.next()) {
+      const match = cursorResult.value;
+      total += 1;
+      if (match.from === selection.from && match.to === selection.to) current = total;
+    }
+    this.countLabel.textContent = total === 0 ? "0/0" : `${current || 1}/${total}`;
+  }
+
+  private renderReplaceState() {
+    const canReplace = !this.view.state.readOnly;
+    this.replaceToggle.disabled = !canReplace;
+    this.replaceToggle.textContent = this.replaceOpen ? "\u2304" : "\u203a";
+    this.replaceToggle.title = this.replaceOpen ? "Hide replace" : "Show replace";
+    this.replaceRow.hidden = !canReplace || !this.replaceOpen;
+  }
+
+  private handleKeydown(event: KeyboardEvent) {
+    if (event.key === "Enter" && event.target === this.searchField) {
+      event.preventDefault();
+      (event.shiftKey ? findPrevious : findNext)(this.view);
+    } else if (event.key === "Enter" && event.target === this.replaceField) {
+      event.preventDefault();
+      replaceNext(this.view);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeSearchPanel(this.view);
+    }
+  }
+}
+
+interface YamlCodeEditorHandle {
+  focus: () => void;
+  openSearch: () => void;
+}
+
+const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
   value: string;
   editable: boolean;
   onChange: (value: string) => void;
-}) {
+}>(function YamlCodeEditor({ value, editable, onChange }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const editableCompartmentRef = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const syncingValueRef = useRef(false);
   onChangeRef.current = onChange;
+
+  useImperativeHandle(ref, () => ({
+    focus: () => viewRef.current?.focus(),
+    openSearch: () => {
+      const view = viewRef.current;
+      if (!view) return;
+      view.focus();
+      openSearchPanel(view);
+    },
+  }), []);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -493,7 +729,16 @@ function YamlCodeEditor({ value, editable, onChange }: {
       state: EditorState.create({
         doc: value,
         extensions: [
+          Prec.highest(keymap.of([
+            {
+              key: "Mod-f",
+              run: openSearchPanel,
+              scope: "editor search-panel",
+            },
+            ...searchKeymap,
+          ])),
           basicSetup,
+          search({ top: true, createPanel: (view) => new YamlSearchPanel(view) }),
           yamlLanguage(),
           syntaxHighlighting(HighlightStyle.define([
             { tag: [tags.keyword, tags.propertyName, tags.typeName], color: "#58d1b5" },
@@ -540,7 +785,7 @@ function YamlCodeEditor({ value, editable, onChange }: {
   }, [value]);
 
   return <div className="yaml-code-editor" ref={hostRef} />;
-}
+});
 
 function renderYamlLineContent(line: YamlParsedLine): ReactNode {
   if (line.isBlank) return null;
@@ -1132,6 +1377,7 @@ export function App() {
   const [yamlShowManagedFields, setShowYamlManagedFields] = useState(false);
   const [yamlCopyHint, setYamlCopyHint] = useState<string>();
   const yamlCopyHintTimer = useRef<number | undefined>(undefined);
+  const yamlEditorRef = useRef<YamlCodeEditorHandle | null>(null);
   const [metadataCopyHint, setMetadataCopyHint] = useState<string>();
   const metadataCopyHintTimer = useRef<number | undefined>(undefined);
   const [configMapDataDraft, setConfigMapDataDraft] = useState<Record<string, string>>({});
@@ -2233,6 +2479,18 @@ export function App() {
   const displayedYamlDraft = yamlForManagedFieldsPreference(yamlDraft, yamlShowManagedFields);
   const displayedDetailYaml = detail ? yamlForManagedFieldsPreference(detail.yaml, yamlShowManagedFields) : "";
 
+  useEffect(() => {
+    if (!detail || detailTab !== "yaml") return;
+    const openYamlSearch = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
+      event.preventDefault();
+      event.stopPropagation();
+      yamlEditorRef.current?.openSearch();
+    };
+    window.addEventListener("keydown", openYamlSearch, { capture: true });
+    return () => window.removeEventListener("keydown", openYamlSearch, { capture: true });
+  }, [detail, detailTab]);
+
   const toggleYamlEditing = () => {
     setYamlEditing((current) => {
       if (!current) {
@@ -2242,11 +2500,12 @@ export function App() {
     });
   };
 
-  const saveYamlDraft = () => {
+  const cancelYamlEditing = () => {
+    setYamlDraft(detail?.yaml ?? "");
     setYamlEditing(false);
   };
 
-  const saveAndApplyYamlDraft = async () => {
+  const applyYamlDraft = async () => {
     const applied = await applyYaml(displayedYamlDraft);
     if (applied) setYamlEditing(false);
   };
@@ -3972,20 +4231,17 @@ export function App() {
                       <span>{yamlEditing ? "Editing mode" : "Read-only — click Edit to modify"}</span>
                       {yamlEditing ? (
                         <div className="yaml-save-group">
-                          <button type="button" onClick={saveYamlDraft}>Save</button>
-                          <details className="yaml-save-menu">
-                            <summary aria-label="More save actions"><span aria-hidden="true">v</span></summary>
-                            <button
-                              type="button"
-                              onClick={() => void saveAndApplyYamlDraft()}
-                              disabled={
-                                actionLoading ||
-                                displayedYamlDraft === displayedDetailYaml
-                              }
-                            >
-                              {actionLoading ? "Applying..." : "Save & Apply"}
-                            </button>
-                          </details>
+                          <button type="button" onClick={cancelYamlEditing} disabled={actionLoading}>Cancel</button>
+                          <button
+                            type="button"
+                            onClick={() => void applyYamlDraft()}
+                            disabled={
+                              actionLoading ||
+                              displayedYamlDraft === displayedDetailYaml
+                            }
+                          >
+                            {actionLoading ? "Applying..." : "Apply"}
+                          </button>
                         </div>
                       ) : (
                         <button type="button" onClick={toggleYamlEditing}>Edit</button>
@@ -3993,14 +4249,18 @@ export function App() {
                     </div>
                     {yamlEditing ? (
                       <YamlCodeEditor
+                        ref={yamlEditorRef}
                         value={displayedYamlDraft}
                         editable
                         onChange={setYamlDraft}
                       />
                     ) : (
-                      <>
-                        <YamlView yaml={yamlDraft} showManagedFields={yamlShowManagedFields} />
-                      </>
+                      <YamlCodeEditor
+                        ref={yamlEditorRef}
+                        value={displayedYamlDraft}
+                        editable={false}
+                        onChange={() => undefined}
+                      />
                     )}
                     <div className="editor-actions">
                       <div className="editor-actions-left">
@@ -4018,18 +4278,11 @@ export function App() {
                           </label>
                         )}
                       </div>
-                      <div className="editor-actions-right">
-                        <button onClick={() => setYamlDraft(detail.yaml)} disabled={actionLoading}>Reset</button>
-                        <button
-                          onClick={() => void applyYaml(displayedYamlDraft)}
-                          disabled={
-                            actionLoading ||
-                            displayedYamlDraft === displayedDetailYaml
-                          }
-                        >
-                          {actionLoading ? "Applying..." : "Apply"}
-                        </button>
-                      </div>
+                      {yamlEditing && (
+                        <div className="editor-actions-right">
+                          <button onClick={() => setYamlDraft(detail.yaml)} disabled={actionLoading}>Revert Changes</button>
+                        </div>
+                      )}
                     </div>
                   </div>
                 ) : (
