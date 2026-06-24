@@ -3149,10 +3149,7 @@ export function App() {
   const visibleResources = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     const filtered = query
-      ? resources.filter((item) =>
-          [item.name, item.namespace ?? "", ...Object.values(item.columns)]
-            .some((value) => value.toLowerCase().includes(query))
-        )
+      ? resources.filter((item) => item.name.toLowerCase().includes(query))
       : resources;
     const valueFor = (item: ResourceItem) => {
       if (sortKey === "name") return item.name;
@@ -3170,10 +3167,7 @@ export function App() {
   const visibleHealthItems = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     if (!query) return healthItems;
-    return healthItems.filter((item) =>
-      [item.kind, item.name, item.namespace ?? "", ...Object.values(item.columns)]
-        .some((value) => value.toLowerCase().includes(query))
-    );
+    return healthItems.filter((item) => item.name.toLowerCase().includes(query));
   }, [healthItems, resourceSearch]);
 
   useEffect(() => {
@@ -3242,13 +3236,7 @@ export function App() {
     const filtered = events.filter((event) => {
       if (eventTypeFilter && event.eventType !== eventTypeFilter) return false;
       if (!query) return true;
-      return [
-        event.reason ?? "",
-        event.message ?? "",
-        event.namespace ?? "",
-        event.objectKind ?? "",
-        event.objectName ?? "",
-      ].some((value) => value.toLowerCase().includes(query));
+      return (event.objectName ?? "").toLowerCase().includes(query);
     });
 
     if (!eventSortKey) return filtered;
@@ -4033,7 +4021,7 @@ export function App() {
             {activeView === "resources" && <>
               <input
                 type="search"
-                placeholder="Search resources"
+                placeholder="Search name"
                 value={resourceSearch}
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
@@ -4052,7 +4040,7 @@ export function App() {
             {activeView === "events" && <>
               <input
                 type="search"
-                placeholder="Search events"
+                placeholder="Search name"
                 value={resourceSearch}
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
@@ -4071,7 +4059,7 @@ export function App() {
             {activeView === "health" && (
               <input
                 type="search"
-                placeholder={`Search ${healthTitle.toLowerCase()}`}
+                placeholder="Search name"
                 value={resourceSearch}
                 onChange={(event) => setResourceSearch(event.target.value)}
               />
