@@ -1543,18 +1543,19 @@ pub async fn get_resource_yaml(
             "{kind} namespace is required"
         )));
     }
-    let api: Api<DynamicObject> =
-        match namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced) {
-            Some(ns) => Api::namespaced_with(client, ns, &ar),
-            None => Api::all_with(client, &ar),
-        };
 
-    let obj = api
-        .get(name)
+    let url = <DynamicObject as kube::Resource>::url_path(&ar, namespace);
+    let http_req = kube::core::Request::new(url)
+        .get(name, &kube::api::GetParams::default())
+        .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+    let text = client
+        .request_text(http_req)
         .await
         .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))?;
 
-    serde_yaml_ng::to_string(&obj)
+    serde_yaml_ng::to_string(&value)
         .map_err(|error| KubernetesError::GetResourceFailed(error.to_string()))
 }
 
