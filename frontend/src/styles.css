@@ -120,7 +120,8 @@ body.resizing-sidebar .sidebar-resizer {
   stroke-linejoin: round;
 }
 
-body.resizing-sidebar {
+body.resizing-sidebar,
+body.resizing-panel {
   cursor: col-resize;
   user-select: none;
 }
@@ -845,6 +846,10 @@ body.resizing-sidebar {
   min-height: 0;
   position: relative;
   overflow: auto;
+  /* Search pagination can insert sorted rows above the current viewport. The
+     list owns its scroll position, so browser scroll anchoring must not move
+     it while a resource detail panel is open. */
+  overflow-anchor: none;
   scrollbar-gutter: stable;
   scrollbar-color: #4f5c68 #0f1419;
 }
@@ -1693,12 +1698,38 @@ button.dashboard-card:hover {
 }
 
 .detail-panel {
+  position: relative;
   width: min(720px, 60vw);
+  max-width: 100vw;
   height: 100%;
   background: #151b22;
   border-left: 1px solid #26313a;
   display: flex;
   flex-direction: column;
+}
+
+.detail-panel.is-maximized {
+  border-left: none;
+}
+
+.panel-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  z-index: 10;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.panel-resizer:hover,
+body.resizing-panel .panel-resizer {
+  background: rgba(88, 209, 181, 0.45);
+}
+
+.detail-panel.is-maximized .panel-resizer {
+  display: none;
 }
 
 .detail-panel header {

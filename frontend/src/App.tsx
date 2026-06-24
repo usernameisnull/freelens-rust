@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -57,6 +57,13 @@ const transport = createTransport();
 const RESOURCE_ROW_HEIGHT = 44;
 const RESOURCE_VIRTUAL_OVERSCAN = 8;
 const RESOURCE_VIRTUAL_THRESHOLD = 80;
+const MIN_PANEL_WIDTH = 420;
+type AdjustablePanelKind = "detail" | "logs" | "terminal";
+const DEFAULT_PANEL_WIDTHS: Record<AdjustablePanelKind, number> = {
+  detail: 720,
+  logs: 900,
+  terminal: 1000,
+};
 
 function errorMessage(reason: unknown): string {
   if (reason instanceof Error) return reason.message;
@@ -1320,6 +1327,23 @@ export function App() {
   });
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const sidebarResizeRef = useRef(false);
+  const [panelWidths, setPanelWidths] = useState<Record<AdjustablePanelKind, number>>(() => {
+    try {
+      const saved = JSON.parse(window.localStorage.getItem("freelens.panelWidths") ?? "{}") as Partial<Record<AdjustablePanelKind, number>>;
+      return Object.fromEntries(Object.entries(DEFAULT_PANEL_WIDTHS).map(([kind, fallback]) => {
+        const width = saved[kind as AdjustablePanelKind];
+        return [kind, Number.isFinite(width) && width! >= MIN_PANEL_WIDTH ? width : fallback];
+      })) as Record<AdjustablePanelKind, number>;
+    } catch {
+      return { ...DEFAULT_PANEL_WIDTHS };
+    }
+  });
+  const [maximizedPanels, setMaximizedPanels] = useState<Record<AdjustablePanelKind, boolean>>({
+    detail: false,
+    logs: false,
+    terminal: false,
+  });
+  const panelResizeRef = useRef<AdjustablePanelKind | undefined>(undefined);
   const [settingsReady, setSettingsReady] = useState(false);
   const settingsRestorePendingRef = useRef(0);
   const preferredNamespaceRef = useRef("");
@@ -1394,6 +1418,7 @@ export function App() {
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
   const resourceListRef = useRef<HTMLDivElement | null>(null);
   const resourceTableRef = useRef<HTMLTableElement | null>(null);
+  const resourceScrollLockRef = useRef<number | null>(null);
   const [resourceScrollTop, setResourceScrollTop] = useState(0);
   const [resourceViewportHeight, setResourceViewportHeight] = useState(0);
   const [resourceTableTop, setResourceTableTop] = useState(0);
@@ -1478,6 +1503,27 @@ export function App() {
   const localXtermFitRef = useRef<FitAddon | null>(null);
   const localTerminalInputQueueRef = useRef<Promise<void>>(Promise.resolve());
 
+  const resourcePanelOpen = Boolean(
+    detail || detailLoading || detailError
+    || logResource || execResource
+    || createOpen || localTerminalOpen || kubectlOpen || kubeconfigSettingsOpen
+  );
+
+  useLayoutEffect(() => {
+    const container = resourceListRef.current;
+    if (activeView !== "resources" || !resourcePanelOpen || !container) {
+      resourceScrollLockRef.current = null;
+      return;
+    }
+
+    if (resourceScrollLockRef.current === null) {
+      resourceScrollLockRef.current = container.scrollTop;
+    }
+    const lockedScrollTop = resourceScrollLockRef.current;
+    if (container.scrollTop !== lockedScrollTop) container.scrollTop = lockedScrollTop;
+    if (resourceScrollTop !== lockedScrollTop) setResourceScrollTop(lockedScrollTop);
+  });
+
   useEffect(() => {
     const move = (event: PointerEvent) => {
       if (!sidebarResizeRef.current) return;
@@ -1502,6 +1548,32 @@ export function App() {
   }, [sidebarWidth]);
 
   useEffect(() => {
+    const move = (event: PointerEvent) => {
+      const kind = panelResizeRef.current;
+      if (!kind) return;
+      const width = Math.min(window.innerWidth, Math.max(MIN_PANEL_WIDTH, window.innerWidth - event.clientX));
+      setPanelWidths((current) => current[kind] === width ? current : { ...current, [kind]: width });
+    };
+    const stop = () => {
+      if (!panelResizeRef.current) return;
+      panelResizeRef.current = undefined;
+      document.body.classList.remove("resizing-panel");
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", stop);
+    window.addEventListener("pointercancel", stop);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", stop);
+      window.removeEventListener("pointercancel", stop);
+    };
+  }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem("freelens.panelWidths", JSON.stringify(panelWidths));
+  }, [panelWidths]);
+
+  useEffect(() => {
     window.localStorage.setItem("freelens.sidebarCollapsed", String(sidebarCollapsed));
   }, [sidebarCollapsed]);
 
@@ -1514,6 +1586,18 @@ export function App() {
     event.preventDefault();
     sidebarResizeRef.current = true;
     document.body.classList.add("resizing-sidebar");
+  };
+
+  const startPanelResize = (event: ReactPointerEvent<HTMLDivElement>, kind: AdjustablePanelKind) => {
+    if (maximizedPanels[kind]) return;
+    event.preventDefault();
+    event.stopPropagation();
+    panelResizeRef.current = kind;
+    document.body.classList.add("resizing-panel");
+  };
+
+  const togglePanelMaximized = (kind: AdjustablePanelKind) => {
+    setMaximizedPanels((current) => ({ ...current, [kind]: !current[kind] }));
   };
 
   const toggleNavigationGroup = (label: string) => {
@@ -3138,6 +3222,13 @@ export function App() {
   const resourceTopSpacerHeight = virtualStartIndex * RESOURCE_ROW_HEIGHT;
   const resourceBottomSpacerHeight = Math.max(0, (visibleResources.length - virtualEndIndex) * RESOURCE_ROW_HEIGHT);
   const handleResourceListScroll = (event: ReactUIEvent<HTMLElement>) => {
+    const lockedScrollTop = resourceScrollLockRef.current;
+    if (lockedScrollTop !== null) {
+      if (event.currentTarget.scrollTop !== lockedScrollTop) {
+        event.currentTarget.scrollTop = lockedScrollTop;
+      }
+      return;
+    }
     setResourceScrollTop(event.currentTarget.scrollTop);
   };
 
@@ -4228,7 +4319,19 @@ export function App() {
 
       {(detail || detailLoading || detailError) && (
         <div className="detail-panel-overlay" onClick={closeDetail}>
-          <div className="detail-panel" onClick={(event) => event.stopPropagation()}>
+          <div
+            className={`detail-panel resizable-panel${maximizedPanels.detail ? " is-maximized" : ""}`}
+            style={{ width: maximizedPanels.detail ? "100vw" : `min(${panelWidths.detail}px, 100vw)` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="panel-resizer"
+              role="separator"
+              aria-label="Resize resource details"
+              aria-orientation="vertical"
+              onPointerDown={(event) => startPanelResize(event, "detail")}
+              onDoubleClick={() => togglePanelMaximized("detail")}
+            />
             <header>
               <h3>
                 {detail ? `${detail.kind}: ${detail.name}` : detailLoading ? "Loading…" : "Error"}
@@ -4245,6 +4348,9 @@ export function App() {
                     columns: {},
                   })}>Refresh</button>
                 )}
+                <button onClick={() => togglePanelMaximized("detail")}>
+                  {maximizedPanels.detail ? "Restore" : "Maximize"}
+                </button>
                 <button onClick={closeDetail}>Close</button>
               </div>
             </header>
@@ -4450,7 +4556,19 @@ export function App() {
 
       {logResource && (
         <div className="detail-panel-overlay" onClick={closeLogs}>
-          <div className="detail-panel log-panel" onClick={(event) => event.stopPropagation()}>
+          <div
+            className={`detail-panel log-panel resizable-panel${maximizedPanels.logs ? " is-maximized" : ""}`}
+            style={{ width: maximizedPanels.logs ? "100vw" : `min(${panelWidths.logs}px, 100vw)` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="panel-resizer"
+              role="separator"
+              aria-label="Resize logs"
+              aria-orientation="vertical"
+              onPointerDown={(event) => startPanelResize(event, "logs")}
+              onDoubleClick={() => togglePanelMaximized("logs")}
+            />
             <header>
               <h3>Logs: {logResource.namespace}/{logResource.name}</h3>
               <div>
@@ -4459,6 +4577,9 @@ export function App() {
                 ) : (
                   <button onClick={() => logResource && setLogs([])}>Clear</button>
                 )}
+                <button onClick={() => togglePanelMaximized("logs")}>
+                  {maximizedPanels.logs ? "Restore" : "Maximize"}
+                </button>
                 <button onClick={closeLogs}>Close</button>
               </div>
             </header>
@@ -4505,11 +4626,26 @@ export function App() {
 
       {execResource && (
         <div className="detail-panel-overlay" onClick={closeTerminal}>
-          <div className="detail-panel exec-panel" onClick={(event) => event.stopPropagation()}>
+          <div
+            className={`detail-panel exec-panel resizable-panel${maximizedPanels.terminal ? " is-maximized" : ""}`}
+            style={{ width: maximizedPanels.terminal ? "100vw" : `min(${panelWidths.terminal}px, 100vw)` }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div
+              className="panel-resizer"
+              role="separator"
+              aria-label="Resize terminal"
+              aria-orientation="vertical"
+              onPointerDown={(event) => startPanelResize(event, "terminal")}
+              onDoubleClick={() => togglePanelMaximized("terminal")}
+            />
             <header>
               <h3>Terminal: {execResource.namespace}/{execResource.name}</h3>
               <div>
                 {terminalSessionId && <button onClick={() => void stopTerminal()}>Stop</button>}
+                <button onClick={() => togglePanelMaximized("terminal")}>
+                  {maximizedPanels.terminal ? "Restore" : "Maximize"}
+                </button>
                 <button onClick={closeTerminal}>Close</button>
               </div>
             </header>
