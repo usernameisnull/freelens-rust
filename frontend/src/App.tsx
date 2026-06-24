@@ -3349,12 +3349,14 @@ export function App() {
                 <label htmlFor={`config-map-data-${name}`}>{name}</label>
                 <div className="secret-data-value no-toggle">
                   <textarea
+                    className="config-map-data-editor"
                     id={`config-map-data-${name}`}
                     value={value}
                     onChange={(event) => editConfigMapData(name, event.target.value)}
                     disabled={actionLoading}
                     spellCheck={false}
-                    rows={Math.max(1, Math.min(8, value.split("\n").length))}
+                    wrap="off"
+                    rows={Math.max(6, Math.min(20, value.split("\n").length))}
                   />
                 </div>
               </div>
@@ -3393,12 +3395,14 @@ export function App() {
                   <label htmlFor={`secret-data-${name}`}>{name}</label>
                   <div className="secret-data-value">
                     <textarea
+                      className="secret-data-editor"
                       id={`secret-data-${name}`}
                       value={displayValue}
                       onChange={(event) => editSecretData(name, event.target.value)}
                       disabled={actionLoading}
                       spellCheck={false}
-                      rows={Math.max(1, Math.min(6, displayValue.split("\n").length))}
+                      wrap="off"
+                      rows={Math.max(1, Math.min(12, displayValue.split("\n").length))}
                     />
                     {canReveal && (
                       <button
