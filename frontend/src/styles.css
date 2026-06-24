@@ -205,11 +205,127 @@ body.resizing-panel {
   transition: border-color 0.14s ease, background-color 0.14s ease;
 }
 
+.sidebar-context-picker {
+  position: relative;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.sidebar-context-picker > summary {
+  width: 100%;
+  list-style: none;
+}
+
+.sidebar-context-picker > summary::-webkit-details-marker {
+  display: none;
+}
+
 .sidebar-context-card:hover,
 .sidebar-context-card:focus-visible {
   border-color: rgba(88, 209, 181, 0.55);
   background: #11171d;
   outline: none;
+}
+
+.sidebar-context-picker[open] .sidebar-context-card {
+  border-color: rgba(88, 209, 181, 0.55);
+  cursor: text;
+}
+
+.sidebar-context-search {
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #e8edf2;
+  font: inherit;
+}
+
+.sidebar-context-search::placeholder {
+  color: #82909e;
+  opacity: 1;
+}
+
+.sidebar-context-chevron {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2;
+  transition: transform 0.14s ease;
+}
+
+.sidebar-context-picker[open] .sidebar-context-chevron {
+  transform: rotate(180deg);
+}
+
+.sidebar-context-options {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  max-height: min(320px, 50vh);
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #11171d;
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+}
+
+.sidebar-context-options button {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #cfe6ff;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-context-options button:hover,
+.sidebar-context-options button:focus-visible,
+.sidebar-context-options button.keyboard-active {
+  background: rgba(88, 209, 181, 0.12);
+  color: #ffffff;
+  outline: none;
+}
+
+.sidebar-context-option-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-context-options button.current {
+  background: rgba(88, 209, 181, 0.08);
+}
+
+.sidebar-context-options .sidebar-context-current {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: #58d1b5;
+  font-size: 0.72rem;
+}
+
+.sidebar-context-options-empty {
+  display: block;
+  padding: 8px;
+  color: #82909e;
+  font-size: 0.82rem;
 }
 
 .sidebar-context-name {

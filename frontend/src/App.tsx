@@ -1357,6 +1357,11 @@ export function App() {
   const [contextDisplayMode, setContextDisplayMode] = useState<ContextDisplayMode>("list");
   const [pendingContext, setPendingContext] = useState("");
   const [selectedContext, setSelectedContext] = useState<string>("");
+  const [sidebarContextOpen, setSidebarContextOpen] = useState(false);
+  const [sidebarContextSearch, setSidebarContextSearch] = useState("");
+  const [sidebarContextActiveIndex, setSidebarContextActiveIndex] = useState(0);
+  const sidebarContextPickerRef = useRef<HTMLDetailsElement>(null);
+  const sidebarContextSearchRef = useRef<HTMLInputElement>(null);
   const selectedContextRef = useRef(selectedContext);
   const setSelectedContextAndRef = (value: string) => {
     selectedContextRef.current = value;
@@ -3636,6 +3641,21 @@ export function App() {
       )
     );
   }, [kubeconfig, kubeconfigSearch]);
+  const sidebarContextOptions = useMemo(() => {
+    if (!kubeconfig) return [];
+    const query = sidebarContextSearch.trim().toLocaleLowerCase();
+    const current = kubeconfig.contexts.find((context) => context.name === selectedContext);
+    const matches = kubeconfig.contexts.filter((context) =>
+      context.name !== selectedContext
+      && (!query || context.name.toLocaleLowerCase().includes(query))
+    );
+    return current ? [current, ...matches] : matches;
+  }, [kubeconfig, selectedContext, sidebarContextSearch]);
+  const sidebarContextHasSearchMatch = useMemo(() => {
+    const query = sidebarContextSearch.trim().toLocaleLowerCase();
+    if (!query) return true;
+    return sidebarContextOptions.some((context) => context.name.toLocaleLowerCase().includes(query));
+  }, [sidebarContextOptions, sidebarContextSearch]);
   const switchContext = (context: string) => {
     if (!context) return;
     void cancelKubectl();
@@ -3804,22 +3824,84 @@ export function App() {
                         <path d="M19 12H5M11 6l-6 6 6 6" />
                       </svg>
                     </button>
-                    <button
-                      type="button"
-                      className="sidebar-context-card"
-                      onClick={() => setActiveView("contexts")}
-                      title="Choose context"
+                    <details
+                      ref={sidebarContextPickerRef}
+                      className="sidebar-context-picker"
+                      onToggle={(event) => {
+                        const open = event.currentTarget.open;
+                        setSidebarContextOpen(open);
+                        setSidebarContextSearch("");
+                        setSidebarContextActiveIndex(0);
+                        if (open) requestAnimationFrame(() => sidebarContextSearchRef.current?.focus());
+                      }}
                     >
-                      <span className="sidebar-context-name">
-                        <span className="sidebar-context-cluster-icon" aria-hidden="true">
-                          <svg viewBox="0 0 24 24">
-                            <circle cx="12" cy="12" r="10" />
-                            <path d="M12 4v16M5.1 8l13.8 8M18.9 8 5.1 16M8 6.4l8 11.2M16 6.4 8 17.6" />
-                          </svg>
+                      <summary className="sidebar-context-card" title="Switch context">
+                        <span className="sidebar-context-name">
+                          <span className="sidebar-context-cluster-icon" aria-hidden="true">
+                            <svg viewBox="0 0 24 24">
+                              <circle cx="12" cy="12" r="10" />
+                              <path d="M12 4v16M5.1 8l13.8 8M18.9 8 5.1 16M8 6.4l8 11.2M16 6.4 8 17.6" />
+                            </svg>
+                          </span>
+                          {sidebarContextOpen ? (
+                            <input
+                              ref={sidebarContextSearchRef}
+                              className="sidebar-context-search"
+                              type="search"
+                              role="combobox"
+                              aria-label="Search contexts"
+                              aria-expanded="true"
+                              aria-controls="sidebar-context-options"
+                              aria-activedescendant={sidebarContextOptions[sidebarContextActiveIndex] ? "sidebar-context-option-" + sidebarContextActiveIndex : undefined}
+                              placeholder={selectedContext || "Search contexts"}
+                              value={sidebarContextSearch}
+                              onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                              onChange={(event) => { setSidebarContextSearch(event.target.value); setSidebarContextActiveIndex(0); }}
+                              onKeyDown={(event) => {
+                                if (event.key === "ArrowDown") { event.preventDefault(); setSidebarContextActiveIndex((index) => Math.min(index + 1, Math.max(0, sidebarContextOptions.length - 1))); }
+                                else if (event.key === "ArrowUp") { event.preventDefault(); setSidebarContextActiveIndex((index) => Math.max(index - 1, 0)); }
+                                else if (event.key === "Enter") { event.preventDefault(); const context = sidebarContextOptions[sidebarContextActiveIndex]; if (!context) return; if (context.name !== selectedContext) switchContext(context.name); sidebarContextPickerRef.current?.removeAttribute("open"); }
+                                else if (event.key === "Escape") { event.preventDefault(); sidebarContextPickerRef.current?.removeAttribute("open"); }
+                              }}
+                            />
+                          ) : (
+                            <span className="sidebar-context-label">{selectedContext || "No context"}</span>
+                          )}
                         </span>
-                        <span className="sidebar-context-label">{selectedContext || "No context"}</span>
-                      </span>
-                    </button>
+                        <svg className="sidebar-context-chevron" viewBox="0 0 24 24" aria-hidden="true">
+                          <path d="m7 9 5 5 5-5" />
+                        </svg>
+                      </summary>
+                      <div id="sidebar-context-options" className="sidebar-context-options" role="listbox" aria-label="Switch context">
+                        {sidebarContextOptions.map((context, index) => (
+                          <button
+                            id={"sidebar-context-option-" + index}
+                            type="button"
+                            role="option"
+                            aria-selected={context.name === selectedContext}
+                            key={context.name}
+                            title={context.name}
+                            className={[context.name === selectedContext ? "current" : "", index === sidebarContextActiveIndex ? "keyboard-active" : ""].filter(Boolean).join(" ")}
+                            onMouseEnter={() => setSidebarContextActiveIndex(index)}
+                            onClick={(event) => {
+                              if (context.name !== selectedContext) switchContext(context.name);
+                              event.currentTarget.closest("details")?.removeAttribute("open");
+                            }}
+                          >
+                            <span className="sidebar-context-cluster-icon" aria-hidden="true">
+                              <svg viewBox="0 0 24 24">
+                                <circle cx="12" cy="12" r="10" />
+                                <path d="M12 4v16M5.1 8l13.8 8M18.9 8 5.1 16M8 6.4l8 11.2M16 6.4 8 17.6" />
+                              </svg>
+                            </span>
+                            <span className="sidebar-context-option-name">{context.name}</span>
+                            {context.name === selectedContext && <span className="sidebar-context-current">Current</span>}
+                          </button>
+                        ))}
+                        {kubeconfig && !sidebarContextHasSearchMatch && <span className="sidebar-context-options-empty">No matching contexts</span>}
+                        {kubeconfig && kubeconfig.contexts.length === 0 && <span className="sidebar-context-options-empty">No contexts</span>}
+                      </div>
+                    </details>
                   </div>
                   <input
                     className="resource-catalog-search"
