@@ -3788,28 +3788,35 @@ export function App() {
                       </svg>
                     </button>
                   </div>
-                  <button
-                    type="button"
-                    className="sidebar-context-card"
-                    onClick={() => setActiveView("contexts")}
-                    title="Back to contexts"
-                  >
-                    <span className="sidebar-context-home">
+                  <div className="sidebar-context-row">
+                    <button
+                      type="button"
+                      className="sidebar-context-back"
+                      onClick={() => setActiveView("contexts")}
+                      aria-label="Back to contexts"
+                      title="Back to contexts"
+                    >
                       <svg viewBox="0 0 24 24" aria-hidden="true">
                         <path d="M19 12H5M11 6l-6 6 6 6" />
                       </svg>
-                      <span>Back</span>
-                    </span>
-                    <span className="sidebar-context-name">
-                      <span className="sidebar-context-cluster-icon" aria-hidden="true">
-                        <svg viewBox="0 0 24 24">
-                          <circle cx="12" cy="12" r="10" />
-                          <path d="M12 4v16M5.1 8l13.8 8M18.9 8 5.1 16M8 6.4l8 11.2M16 6.4 8 17.6" />
-                        </svg>
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-context-card"
+                      onClick={() => setActiveView("contexts")}
+                      title="Choose context"
+                    >
+                      <span className="sidebar-context-name">
+                        <span className="sidebar-context-cluster-icon" aria-hidden="true">
+                          <svg viewBox="0 0 24 24">
+                            <circle cx="12" cy="12" r="10" />
+                            <path d="M12 4v16M5.1 8l13.8 8M18.9 8 5.1 16M8 6.4l8 11.2M16 6.4 8 17.6" />
+                          </svg>
+                        </span>
+                        <span className="sidebar-context-label">{selectedContext || "No context"}</span>
                       </span>
-                      <span className="sidebar-context-label">{selectedContext || "No context"}</span>
-                    </span>
-                  </button>
+                    </button>
+                  </div>
                   <input
                     className="resource-catalog-search"
                     type="search"
