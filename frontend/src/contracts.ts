@@ -57,6 +57,7 @@ export interface KubeconfigListRequest {
 export interface KubeconfigContext {
   name: string;
   cluster: string;
+  clusterServer: string | null;
   user: string | null;
   isCurrent: boolean;
   sourcePath: string | null;

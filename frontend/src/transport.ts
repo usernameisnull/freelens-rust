@@ -402,6 +402,7 @@ class MockTransport implements Transport {
         {
           name: "mock-dev",
           cluster: "mock-dev-cluster",
+          clusterServer: "https://127.0.0.1:6443",
           user: "mock-dev-user",
           isCurrent: true,
           sourcePath: "mock-kubeconfig",
@@ -409,6 +410,7 @@ class MockTransport implements Transport {
         {
           name: "mock-prod",
           cluster: "mock-prod-cluster",
+          clusterServer: "https://10.0.0.42:6443",
           user: "mock-prod-user",
           isCurrent: false,
           sourcePath: "mock-kubeconfig",

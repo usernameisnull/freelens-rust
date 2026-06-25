@@ -96,6 +96,7 @@ pub struct KubeconfigListRequest {
 pub struct KubeconfigContext {
     pub name: String,
     pub cluster: String,
+    pub cluster_server: Option<String>,
     pub user: Option<String>,
     pub is_current: bool,
     pub source_path: Option<String>,
@@ -898,6 +899,7 @@ mod tests {
             contexts: vec![KubeconfigContext {
                 name: "dev".into(),
                 cluster: "dev-cluster".into(),
+                cluster_server: Some("https://10.0.0.1:6443".into()),
                 user: Some("dev-user".into()),
                 is_current: true,
                 source_path: Some("config".into()),
@@ -915,6 +917,10 @@ mod tests {
         assert_eq!(json["currentContext"], "dev");
         assert_eq!(json["requestId"], "r2");
         assert_eq!(json["contexts"][0]["isCurrent"], true);
+        assert_eq!(
+            json["contexts"][0]["clusterServer"],
+            "https://10.0.0.1:6443"
+        );
         assert_eq!(json["contexts"][0]["user"], "dev-user");
         assert_eq!(json["sources"][0]["contextCount"], 1);
         assert_eq!(json["duplicateContexts"][0], "dev");

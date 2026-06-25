@@ -256,6 +256,7 @@ fn kubeconfig_list(
             .map(|ctx| freelens_ipc::KubeconfigContext {
                 name: ctx.name,
                 cluster: ctx.cluster,
+                cluster_server: ctx.cluster_server,
                 user: ctx.user,
                 is_current: ctx.is_current,
                 source_path: ctx.source_path,

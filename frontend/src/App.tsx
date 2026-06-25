@@ -1275,6 +1275,17 @@ function formatMemory(value: number | null | undefined): string {
   return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
 }
 
+function formatClusterEndpoint(server: string | null | undefined): string | null {
+  if (!server) return null;
+  try {
+    const url = new URL(server);
+    if (url.hostname) return url.port ? `${url.hostname}:${url.port}` : url.hostname;
+  } catch {
+    // Some kubeconfig variants store host:port without a URL scheme.
+  }
+  return server.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/.*$/, "") || server;
+}
+
 type RefreshControlProps = {
   refreshSeconds: number;
   onRefreshSecondsChange: (value: number) => void;
@@ -3624,9 +3635,13 @@ export function App() {
     if (!kubeconfig) return [];
     if (!query) return kubeconfig.contexts;
     return kubeconfig.contexts.filter((ctx) =>
-      [ctx.name, ctx.cluster, ctx.user ?? ""].some((value) =>
-        value.toLocaleLowerCase().includes(query)
-      )
+      [
+        ctx.name,
+        ctx.cluster,
+        ctx.clusterServer ?? "",
+        formatClusterEndpoint(ctx.clusterServer) ?? "",
+        ctx.user ?? "",
+      ].some((value) => value.toLocaleLowerCase().includes(query))
     );
   }, [kubeconfig, kubeconfigSearch]);
   const sidebarContextOptions = useMemo(() => {
@@ -4158,22 +4173,30 @@ export function App() {
               </div>
 
               <div className={`context-results context-results-${contextDisplayMode}`}>
-                {filteredKubeconfigContexts.map((ctx) => (
-                  <button
-                    key={ctx.name}
-                    type="button"
-                    className={`context-result ${pendingContext === ctx.name ? "active" : ""}`}
-                    onClick={() => setPendingContext(ctx.name)}
-                    onDoubleClick={() => {
-                      switchContext(ctx.name);
-                      setActiveView("overview");
-                    }}
-                  >
-                    <span className="context-result-icon">K8s</span>
-                    <span className="context-result-name">{ctx.name}</span>
-                    <span className="context-result-cluster">{ctx.cluster}</span>
-                  </button>
-                ))}
+                {filteredKubeconfigContexts.map((ctx) => {
+                  const clusterEndpoint = formatClusterEndpoint(ctx.clusterServer);
+                  return (
+                    <button
+                      key={ctx.name}
+                      type="button"
+                      className={`context-result ${pendingContext === ctx.name ? "active" : ""}`}
+                      onClick={() => setPendingContext(ctx.name)}
+                      onDoubleClick={() => {
+                        switchContext(ctx.name);
+                        setActiveView("overview");
+                      }}
+                    >
+                      <span className="context-result-icon">K8s</span>
+                      <span className="context-result-name">{ctx.name}</span>
+                      <span
+                        className="context-result-cluster"
+                        title={ctx.clusterServer ? `${ctx.cluster} (${ctx.clusterServer})` : ctx.cluster}
+                      >
+                        {clusterEndpoint ?? ctx.cluster}
+                      </span>
+                    </button>
+                  );
+                })}
                 {kubeconfig && filteredKubeconfigContexts.length === 0 && (
                   <p className="empty-state">No matching contexts.</p>
                 )}

@@ -101,6 +101,7 @@ pub struct KubeconfigSummary {
 pub struct ContextItem {
     pub name: String,
     pub cluster: String,
+    pub cluster_server: Option<String>,
     pub user: Option<String>,
     pub is_current: bool,
     pub source_path: Option<String>,
@@ -128,12 +129,19 @@ pub fn load_kubeconfig(path_or_env: Option<String>) -> Result<Kubeconfig, Kubeco
 pub fn list_contexts(path_or_env: Option<String>) -> Result<KubeconfigSummary, KubeconfigError> {
     let paths = resolve_paths(path_or_env)?;
     let config = load_kubeconfig_files(&paths, default_kubeconfig_path())?;
-    let (context_sources, duplicate_contexts) = context_source_paths_for_files(&paths)?;
+    let (context_sources, context_cluster_servers, duplicate_contexts) =
+        context_source_paths_for_files(&paths)?;
     let sources = paths
         .iter()
         .map(|path| summarize_file_source(path))
         .collect::<Result<Vec<_>, _>>()?;
-    summarize_contexts(config, sources, context_sources, duplicate_contexts)
+    summarize_contexts(
+        config,
+        sources,
+        context_sources,
+        context_cluster_servers,
+        duplicate_contexts,
+    )
 }
 
 /// List contexts from user-selected kubeconfig files or directories.
@@ -147,6 +155,7 @@ pub fn list_contexts_from_sources(
     let mut merged = Kubeconfig::default();
     let mut summaries = Vec::new();
     let mut context_sources = HashMap::new();
+    let mut context_cluster_servers = HashMap::new();
     let mut duplicate_contexts = Vec::new();
     let mut saw_file = false;
 
@@ -170,6 +179,7 @@ pub fn list_contexts_from_sources(
                 };
                 collect_context_source_paths(
                     &mut context_sources,
+                    &mut context_cluster_servers,
                     &mut duplicate_contexts,
                     &file_path,
                     &file,
@@ -184,6 +194,7 @@ pub fn list_contexts_from_sources(
             let file = load_single_file(&path)?;
             collect_context_source_paths(
                 &mut context_sources,
+                &mut context_cluster_servers,
                 &mut duplicate_contexts,
                 &path,
                 &file,
@@ -209,7 +220,13 @@ pub fn list_contexts_from_sources(
         });
     }
 
-    summarize_contexts(merged, summaries, context_sources, duplicate_contexts)
+    summarize_contexts(
+        merged,
+        summaries,
+        context_sources,
+        context_cluster_servers,
+        duplicate_contexts,
+    )
 }
 
 pub fn resolve_kubeconfig_files_from_sources(
@@ -283,6 +300,7 @@ fn summarize_contexts(
     config: Kubeconfig,
     sources: Vec<KubeconfigSourceSummary>,
     context_sources: HashMap<String, String>,
+    context_cluster_servers: HashMap<String, Option<String>>,
     duplicate_contexts: Vec<String>,
 ) -> Result<KubeconfigSummary, KubeconfigError> {
     let current = config.current_context.clone();
@@ -292,10 +310,12 @@ fn summarize_contexts(
         .into_iter()
         .map(|named| {
             let source_path = context_sources.get(&named.name).cloned();
+            let cluster_server = context_cluster_servers.get(&named.name).cloned().flatten();
             ContextItem {
                 is_current: current.as_ref() == Some(&named.name),
                 name: named.name,
                 cluster: named.context.cluster,
+                cluster_server,
                 user: named.context.user,
                 source_path,
             }
@@ -341,32 +361,58 @@ fn summarize_file_source(path: &Path) -> Result<KubeconfigSourceSummary, Kubecon
 
 fn context_source_paths_for_files(
     paths: &[PathBuf],
-) -> Result<(HashMap<String, String>, Vec<String>), KubeconfigError> {
+) -> Result<
+    (
+        HashMap<String, String>,
+        HashMap<String, Option<String>>,
+        Vec<String>,
+    ),
+    KubeconfigError,
+> {
     let mut context_sources = HashMap::new();
+    let mut context_cluster_servers = HashMap::new();
     let mut duplicate_contexts = Vec::new();
     for path in paths {
         let file = load_single_file(path)?;
-        collect_context_source_paths(&mut context_sources, &mut duplicate_contexts, path, &file);
+        collect_context_source_paths(
+            &mut context_sources,
+            &mut context_cluster_servers,
+            &mut duplicate_contexts,
+            path,
+            &file,
+        );
     }
-    Ok((context_sources, duplicate_contexts))
+    Ok((context_sources, context_cluster_servers, duplicate_contexts))
 }
 
 fn collect_context_source_paths(
     context_sources: &mut HashMap<String, String>,
+    context_cluster_servers: &mut HashMap<String, Option<String>>,
     duplicate_contexts: &mut Vec<String>,
     path: &Path,
     file: &Kubeconfig,
 ) {
     let source_path = path.to_string_lossy().into_owned();
+    let cluster_servers = file
+        .clusters
+        .iter()
+        .map(|named| (named.name.as_str(), named.cluster.server.clone()))
+        .collect::<HashMap<_, _>>();
     for named in &file.contexts {
         if context_sources.contains_key(&named.name) {
             duplicate_contexts.push(named.name.clone());
         } else {
             context_sources.insert(named.name.clone(), source_path.clone());
+            context_cluster_servers.insert(
+                named.name.clone(),
+                cluster_servers
+                    .get(named.context.cluster.as_str())
+                    .cloned()
+                    .flatten(),
+            );
         }
     }
 }
-
 fn collect_directory_files(path: &Path) -> Result<Vec<PathBuf>, KubeconfigError> {
     let mut result = Vec::new();
     collect_directory_files_inner(path, &mut result)?;
@@ -603,6 +649,63 @@ users: []
         assert!(!summary.contexts[1].is_current);
     }
 
+    #[test]
+    fn contexts_use_cluster_server_from_their_source_file() {
+        let first = write_temp(
+            r#"
+apiVersion: v1
+kind: Config
+contexts:
+  - name: first
+    context:
+      cluster: kubernetes
+      user: first-user
+clusters:
+  - name: kubernetes
+    cluster:
+      server: https://10.0.0.1:6443
+"#,
+        );
+        let second = write_temp(
+            r#"
+apiVersion: v1
+kind: Config
+contexts:
+  - name: second
+    context:
+      cluster: kubernetes
+      user: second-user
+clusters:
+  - name: kubernetes
+    cluster:
+      server: https://10.0.0.2:6443
+"#,
+        );
+
+        let env_value = format!(
+            "{}{}{}",
+            first.path().to_string_lossy(),
+            path_separator(),
+            second.path().to_string_lossy()
+        );
+
+        let summary = list_contexts(Some(env_value)).unwrap();
+        let first_context = summary.contexts.iter().find(|c| c.name == "first").unwrap();
+        let second_context = summary
+            .contexts
+            .iter()
+            .find(|c| c.name == "second")
+            .unwrap();
+
+        assert_eq!(
+            first_context.cluster_server,
+            Some("https://10.0.0.1:6443".into())
+        );
+        assert_eq!(
+            second_context.cluster_server,
+            Some("https://10.0.0.2:6443".into())
+        );
+    }
     #[test]
     fn multi_file_merge_keeps_first_wins() {
         let first = write_temp(
