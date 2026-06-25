@@ -1544,6 +1544,7 @@ pub async fn get_resource_yaml(
         )));
     }
 
+    let namespace = namespace.filter(|_| caps.scope == kube::discovery::Scope::Namespaced);
     let url = <DynamicObject as kube::Resource>::url_path(&ar, namespace);
     let http_req = kube::core::Request::new(url)
         .get(name, &kube::api::GetParams::default())
