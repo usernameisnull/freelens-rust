@@ -979,16 +979,19 @@ function YamlStructurePanel({
   outline,
   activePath,
   onJump,
+  resetKey,
 }: {
   outline: YamlOutlineNode[];
   activePath: string;
   onJump: (lineNumber: number) => void;
+  resetKey: unknown;
 }) {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
     setCollapsed(new Set(flattenYamlOutline(outline).filter((node) => node.children.length > 0).map((node) => node.id)));
-  }, [outline]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetKey]);
 
   useEffect(() => {
     if (!activePath) return;
@@ -2865,7 +2868,7 @@ export function App() {
 
   useEffect(() => {
     setYamlCursorLine(1);
-  }, [displayedYamlDraft]);
+  }, [detail]);
 
   useEffect(() => {
     if (!detail || detailTab !== "yaml") return;
@@ -4773,7 +4776,7 @@ export function App() {
                         aria-orientation="vertical"
                         onPointerDown={startYamlStructureResize}
                       />
-                      <YamlStructurePanel outline={yamlOutline} activePath={yamlActivePath} onJump={jumpToYamlLine} />
+                      <YamlStructurePanel outline={yamlOutline} activePath={yamlActivePath} onJump={jumpToYamlLine} resetKey={detail?.yaml} />
                     </div>
                     <div className="editor-actions">
                       <div className="editor-actions-left">

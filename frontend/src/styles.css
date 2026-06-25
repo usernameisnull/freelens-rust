@@ -2399,6 +2399,7 @@ body.resizing-panel .yaml-structure-resizer {
 .yaml-breadcrumb button:hover {
   color: #58d1b5;
 }
+
 .yaml-code-editor {
   flex: 1;
   min-height: 0;
