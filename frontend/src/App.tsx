@@ -705,6 +705,7 @@ class YamlSearchPanel implements Panel {
 interface YamlCodeEditorHandle {
   focus: () => void;
   openSearch: () => void;
+  goToLine: (lineNumber: number) => void;
 }
 
 function selectedIndentDecorations(view: EditorView): DecorationSet {
@@ -744,13 +745,20 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
   value: string;
   editable: boolean;
   onChange: (value: string) => void;
-}>(function YamlCodeEditor({ value, editable, onChange }, ref) {
+  onCursorLineChange?: (lineNumber: number) => void;
+}>(function YamlCodeEditor({ value, editable, onChange, onCursorLineChange }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const editableCompartmentRef = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
+  const onCursorLineChangeRef = useRef(onCursorLineChange);
   const syncingValueRef = useRef(false);
   onChangeRef.current = onChange;
+  onCursorLineChangeRef.current = onCursorLineChange;
+
+  const emitCursorLine = useCallback((view: EditorView) => {
+    onCursorLineChangeRef.current?.(view.state.doc.lineAt(view.state.selection.main.head).number);
+  }, []);
 
   useImperativeHandle(ref, () => ({
     focus: () => viewRef.current?.focus(),
@@ -760,7 +768,18 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
       view.focus();
       openSearchPanel(view);
     },
-  }), []);
+    goToLine: (lineNumber: number) => {
+      const view = viewRef.current;
+      if (!view) return;
+      const line = view.state.doc.line(Math.min(Math.max(lineNumber, 1), view.state.doc.lines));
+      view.dispatch({
+        selection: { anchor: line.from },
+        scrollIntoView: true,
+      });
+      view.focus();
+      emitCursorLine(view);
+    },
+  }), [emitCursorLine]);
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -795,11 +814,15 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
             if (update.docChanged && !syncingValueRef.current) {
               onChangeRef.current(update.state.doc.toString());
             }
+            if (update.selectionSet || update.docChanged) {
+              emitCursorLine(update.view);
+            }
           }),
         ],
       }),
     });
     viewRef.current = view;
+    emitCursorLine(view);
     return () => {
       view.destroy();
       viewRef.current = null;
@@ -824,11 +847,211 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
     syncingValueRef.current = true;
     view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
     syncingValueRef.current = false;
-  }, [value]);
+    emitCursorLine(view);
+  }, [value, emitCursorLine]);
 
   return <div className="yaml-code-editor" ref={hostRef} />;
 });
 
+interface YamlOutlineNode {
+  id: string;
+  label: string;
+  lineNumber: number;
+  indent: number;
+  path: string[];
+  idPath: string[];
+  isListItem: boolean;
+  isBlockParent: boolean;
+  children: YamlOutlineNode[];
+}
+
+function yamlOutlineLabel(line: YamlParsedLine): string | undefined {
+  if (line.hasMapping && line.key) return line.isListItem ? `- ${line.key}` : line.key;
+  if (line.isListItem && line.body) return "-";
+  return undefined;
+}
+
+function parseYamlOutline(yaml: string): YamlOutlineNode[] {
+  const lines = yaml.split("\n").map(parseYamlLine);
+  annotateLiteral(lines);
+  const roots: YamlOutlineNode[] = [];
+  const stack: YamlOutlineNode[] = [];
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+    if (line.isBlank || line.isComment || line.literal) continue;
+    const label = yamlOutlineLabel(line);
+    if (!label) continue;
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      const sameIndentListChild = line.isListItem && top.isBlockParent && top.indent === line.indent;
+      if (sameIndentListChild || top.indent < line.indent) break;
+      stack.pop();
+    }
+    const parent = stack[stack.length - 1];
+    const id = `${index + 1}:${line.indent}:${label}`;
+    const node: YamlOutlineNode = {
+      id,
+      label,
+      lineNumber: index + 1,
+      indent: line.indent,
+      path: [...(parent?.path ?? []), label],
+      idPath: [...(parent?.idPath ?? []), id],
+      isListItem: line.isListItem,
+      isBlockParent: line.hasMapping && (!line.value || line.value === ""),
+      children: [],
+    };
+    if (parent) parent.children.push(node);
+    else roots.push(node);
+    stack.push(node);
+  }
+  return roots;
+}
+
+function flattenYamlOutline(nodes: YamlOutlineNode[]): YamlOutlineNode[] {
+  return nodes.flatMap((node) => [node, ...flattenYamlOutline(node.children)]);
+}
+
+function yamlPathForLine(outline: YamlOutlineNode[], lineNumber: number): YamlOutlineNode[] {
+  const allNodes = flattenYamlOutline(outline);
+  const candidate = [...allNodes].reverse().find((node) => node.lineNumber <= lineNumber);
+  if (!candidate) return [];
+  const byId = new Map(allNodes.map((node) => [node.id, node]));
+  return candidate.idPath.map((id) => byId.get(id)).filter((node): node is YamlOutlineNode => Boolean(node));
+}
+
+function YamlStructureNode({
+  node,
+  activePath,
+  collapsed,
+  onToggle,
+  onJump,
+}: {
+  node: YamlOutlineNode;
+  activePath: string;
+  collapsed: Set<string>;
+  onToggle: (nodeId: string) => void;
+  onJump: (lineNumber: number) => void;
+}) {
+  const nodePath = JSON.stringify(node.idPath);
+  const hasChildren = node.children.length > 0;
+  const isCollapsed = collapsed.has(node.id);
+  return (
+    <li>
+      <div className={`yaml-structure-row${nodePath === activePath ? " active" : ""}`} style={{ paddingLeft: `${8 + (node.path.length - 1) * 14}px` }}>
+        <button
+          type="button"
+          className="yaml-structure-toggle"
+          onClick={() => hasChildren && onToggle(node.id)}
+          disabled={!hasChildren}
+          aria-label={hasChildren ? (isCollapsed ? "Expand node" : "Collapse node") : undefined}
+          aria-expanded={hasChildren ? !isCollapsed : undefined}
+        >
+          {hasChildren ? (isCollapsed ? "▸" : "▾") : ""}
+        </button>
+        <button
+          type="button"
+          className="yaml-structure-label"
+          onClick={() => onJump(node.lineNumber)}
+          title={`Line ${node.lineNumber}`}
+        >
+          {node.label}
+        </button>
+      </div>
+      {hasChildren && !isCollapsed && (
+        <ul>
+          {node.children.map((child) => (
+            <YamlStructureNode
+              key={child.id}
+              node={child}
+              activePath={activePath}
+              collapsed={collapsed}
+              onToggle={onToggle}
+              onJump={onJump}
+            />
+          ))}
+        </ul>
+      )}
+    </li>
+  );
+}
+
+function YamlStructurePanel({
+  outline,
+  activePath,
+  onJump,
+}: {
+  outline: YamlOutlineNode[];
+  activePath: string;
+  onJump: (lineNumber: number) => void;
+}) {
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setCollapsed(new Set(flattenYamlOutline(outline).filter((node) => node.children.length > 0).map((node) => node.id)));
+  }, [outline]);
+
+  useEffect(() => {
+    if (!activePath) return;
+    try {
+      const activeIds = JSON.parse(activePath) as string[];
+      const ancestorIds = activeIds.slice(0, -1);
+      if (ancestorIds.length === 0) return;
+      setCollapsed((current) => {
+        const next = new Set(current);
+        ancestorIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    } catch {
+      // Ignore malformed active paths; they are derived locally and should not fail rendering.
+    }
+  }, [activePath]);
+
+  const toggle = useCallback((nodeId: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return next;
+    });
+  }, []);
+
+  return (
+    <aside className="yaml-structure-panel" aria-label="YAML structure">
+      <div className="yaml-structure-heading">Structure</div>
+      {outline.length === 0 ? (
+        <p>No YAML structure</p>
+      ) : (
+        <ul>
+          {outline.map((node) => (
+            <YamlStructureNode
+              key={node.id}
+              node={node}
+              activePath={activePath}
+              collapsed={collapsed}
+              onToggle={toggle}
+              onJump={onJump}
+            />
+          ))}
+        </ul>
+      )}
+    </aside>
+  );
+}
+
+function YamlBreadcrumb({ path, activeLine, onJump }: { path: YamlOutlineNode[]; activeLine: number; onJump: (lineNumber: number) => void }) {
+  return (
+    <div className="yaml-breadcrumb" aria-label="YAML cursor path">
+      <span>Line {activeLine}</span>
+      {path.length === 0 ? (
+        <span>Document</span>
+      ) : path.map((node) => (
+        <button key={node.id} type="button" onClick={() => onJump(node.lineNumber)} title={`Line ${node.lineNumber}`}>
+          {node.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 function renderYamlLineContent(line: YamlParsedLine): ReactNode {
   if (line.isBlank) return null;
   if (line.isComment) return <span className="yaml-comment">{line.text}</span>;
@@ -1452,6 +1675,8 @@ export function App() {
   const [yamlEditing, setYamlEditing] = useState(false);
   const [yamlShowManagedFields, setShowYamlManagedFields] = useState(false);
   const [yamlCopyHint, setYamlCopyHint] = useState<string>();
+  const [yamlCursorLine, setYamlCursorLine] = useState(1);
+  const [yamlStructureWidth, setYamlStructureWidth] = useState(300);
   const yamlCopyHintTimer = useRef<number | undefined>(undefined);
   const yamlEditorRef = useRef<YamlCodeEditorHandle | null>(null);
   const [metadataCopyHint, setMetadataCopyHint] = useState<string>();
@@ -2613,6 +2838,34 @@ export function App() {
 
   const displayedYamlDraft = yamlForManagedFieldsPreference(yamlDraft, yamlShowManagedFields);
   const displayedDetailYaml = detail ? yamlForManagedFieldsPreference(detail.yaml, yamlShowManagedFields) : "";
+  const yamlOutline = useMemo(() => parseYamlOutline(displayedYamlDraft), [displayedYamlDraft]);
+  const yamlBreadcrumbPath = useMemo(() => yamlPathForLine(yamlOutline, yamlCursorLine), [yamlOutline, yamlCursorLine]);
+  const yamlActivePath = yamlBreadcrumbPath.at(-1) ? JSON.stringify(yamlBreadcrumbPath.at(-1)?.idPath) : "";
+  const jumpToYamlLine = useCallback((lineNumber: number) => {
+    setYamlCursorLine(lineNumber);
+    yamlEditorRef.current?.goToLine(lineNumber);
+  }, []);
+  const startYamlStructureResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const workspace = event.currentTarget.parentElement;
+    if (!workspace) return;
+    event.preventDefault();
+    const bounds = workspace.getBoundingClientRect();
+    const resize = (moveEvent: PointerEvent) => {
+      setYamlStructureWidth(Math.min(520, Math.max(220, bounds.right - moveEvent.clientX)));
+    };
+    const stop = () => {
+      window.removeEventListener("pointermove", resize);
+      window.removeEventListener("pointerup", stop);
+      document.body.classList.remove("resizing-panel");
+    };
+    document.body.classList.add("resizing-panel");
+    window.addEventListener("pointermove", resize);
+    window.addEventListener("pointerup", stop);
+  }, []);
+
+  useEffect(() => {
+    setYamlCursorLine(1);
+  }, [displayedYamlDraft]);
 
   useEffect(() => {
     if (!detail || detailTab !== "yaml") return;
@@ -4492,21 +4745,36 @@ export function App() {
                         <button type="button" onClick={toggleYamlEditing}>Edit</button>
                       )}
                     </div>
-                    {yamlEditing ? (
-                      <YamlCodeEditor
-                        ref={yamlEditorRef}
-                        value={displayedYamlDraft}
-                        editable
-                        onChange={setYamlDraft}
+                    <div className="yaml-workspace" style={{ gridTemplateColumns: `minmax(0, 1fr) 7px ${yamlStructureWidth}px` }}>
+                      <div className="yaml-main-pane">
+                        {yamlEditing ? (
+                          <YamlCodeEditor
+                            ref={yamlEditorRef}
+                            value={displayedYamlDraft}
+                            editable
+                            onChange={setYamlDraft}
+                            onCursorLineChange={setYamlCursorLine}
+                          />
+                        ) : (
+                          <YamlCodeEditor
+                            ref={yamlEditorRef}
+                            value={displayedYamlDraft}
+                            editable={false}
+                            onChange={() => undefined}
+                            onCursorLineChange={setYamlCursorLine}
+                          />
+                        )}
+                        <YamlBreadcrumb path={yamlBreadcrumbPath} activeLine={yamlCursorLine} onJump={jumpToYamlLine} />
+                      </div>
+                      <div
+                        className="yaml-structure-resizer"
+                        role="separator"
+                        aria-label="Resize YAML structure"
+                        aria-orientation="vertical"
+                        onPointerDown={startYamlStructureResize}
                       />
-                    ) : (
-                      <YamlCodeEditor
-                        ref={yamlEditorRef}
-                        value={displayedYamlDraft}
-                        editable={false}
-                        onChange={() => undefined}
-                      />
-                    )}
+                      <YamlStructurePanel outline={yamlOutline} activePath={yamlActivePath} onJump={jumpToYamlLine} />
+                    </div>
                     <div className="editor-actions">
                       <div className="editor-actions-left">
                         <button onClick={() => void copyYaml()}>
