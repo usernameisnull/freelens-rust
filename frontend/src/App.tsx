@@ -773,22 +773,11 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
       if (!view) return;
       const line = view.state.doc.line(Math.min(Math.max(lineNumber, 1), view.state.doc.lines));
       const target = line.from;
-      view.focus();
       view.dispatch({
         selection: { anchor: target },
-        effects: EditorView.scrollIntoView(target, { y: "nearest", x: "nearest" }),
+        effects: EditorView.scrollIntoView(target, { y: "center", x: "nearest" }),
       });
-      view.requestMeasure({
-        read: () => {
-          const lineCoords = view.coordsAtPos(target);
-          if (!lineCoords) return undefined;
-          const scrollCoords = view.scrollDOM.getBoundingClientRect();
-          return ((lineCoords.top + lineCoords.bottom) / 2) - (scrollCoords.top + scrollCoords.height / 2);
-        },
-        write: (delta) => {
-          if (delta !== undefined) view.scrollDOM.scrollTop += delta;
-        },
-      });
+      view.focus();
       emitCursorLine(view);
     },
   }), [emitCursorLine]);
