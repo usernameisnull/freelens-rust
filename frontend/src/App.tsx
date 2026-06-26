@@ -1695,13 +1695,14 @@ const RESOURCE_SHORT_NAMES: Record<string, string> = {
   ControllerRevision: "ctrlrev",
 };
 
-function resourceShortName(kind: string): string | undefined {
-  return RESOURCE_SHORT_NAMES[kind];
+function resourceShortName(resource: ResourceKindItem): string | undefined {
+  if (resource.group !== "" && !BUILTIN_API_GROUPS.has(resource.group)) return undefined;
+  return RESOURCE_SHORT_NAMES[resource.kind];
 }
 
-function resourceKindLabelWithShortName(kind: string): string {
-  const label = resourceKindLabel(kind);
-  const shortName = resourceShortName(kind);
+function resourceKindLabelWithShortName(resource: ResourceKindItem): string {
+  const label = resourceKindLabel(resource.kind);
+  const shortName = resourceShortName(resource);
   return shortName ? `${label} (${shortName})` : label;
 }
 
@@ -4194,7 +4195,7 @@ export function App() {
       resource.plural,
       resource.group,
       resource.version,
-      resourceShortName(resource.kind),
+      resourceShortName(resource),
     ].some((value) => value ? value.toLowerCase().includes(query) : false);
     const coreKeys = new Set(FALLBACK_RESOURCE_KINDS.map(resourceKey));
     const coreGroups = RESOURCE_GROUPS.map((group) => ({
@@ -4261,7 +4262,7 @@ export function App() {
           resource.plural,
           resource.group,
           resource.version,
-          resourceShortName(resource.kind),
+          resourceShortName(resource),
         ];
         return values.some((value) => value ? value.toLowerCase().includes(query) : false) ? [resource] : [];
       });
@@ -4419,8 +4420,8 @@ export function App() {
           >
             <ResourceIcon kind={resource.kind} />
             <span>{groupLabel === "More Resources" && resource.group
-              ? `${resourceKindLabelWithShortName(resource.kind)} (${resource.group})`
-              : resourceKindLabelWithShortName(resource.kind)}</span>
+              ? `${resourceKindLabelWithShortName(resource)} (${resource.group})`
+              : resourceKindLabelWithShortName(resource)}</span>
           </button>
           <button
             type="button"
