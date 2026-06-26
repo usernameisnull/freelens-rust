@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "dev.freelens.prototype",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../../frontend run build",
+    "beforeBuildCommand": "npm run build",
     "frontendDist": "../../frontend/dist"
   },
   "app": {
