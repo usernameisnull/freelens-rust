@@ -2452,6 +2452,21 @@ body.resizing-panel .yaml-structure-resizer {
   background-size: 1ch 100%;
 }
 
+.yaml-code-editor .cm-structure-selected-line {
+  background: rgba(121, 168, 255, 0.08);
+}
+
+.yaml-code-editor .cm-structure-selected-key {
+  border-radius: 2px;
+  background: rgba(88, 209, 181, 0.34);
+  box-shadow: 0 0 0 1px rgba(88, 209, 181, 0.45);
+  color: #f4fbff;
+}
+
+.yaml-code-editor .cm-activeLine.cm-structure-selected-line {
+  background: rgba(121, 168, 255, 0.12);
+}
+
 .yaml-code-editor .cm-scroller {
   overflow: auto;
   font-family: inherit;

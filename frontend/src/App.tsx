@@ -748,15 +748,34 @@ const selectedIndentMarkers = ViewPlugin.fromClass(class {
   decorations: (plugin) => plugin.decorations,
 });
 
+function yamlStructureSelectionDecorations(state: EditorState, lineNumber?: number): DecorationSet {
+  if (!lineNumber || lineNumber < 1 || lineNumber > state.doc.lines) return Decoration.none;
+  const line = state.doc.line(lineNumber);
+  const decorations: Range<Decoration>[] = [
+    Decoration.line({ class: "cm-structure-selected-line" }).range(line.from),
+  ];
+  const keyMatch = /^(\s*(?:-\s*)?)([^:#\n][^:\n]*)(:)/.exec(line.text);
+  if (keyMatch) {
+    const keyStart = line.from + keyMatch[1].length;
+    const keyEnd = keyStart + keyMatch[2].trimEnd().length;
+    if (keyStart < keyEnd) {
+      decorations.push(Decoration.mark({ class: "cm-structure-selected-key" }).range(keyStart, keyEnd));
+    }
+  }
+  return Decoration.set(decorations, true);
+}
+
 const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
   value: string;
   editable: boolean;
+  selectedLineNumber?: number;
   onChange: (value: string) => void;
   onCursorLineChange?: (lineNumber: number) => void;
-}>(function YamlCodeEditor({ value, editable, onChange, onCursorLineChange }, ref) {
+}>(function YamlCodeEditor({ value, editable, selectedLineNumber, onChange, onCursorLineChange }, ref) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const editableCompartmentRef = useRef(new Compartment());
+  const structureSelectionCompartmentRef = useRef(new Compartment());
   const onChangeRef = useRef(onChange);
   const onCursorLineChangeRef = useRef(onCursorLineChange);
   const syncingValueRef = useRef(false);
@@ -792,6 +811,7 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
   useEffect(() => {
     if (!hostRef.current) return;
     const editableCompartment = editableCompartmentRef.current;
+    const structureSelectionCompartment = structureSelectionCompartmentRef.current;
     const view = new EditorView({
       parent: hostRef.current,
       state: EditorState.create({
@@ -809,6 +829,9 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
           search({ top: true, createPanel: (view) => new YamlSearchPanel(view) }),
           yamlLanguage(),
           selectedIndentMarkers,
+          structureSelectionCompartment.of(
+            EditorView.decorations.of((view) => yamlStructureSelectionDecorations(view.state, selectedLineNumber))
+          ),
           syntaxHighlighting(HighlightStyle.define([
             { tag: [tags.keyword, tags.propertyName, tags.typeName], color: "#58d1b5" },
             { tag: [tags.string, tags.number, tags.bool, tags.null], color: "#79a8ff" },
@@ -857,6 +880,16 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
     syncingValueRef.current = false;
     emitCursorLine(view);
   }, [value, emitCursorLine]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: structureSelectionCompartmentRef.current.reconfigure(
+        EditorView.decorations.of((currentView) => yamlStructureSelectionDecorations(currentView.state, selectedLineNumber))
+      ),
+    });
+  }, [selectedLineNumber]);
 
   return <div className="yaml-code-editor" ref={hostRef} />;
 });
@@ -4978,6 +5011,7 @@ export function App() {
                             ref={yamlEditorRef}
                             value={displayedYamlDraft}
                             editable
+                            selectedLineNumber={yamlCursorLine}
                             onChange={setYamlDraft}
                             onCursorLineChange={setYamlCursorLine}
                           />
@@ -4986,6 +5020,7 @@ export function App() {
                             ref={yamlEditorRef}
                             value={displayedYamlDraft}
                             editable={false}
+                            selectedLineNumber={yamlCursorLine}
                             onChange={() => undefined}
                             onCursorLineChange={setYamlCursorLine}
                           />
