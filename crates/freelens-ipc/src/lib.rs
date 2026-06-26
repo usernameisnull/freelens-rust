@@ -220,9 +220,21 @@ pub struct ResourceItem {
     pub namespace: Option<String>,
     pub uid: Option<String>,
     pub created: Option<String>,
+    #[serde(default)]
+    pub owner_references: Vec<OwnerReferenceItem>,
     pub columns: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_containers: Option<Vec<PodContainerSummary>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerReferenceItem {
+    pub api_version: String,
+    pub kind: String,
+    pub name: String,
+    pub uid: String,
+    pub controller: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -971,6 +983,13 @@ mod tests {
                 namespace: Some("default".into()),
                 uid: Some("uid-web".into()),
                 created: Some("2026-06-18T10:00:00Z".into()),
+                owner_references: vec![OwnerReferenceItem {
+                    api_version: "apps/v1".into(),
+                    kind: "ReplicaSet".into(),
+                    name: "web-765d".into(),
+                    uid: "uid-rs".into(),
+                    controller: Some(true),
+                }],
                 columns: BTreeMap::from([("status".into(), "Running".into())]),
                 pod_containers: Some(vec![PodContainerSummary {
                     name: "app".into(),
@@ -991,6 +1010,11 @@ mod tests {
         assert_eq!(json["requestId"], "r-resources");
         assert_eq!(json["items"][0]["apiVersion"], "v1");
         assert_eq!(json["items"][0]["podContainers"][0]["type"], "containers");
+        assert_eq!(
+            json["items"][0]["ownerReferences"][0]["apiVersion"],
+            "apps/v1"
+        );
+        assert_eq!(json["items"][0]["ownerReferences"][0]["kind"], "ReplicaSet");
         assert_eq!(json["items"][0]["podContainers"][0]["restartCount"], 1);
         assert_eq!(
             json["items"][0]["podContainers"][0]["state"]["running"]["startedAt"],

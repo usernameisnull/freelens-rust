@@ -745,7 +745,7 @@ body.resizing-panel {
   position: absolute;
   top: calc(100% + 4px);
   left: 0;
-  z-index: 40;
+  z-index: 80;
   width: 190px;
   max-height: 560px;
   overflow-y: auto;
@@ -1607,7 +1607,7 @@ button.dashboard-card:hover {
 }
 
 .resource-list td.actions.action-menu-open {
-  z-index: 40;
+  z-index: 80;
 }
 
 .resource-list tbody tr:hover td.actions {
@@ -3087,4 +3087,126 @@ body.resizing-panel .yaml-structure-resizer {
   .yaml-structure-panel {
     display: none;
   }
+}
+
+.controlled-by-cell {
+  min-width: 170px;
+  max-width: 260px;
+  overflow: visible !important;
+  position: relative;
+}
+
+.owner-chain-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.owner-chain {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 4px;
+}
+
+.owner-chain-link,
+.owner-chain-menu button {
+  border: 0;
+  background: none;
+  color: #00b8d4;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.owner-chain-link {
+  display: inline-flex;
+  align-items: baseline;
+  min-width: 0;
+  max-width: 220px;
+  gap: 5px;
+}
+
+.owner-chain-link:hover,
+.owner-chain-menu button:hover {
+  color: #42dce8;
+  text-decoration: underline;
+}
+
+.owner-chain-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner-chain-details {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.owner-chain-details summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 5px;
+  border: 1px solid #3a4650;
+  border-radius: 4px;
+  color: #aab5be;
+  cursor: pointer;
+  font-size: 0.72rem;
+  list-style: none;
+}
+
+.owner-chain-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.owner-chain-details[open] {
+  z-index: 30;
+}
+
+.owner-chain-details[open] summary {
+  border-color: #00b8d4;
+  color: #d7f7fb;
+}
+
+.owner-chain-menu {
+  position: absolute;
+  z-index: 31;
+  top: 22px;
+  right: 0;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 6px;
+  border: 1px solid #34404a;
+  border-radius: 6px;
+  background: #1e252b;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.36);
+}
+
+.owner-chain-menu button {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr) max-content;
+  width: 100%;
+  gap: 8px;
+  padding: 5px 7px;
+  border-radius: 4px;
+}
+
+.owner-chain-menu button span:nth-child(2) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner-chain-menu button:hover {
+  background: #27313a;
+  text-decoration: none;
 }

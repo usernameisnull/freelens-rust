@@ -563,6 +563,11 @@ class MockTransport implements Transport {
             : request.namespace ?? item.namespace,
           uid: `uid-${index}`,
           created,
+          ownerReferences: request.kind === "Pod"
+            ? [{ apiVersion: "apps/v1", kind: "ReplicaSet", name: "mock-deployment-6d9f7", uid: "uid-mock-rs", controller: true }]
+            : request.kind === "ReplicaSet"
+              ? [{ apiVersion: "apps/v1", kind: "Deployment", name: "mock-deployment", uid: "uid-mock-deployment", controller: true }]
+              : [],
           columns: columnsByKind[request.kind] ?? {},
           podContainers: request.kind === "Pod"
             ? [

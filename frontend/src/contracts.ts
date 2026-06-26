@@ -167,8 +167,17 @@ export interface ResourceItem {
   namespace: string | null;
   uid: string | null;
   created: string | null;
+  ownerReferences: OwnerReferenceItem[];
   columns: Record<string, string>;
   podContainers?: PodContainerSummary[];
+}
+
+export interface OwnerReferenceItem {
+  apiVersion: string;
+  kind: string;
+  name: string;
+  uid: string;
+  controller?: boolean | null;
 }
 
 export type PodContainerType = "containers" | "initContainers" | "ephemeralContainers";

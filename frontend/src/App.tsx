@@ -45,6 +45,7 @@ import {
   KubernetesListResourcesResponse,
   NamespaceItem,
   ResourceItem,
+  OwnerReferenceItem,
   ResourceMetricItem,
   ResourceKindItem,
   PodContainerSummary,
@@ -1458,6 +1459,109 @@ function renderResourceColumnValue(item: ResourceItem, columnKey: string) {
   return renderResourceStatusValue(item.kind, columnKey, item.columns);
 }
 
+interface OwnerChainEntry {
+  apiVersion: string;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  uid: string | null;
+  controller?: boolean | null;
+  object?: ResourceItem;
+}
+
+interface OwnerChain {
+  entries: OwnerChainEntry[];
+  complete: boolean;
+}
+
+function ownerReferenceKey(apiVersion: string, kind: string, namespace: string | null | undefined, name: string): string {
+  return `${apiVersion}/${kind}/${namespace ?? ""}/${name}`;
+}
+
+function ownerLookupKey(reference: OwnerReferenceItem, namespace: string | null | undefined): string {
+  return ownerReferenceKey(reference.apiVersion, reference.kind, namespace, reference.name);
+}
+
+function resourceLookupKey(item: ResourceItem): string {
+  return ownerReferenceKey(item.apiVersion, item.kind, item.namespace, item.name);
+}
+
+function ownerReferenceToEntry(reference: OwnerReferenceItem, namespace: string | null | undefined, object?: ResourceItem): OwnerChainEntry {
+  return {
+    apiVersion: reference.apiVersion,
+    kind: reference.kind,
+    name: reference.name,
+    namespace: object?.namespace ?? namespace ?? null,
+    uid: reference.uid,
+    controller: reference.controller,
+    object,
+  };
+}
+
+function buildOwnerLookup(items: ResourceItem[]): Map<string, ResourceItem> {
+  const lookup = new Map<string, ResourceItem>();
+  for (const item of items) {
+    lookup.set(resourceLookupKey(item), item);
+    if (item.uid) lookup.set(item.uid, item);
+  }
+  return lookup;
+}
+
+function ownerEntryLabel(entry: OwnerChainEntry): string {
+  return `${entry.kind}(${entry.name})`;
+}
+
+function ownerChainLabel(chain: OwnerChain): string {
+  return chain.entries.map(ownerEntryLabel).join(" -> ");
+}
+
+function ownerChainDisplayEntry(chain: OwnerChain): OwnerChainEntry | undefined {
+  return chain.entries[0];
+}
+
+function buildOwnerChains(item: ResourceItem, ownerLookup: Map<string, ResourceItem>): OwnerChain[] {
+  return item.ownerReferences.map((reference) => {
+    const entries: OwnerChainEntry[] = [];
+    const seen = new Set<string>();
+    let currentReference: OwnerReferenceItem | undefined = reference;
+    let currentNamespace = item.namespace;
+    let complete = true;
+
+    while (currentReference) {
+      const lookupKey = ownerLookupKey(currentReference, currentNamespace);
+      const object: ResourceItem | undefined = ownerLookup.get(currentReference.uid) ?? ownerLookup.get(lookupKey);
+      const entry = ownerReferenceToEntry(currentReference, currentNamespace, object);
+      const cycleKey = currentReference.uid || lookupKey;
+
+      if (seen.has(cycleKey)) {
+        complete = false;
+        break;
+      }
+
+      seen.add(cycleKey);
+      entries.push(entry);
+
+      if (!object) {
+        complete = false;
+        break;
+      }
+
+      currentReference = object.ownerReferences.find((owner: OwnerReferenceItem) => owner.controller) ?? object.ownerReferences[0];
+      currentNamespace = object.namespace;
+    }
+
+    return { entries, complete };
+  });
+}
+
+function podControlledBySortValue(item: ResourceItem, ownerLookup: Map<string, ResourceItem>): string {
+  return buildOwnerChains(item, ownerLookup)
+    .map(ownerChainDisplayEntry)
+    .filter((entry): entry is OwnerChainEntry => Boolean(entry))
+    .map((entry) => `${entry.kind}/${entry.name}`)
+    .join(", ");
+}
+
 function resourceKindLabel(kind: string): string {
   if (kind.endsWith("s") || kind.endsWith("x") || kind.endsWith("ch") || kind.endsWith("sh")) {
     return `${kind}es`;
@@ -1629,6 +1733,8 @@ export function App() {
       .map((column) => ({ key: column.name, label: column.name }));
 
   const [resources, setResources] = useState<ResourceItem[]>([]);
+  const [ownerLookupItems, setOwnerLookupItems] = useState<ResourceItem[]>([]);
+  const [ownerChainOpenKey, setOwnerChainOpenKey] = useState<string | null>(null);
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [resourcesError, setResourcesError] = useState<string>();
   const [overview, setOverview] = useState<KubernetesClusterOverviewResponse>();
@@ -2565,6 +2671,28 @@ export function App() {
     return response.items;
   };
 
+
+  useEffect(() => {
+    if (activeView !== "resources" || selectedKind !== "Pod" || !selectedContext) {
+      setOwnerLookupItems([]);
+      return;
+    }
+
+    let cancelled = false;
+    const namespace = selectedNamespace || null;
+
+    const ownerKinds = ["ReplicaSet", "Job", "StatefulSet", "DaemonSet", "Deployment", "CronJob"];
+
+    Promise.all(ownerKinds.map((kind) => listAllResourcesForKind(kind, namespace).catch(() => [])))
+      .then((ownerItems) => {
+        if (!cancelled) setOwnerLookupItems(ownerItems.flat());
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeView, selectedKind, selectedContext, selectedNamespace, resourceKinds]);
+
   const openAbnormalPods = () => {
     if (!selectedContext) return;
     const requestNumber = ++healthRequestRef.current;
@@ -3414,6 +3542,8 @@ export function App() {
     setLocalTerminalOpen(false);
   };
 
+  const ownerLookup = useMemo(() => buildOwnerLookup([...resources, ...ownerLookupItems]), [resources, ownerLookupItems]);
+
   const visibleResources = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     const filtered = query
@@ -3423,6 +3553,7 @@ export function App() {
       if (sortKey === "name") return item.name;
       if (sortKey === "namespace") return item.namespace ?? "";
       if (sortKey === "age") return item.created ?? "";
+      if (sortKey === "controlledBy") return podControlledBySortValue(item, ownerLookup);
       if (sortKey === "containers") return String(item.podContainers?.length ?? 0);
       return item.columns[sortKey] ?? "";
     };
@@ -3430,7 +3561,7 @@ export function App() {
       const result = valueFor(left).localeCompare(valueFor(right), undefined, { numeric: true });
       return sortDirection === "asc" ? result : -result;
     });
-  }, [resources, resourceSearch, sortKey, sortDirection]);
+  }, [resources, resourceSearch, sortKey, sortDirection, ownerLookup]);
 
   const visibleHealthItems = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
@@ -3467,11 +3598,12 @@ export function App() {
 
   useEffect(() => {
     closeResourceActionMenu();
+    setOwnerChainOpenKey(null);
   }, [activeView, resourceSearch, selectedKind, selectedNamespace, sortKey, sortDirection, resources.length, healthItems.length]);
 
   const resourceColumnCount = selectedKind === "Node"
     ? selectedColumns.length + 4
-    : selectedColumns.length + (selectedKind === "Pod" ? 6 : 4);
+    : selectedColumns.length + (selectedKind === "Pod" ? 7 : 4);
   const virtualizeResources = visibleResources.length > RESOURCE_VIRTUAL_THRESHOLD;
   const resourceScrollInsideTable = Math.max(0, resourceScrollTop - resourceTableTop);
   const virtualStartIndex = virtualizeResources
@@ -3571,6 +3703,7 @@ export function App() {
       namespace: event.objectNamespace,
       uid: null,
       created: null,
+      ownerReferences: [],
       columns: {},
     });
   };
@@ -3802,6 +3935,86 @@ export function App() {
     );
   };
 
+
+  const openOwnerEntry = (event: ReactMouseEvent, entry: OwnerChainEntry) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const resource = resourceForKind(entry.kind);
+    if (!resource) return;
+    const targetNamespace = resource.namespaced ? entry.namespace ?? selectedNamespace : "";
+    const targetItem: ResourceItem = entry.object ?? {
+      kind: entry.kind,
+      apiVersion: entry.apiVersion,
+      name: entry.name,
+      namespace: targetNamespace || null,
+      uid: entry.uid,
+      created: null,
+      ownerReferences: [],
+      columns: {},
+    };
+
+    setSelectedResource(resource);
+    setSelectedNamespace(targetNamespace ?? "");
+    setResourceSearch(entry.name);
+    setActiveView("resources");
+    loadResources(null, resource, targetNamespace ?? "");
+    openDetail(targetItem);
+  };
+
+  const renderControlledBy = (item: ResourceItem) => {
+    const chains = buildOwnerChains(item, ownerLookup);
+    if (chains.length === 0) return "-";
+
+    return (
+      <div className="owner-chain-list">
+        {chains.map((chain, index) => {
+          const displayEntry = ownerChainDisplayEntry(chain);
+          if (!displayEntry) return null;
+          const label = ownerChainLabel(chain);
+          const hasDetails = chain.entries.length > 1 || !chain.complete;
+          const chainKey = `${item.apiVersion}/${item.namespace ?? ""}/${item.name}/${index}`;
+
+          return (
+            <div className="owner-chain" key={`${displayEntry.kind}/${displayEntry.name}/${index}`} title={label}>
+              <button type="button" className="owner-chain-link" onClick={(event) => openOwnerEntry(event, displayEntry)}>
+                <span>{displayEntry.kind}(</span>
+                <span className="owner-chain-name">{displayEntry.name}</span>
+                <span>)</span>
+              </button>
+              {hasDetails && (
+                <details
+                  className="owner-chain-details"
+                  open={ownerChainOpenKey === chainKey}
+                  onClick={(event) => event.stopPropagation()}
+                  onToggle={(event) => {
+                    event.stopPropagation();
+                    const isOpen = event.currentTarget.open;
+                    setOwnerChainOpenKey((current) => isOpen ? chainKey : current === chainKey ? null : current);
+                  }}
+                >
+                  <summary>{chain.entries.length > 1 ? `+${chain.entries.length - 1}` : "?"}</summary>
+                  <div className="owner-chain-menu">
+                    {chain.entries.map((entry) => (
+                      <button
+                        type="button"
+                        key={`${entry.kind}/${entry.name}/${entry.uid ?? ""}`}
+                        onClick={(event) => openOwnerEntry(event, entry)}
+                      >
+                        <span>{entry.kind}(</span>
+                        <span>{entry.name}</span>
+                        <span>)</span>
+                      </button>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   const renderResourceRow = (item: ResourceItem) => (
     <tr
       key={`${item.apiVersion}/${item.namespace ?? ""}/${item.name}`}
@@ -3828,6 +4041,7 @@ export function App() {
       </> : <>
         <td>{item.namespace ?? "-"}</td>
         {selectedColumns.map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
+        {selectedKind === "Pod" && <td className="controlled-by-cell">{renderControlledBy(item)}</td>}
         {selectedKind === "Pod" && <>
           <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
           <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
@@ -4634,7 +4848,7 @@ export function App() {
                       {selectedColumns.map((column) => (
                         <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
                       ))}
-                      {selectedKind === "Pod" && <><th>CPU</th><th>Memory</th></>}
+                      {selectedKind === "Pod" && <><th>{renderResourceSortButton("controlledBy", "Controlled By")}</th><th>CPU</th><th>Memory</th></>}
                       <th>{renderResourceSortButton("age", "Age")}</th>
                     </>}
                     <th className="actions">Actions</th>
@@ -4706,6 +4920,7 @@ export function App() {
                     namespace: detail.namespace,
                     uid: null,
                     created: null,
+                    ownerReferences: [],
                     columns: {},
                   })}>Refresh</button>
                 )}

@@ -4,7 +4,6 @@ use k8s_openapi::api::apps::v1::{DaemonSet, Deployment, StatefulSet};
 use k8s_openapi::api::batch::v1::{CronJob, Job};
 use k8s_openapi::api::core::v1::{Event, Namespace, Node, Pod, Service};
 use k8s_openapi::apiextensions_apiserver::pkg::apis::apiextensions::v1::CustomResourceDefinition;
-use kube::ResourceExt;
 use kube::api::{
     Api, AttachParams, DeleteParams, DynamicObject, ListParams, LogParams, Patch, PatchParams,
     TerminalSize, WatchEvent, WatchParams,
@@ -12,6 +11,7 @@ use kube::api::{
 use kube::config::{KubeConfigOptions, Kubeconfig as KubeconfigFile};
 use kube::core::{ApiResource, GroupVersion, GroupVersionKind};
 use kube::discovery::{pinned_group, verbs};
+use kube::{Resource, ResourceExt};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -123,9 +123,20 @@ pub struct ResourceSummary {
     pub namespace: Option<String>,
     pub uid: Option<String>,
     pub created: Option<String>,
+    pub owner_references: Vec<OwnerReferenceSummary>,
     pub columns: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pod_containers: Option<Vec<PodContainerSummary>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OwnerReferenceSummary {
+    pub api_version: String,
+    pub kind: String,
+    pub name: String,
+    pub uid: String,
+    pub controller: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1200,6 +1211,20 @@ pub async fn list_resources(
                 namespace: obj.namespace(),
                 uid: obj.uid(),
                 created: obj.creation_timestamp().map(|t| t.0.to_rfc3339()),
+                owner_references: obj
+                    .meta()
+                    .owner_references
+                    .clone()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|reference| OwnerReferenceSummary {
+                        api_version: reference.api_version,
+                        kind: reference.kind,
+                        name: reference.name,
+                        uid: reference.uid,
+                        controller: reference.controller,
+                    })
+                    .collect(),
                 columns,
                 pod_containers,
             }
@@ -2957,6 +2982,7 @@ mod tests {
             namespace: Some("default".into()),
             uid: Some("uid-1".into()),
             created: Some("2024-01-01T00:00:00Z".into()),
+            owner_references: Vec::new(),
             columns: BTreeMap::from([("status".into(), "Running".into())]),
             pod_containers: None,
         };
