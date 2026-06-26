@@ -1609,6 +1609,49 @@ function resourceKindLabel(kind: string): string {
   return `${kind}s`;
 }
 
+// Built-in kubectl short names keyed by Kubernetes kind (singular).
+// Custom resources are intentionally omitted (no stable short names).
+const RESOURCE_SHORT_NAMES: Record<string, string> = {
+  Pod: "po",
+  Deployment: "deploy",
+  StatefulSet: "sts",
+  DaemonSet: "ds",
+  ReplicaSet: "rs",
+  ReplicationController: "rc",
+  CronJob: "cj",
+  Service: "svc",
+  Ingress: "ing",
+  ConfigMap: "cm",
+  PersistentVolumeClaim: "pvc",
+  PersistentVolume: "pv",
+  Node: "no",
+  Namespace: "ns",
+  Endpoints: "ep",
+  EndpointSlice: "eps",
+  Event: "ev",
+  ServiceAccount: "sa",
+  HorizontalPodAutoscaler: "hpa",
+  PodDisruptionBudget: "pdb",
+  NetworkPolicy: "netpol",
+  StorageClass: "sc",
+  VolumeSnapshot: "vs",
+  PriorityClass: "pc",
+  LimitRange: "limits",
+  ResourceQuota: "quota",
+  CustomResourceDefinition: "crd",
+  ControllerRevision: "ctrlrev",
+};
+
+function resourceShortName(kind: string): string | undefined {
+  return RESOURCE_SHORT_NAMES[kind];
+}
+
+function resourceKindLabelWithShortName(kind: string): string {
+  const label = resourceKindLabel(kind);
+  const shortName = resourceShortName(kind);
+  return shortName ? `${label} (${shortName})` : label;
+}
+
 function resourceApiVersion(resource: ResourceKindItem): string {
   return resource.group ? `${resource.group}/${resource.version}` : resource.version;
 }
@@ -4098,7 +4141,8 @@ export function App() {
       resource.plural,
       resource.group,
       resource.version,
-    ].some((value) => value.toLowerCase().includes(query));
+      resourceShortName(resource.kind),
+    ].some((value) => value ? value.toLowerCase().includes(query) : false);
     const coreKeys = new Set(FALLBACK_RESOURCE_KINDS.map(resourceKey));
     const coreGroups = RESOURCE_GROUPS.map((group) => ({
       label: group.label,
@@ -4136,8 +4180,9 @@ export function App() {
           resource.plural,
           resource.group,
           resource.version,
+          resourceShortName(resource.kind),
         ];
-        return values.some((value) => value.toLowerCase().includes(query)) ? [resource] : [];
+        return values.some((value) => value ? value.toLowerCase().includes(query) : false) ? [resource] : [];
       });
   }, [favoriteResourceKeys, resourceKinds, resourceCatalogSearch]);
   const filteredKubeconfigContexts = useMemo(() => {
@@ -4286,8 +4331,8 @@ export function App() {
           >
             <ResourceIcon kind={resource.kind} />
             <span>{groupLabel === "More Resources" && resource.group
-              ? `${resourceKindLabel(resource.kind)} (${resource.group})`
-              : resourceKindLabel(resource.kind)}</span>
+              ? `${resourceKindLabelWithShortName(resource.kind)} (${resource.group})`
+              : resourceKindLabelWithShortName(resource.kind)}</span>
           </button>
           <button
             type="button"
@@ -4419,7 +4464,7 @@ export function App() {
                   <input
                     className="resource-catalog-search"
                     type="search"
-                    placeholder="Find resource type"
+                    placeholder="Type or shortname (pod, svc, cm...)"
                     value={resourceCatalogSearch}
                     onChange={(event) => setResourceCatalogSearch(event.target.value)}
                   />
