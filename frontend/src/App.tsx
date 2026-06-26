@@ -272,11 +272,13 @@ function NamespaceCombobox({
   value,
   onChange,
   title,
+  onOpen,
 }: {
   namespaces: string[];
   value: string;
   onChange: (namespace: string) => void;
   title?: string;
+  onOpen?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [inputValue, setInputValue] = useState("");
@@ -312,11 +314,15 @@ function NamespaceCombobox({
         type="text"
         value={displayValue}
         placeholder={value || "All namespaces"}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          onOpen?.();
+          setOpen(true);
+        }}
         onChange={(event) => {
           const next = event.target.value;
           setInputValue(next);
           onChange(next.trim());
+          onOpen?.();
           setOpen(true);
         }}
         onKeyDown={(event) => {
@@ -4429,7 +4435,7 @@ export function App() {
                     >
                       <NavigationIcon name="favorites" />
                       <span>Favorites</span>
-                      <span className="nav-chevron">{collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                      <span className="nav-chevron">{collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch ? "▸" : "▾"}</span>
                     </button>
                     <ul hidden={collapsedGroups[FAVORITES_GROUP_LABEL] && !hasResourceCatalogSearch}>
                       {favoriteResources.length > 0 ? (
@@ -4448,7 +4454,7 @@ export function App() {
                       >
                         <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
                         <span>{group.label}</span>
-                        <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? ">" : "v"}</span>
+                        <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? "▸" : "▾"}</span>
                       </button>
                       <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
                         {group.resources.map((resource) => renderResourceNavigationItem(resource, group.label))}
@@ -4519,6 +4525,7 @@ export function App() {
                     resourceRequestRef.current += 1;
                     setSelectedNamespace(namespace);
                   }}
+                  onOpen={() => setOwnerChainOpenKey(null)}
                   title={namespacesError ? `Failed to load namespaces: ${namespacesError}` : undefined}
                 />
               )}
