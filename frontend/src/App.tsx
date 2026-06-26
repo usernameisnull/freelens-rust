@@ -208,7 +208,7 @@ const RESOURCE_GROUPS = [
   },
   {
     label: "Network",
-    kinds: ["Service", "Ingress"],
+    kinds: ["Service", "EndpointSlice", "Endpoints", "Ingress", "IngressClass", "NetworkPolicy"],
   },
   {
     label: "Config",
@@ -220,7 +220,51 @@ const RESOURCE_GROUPS = [
   },
 ];
 
-type NavigationIcon = "overview" | "events" | "favorites" | "cluster" | "workloads" | "network" | "config" | "storage" | "more" | "collapseAll" | "expandAll";
+// Well-known Kubernetes API groups served by the core apiserver. Resources whose
+// group is in this set (or the empty core group) are treated as built-in; any
+// other group is a custom resource (CRD / aggregated API) and is grouped under
+// its API group in the sidebar, mirroring the Freelens categorization.
+const BUILTIN_API_GROUPS = new Set<string>([
+  "",
+  "apps",
+  "batch",
+  "networking.k8s.io",
+  "discovery.k8s.io",
+  "rbac.authorization.k8s.io",
+  "autoscaling",
+  "policy",
+  "storage.k8s.io",
+  "apiextensions.k8s.io",
+  "scheduling.k8s.io",
+  "node.k8s.io",
+  "coordination.k8s.io",
+  "events.k8s.io",
+  "flowcontrol.apiserver.k8s.io",
+  "metrics.k8s.io",
+  "admissionregistration.k8s.io",
+  "authentication.k8s.io",
+  "authorization.k8s.io",
+  "certificates.k8s.io",
+]);
+
+const CLUSTER_SCOPED_BUILTIN_KINDS = new Set<string>([
+  "Node",
+  "PersistentVolume",
+  "IngressClass",
+]);
+
+interface NavigationSubgroup {
+  label: string;
+  resources: ResourceKindItem[];
+}
+
+interface NavigationGroup {
+  label: string;
+  resources: ResourceKindItem[];
+  subgroups?: NavigationSubgroup[];
+}
+
+type NavigationIcon = "overview" | "events" | "favorites" | "cluster" | "workloads" | "network" | "config" | "storage" | "more" | "customResources" | "collapseAll" | "expandAll";
 type ActiveView = "contexts" | "overview" | "events" | "health" | "resources";
 type ContextDisplayMode = "list" | "grid";
 
@@ -232,6 +276,7 @@ const GROUP_ICONS: Record<string, NavigationIcon> = {
   Config: "config",
   Storage: "storage",
   "More Resources": "more",
+  "Custom Resources": "customResources",
 };
 
 function NavigationIcon({ name }: { name: NavigationIcon }) {
@@ -245,6 +290,7 @@ function NavigationIcon({ name }: { name: NavigationIcon }) {
     config: <><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"/><circle cx="16" cy="6" r="2"/><circle cx="8" cy="12" r="2"/><circle cx="13" cy="18" r="2"/></>,
     storage: <><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></>,
     more: <><path d="M9 3h6l1 3 3 1v6l-3 1-1 3H9l-1-3-3-1V7l3-1 1-3Z"/><circle cx="12" cy="10" r="2"/><path d="M12 12v5"/></>,
+    customResources: <><path d="M6 4h7l5 5v11a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M13 4v5h5"/><path d="M9 13h6M9 17h4"/></>,
     collapseAll: <><path d="m8 10 4-4 4 4M8 14l4 4 4-4"/><path d="M5 12h14"/></>,
     expandAll: <><path d="m8 6 4 4 4-4M8 18l4-4 4 4"/><path d="M5 12h14"/></>,
   };
@@ -1227,13 +1273,19 @@ const RESOURCE_API_VERSIONS: Record<string, string> = {
   Job: "batch/v1",
   CronJob: "batch/v1",
   Service: "v1",
+  EndpointSlice: "discovery.k8s.io/v1",
+  Endpoints: "v1",
   Ingress: "networking.k8s.io/v1",
+  IngressClass: "networking.k8s.io/v1",
+  NetworkPolicy: "networking.k8s.io/v1",
   ConfigMap: "v1",
   Secret: "v1",
   PersistentVolumeClaim: "v1",
   PersistentVolume: "v1",
   Node: "v1",
 };
+
+const ALREADY_PLURAL_KINDS = new Set<string>(["Endpoints"]);
 
 const FALLBACK_RESOURCE_KINDS: ResourceKindItem[] = RESOURCE_GROUPS.flatMap((group) =>
   group.kinds.map((kind) => {
@@ -1244,8 +1296,8 @@ const FALLBACK_RESOURCE_KINDS: ResourceKindItem[] = RESOURCE_GROUPS.flatMap((gro
       version,
       kind,
       plural: resourceKindLabel(kind).toLowerCase(),
-      scope: kind === "PersistentVolume" || kind === "Node" ? "Cluster" : "Namespaced",
-      namespaced: kind !== "PersistentVolume" && kind !== "Node",
+      scope: CLUSTER_SCOPED_BUILTIN_KINDS.has(kind) ? "Cluster" : "Namespaced",
+      namespaced: !CLUSTER_SCOPED_BUILTIN_KINDS.has(kind),
       columns: [],
     };
   })
@@ -1602,6 +1654,7 @@ function podControlledBySortValue(item: ResourceItem, ownerLookup: Map<string, R
 }
 
 function resourceKindLabel(kind: string): string {
+  if (ALREADY_PLURAL_KINDS.has(kind)) return kind;
   if (kind.endsWith("s") || kind.endsWith("x") || kind.endsWith("ch") || kind.endsWith("sh")) {
     return `${kind}es`;
   }
@@ -4153,15 +4206,43 @@ export function App() {
         return discovered && matchesQuery(discovered) ? [discovered] : [];
       }),
     })).filter((group) => group.resources.length > 0);
-    const moreResources = resourceKinds
-      .filter((item) => !coreKeys.has(resourceKey(item)))
-      .filter(matchesQuery)
-      .sort((left, right) =>
-        left.group.localeCompare(right.group) || left.kind.localeCompare(right.kind)
-      );
-    return moreResources.length > 0
-      ? [...coreGroups, { label: "More Resources", resources: moreResources }]
-      : coreGroups;
+
+    // Split non-core resources into built-in (residual "More Resources") and
+    // custom resources (CRDs/aggregated APIs), which are grouped by API group
+    // under a dedicated "Custom Resources" category — mirroring Freelens.
+    const builtinNonCore: ResourceKindItem[] = [];
+    const customByGroup = new Map<string, ResourceKindItem[]>();
+    for (const item of resourceKinds) {
+      if (coreKeys.has(resourceKey(item)) || !matchesQuery(item)) continue;
+      if (BUILTIN_API_GROUPS.has(item.group)) {
+        builtinNonCore.push(item);
+      } else {
+        const bucket = customByGroup.get(item.group) ?? [];
+        bucket.push(item);
+        customByGroup.set(item.group, bucket);
+      }
+    }
+    builtinNonCore.sort((left, right) =>
+      left.group.localeCompare(right.group) || left.kind.localeCompare(right.kind)
+    );
+
+    const groups: NavigationGroup[] = [...coreGroups];
+    if (builtinNonCore.length > 0) {
+      groups.push({ label: "More Resources", resources: builtinNonCore });
+    }
+    if (customByGroup.size > 0) {
+      const subgroups = Array.from(customByGroup.entries())
+        .map(([label, resources]) => ({
+          label,
+          resources: resources.sort((left, right) => left.kind.localeCompare(right.kind)),
+        }))
+        .filter((subgroup) => subgroup.resources.length > 0)
+        .sort((left, right) => left.label.localeCompare(right.label));
+      if (subgroups.length > 0) {
+        groups.push({ label: "Custom Resources", resources: [], subgroups });
+      }
+    }
+    return groups;
   }, [resourceKinds, resourceCatalogSearch]);
   const favoriteResources = useMemo(() => {
     const query = resourceCatalogSearch.trim().toLowerCase();
@@ -4307,14 +4388,21 @@ export function App() {
     );
   };
   const hasResourceCatalogSearch = Boolean(resourceCatalogSearch.trim());
+  const subgroupKey = (groupLabel: string, subgroupLabel: string) => `${groupLabel}::${subgroupLabel}`;
   const allNavigationGroupsExpanded = !collapsedGroups[FAVORITES_GROUP_LABEL]
-    && navigationGroups.every((group) => !collapsedGroups[group.label]);
+    && navigationGroups.every((group) =>
+      !collapsedGroups[group.label]
+      && (group.subgroups ?? []).every((subgroup) => !collapsedGroups[subgroupKey(group.label, subgroup.label)])
+    );
   const toggleAllNavigationGroups = () => {
     const nextCollapsed = allNavigationGroupsExpanded;
     setCollapsedGroups((current) => ({
       ...current,
       [FAVORITES_GROUP_LABEL]: nextCollapsed,
-      ...Object.fromEntries(navigationGroups.map((group) => [group.label, nextCollapsed])),
+      ...Object.fromEntries(navigationGroups.flatMap((group) => [
+        [group.label, nextCollapsed],
+        ...(group.subgroups ?? []).map((subgroup) => [subgroupKey(group.label, subgroup.label), nextCollapsed]),
+      ])),
     }));
   };
   const renderResourceNavigationItem = (resource: ResourceKindItem, groupLabel: string) => {
@@ -4523,7 +4611,9 @@ export function App() {
                       )}
                     </ul>
                   </div>
-                  {navigationGroups.map((group) => (
+                  {navigationGroups.map((group) => {
+                    const groupCollapsed = collapsedGroups[group.label] && !hasResourceCatalogSearch;
+                    return (
                     <div key={group.label} className="nav-group">
                       <button
                         className="nav-group-header"
@@ -4532,13 +4622,33 @@ export function App() {
                       >
                         <NavigationIcon name={GROUP_ICONS[group.label] ?? "more"} />
                         <span>{group.label}</span>
-                        <span className="nav-chevron">{collapsedGroups[group.label] && !hasResourceCatalogSearch ? "▸" : "▾"}</span>
+                        <span className="nav-chevron">{groupCollapsed ? "▸" : "▾"}</span>
                       </button>
-                      <ul hidden={collapsedGroups[group.label] && !hasResourceCatalogSearch}>
+                      <ul hidden={groupCollapsed}>
                         {group.resources.map((resource) => renderResourceNavigationItem(resource, group.label))}
+                        {(group.subgroups ?? []).map((subgroup) => {
+                          const key = subgroupKey(group.label, subgroup.label);
+                          const subgroupCollapsed = collapsedGroups[key] && !hasResourceCatalogSearch;
+                          return (
+                            <li key={key} className="nav-subgroup">
+                              <button
+                                className="nav-subgroup-header"
+                                onClick={() => toggleNavigationGroup(key)}
+                                aria-expanded={!collapsedGroups[key] || hasResourceCatalogSearch}
+                              >
+                                <span className="nav-subgroup-title">{subgroup.label}</span>
+                                <span className="nav-chevron">{subgroupCollapsed ? "▸" : "▾"}</span>
+                              </button>
+                              <ul hidden={subgroupCollapsed}>
+                                {subgroup.resources.map((resource) => renderResourceNavigationItem(resource, "Custom Resources"))}
+                              </ul>
+                            </li>
+                          );
+                        })}
                       </ul>
                     </div>
-                  ))}
+                    );
+                  })}
                   {resourceDiscoveryError && (
                     <p className="sidebar-warning" title={resourceDiscoveryError}>Using built-in resource catalog</p>
                   )}

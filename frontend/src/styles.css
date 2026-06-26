@@ -583,6 +583,57 @@ body.resizing-panel {
   color: #e8edf2;
 }
 
+.nav-subgroup {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-subgroup-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px 6px 28px;
+  border: none;
+  background: transparent;
+  color: #82909d;
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nav-subgroup-header:hover {
+  background: rgba(88, 209, 181, 0.12);
+  color: #58d1b5;
+}
+
+.nav-subgroup-header .nav-subgroup-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-subgroup-header .nav-chevron {
+  margin-left: auto;
+  color: #63717e;
+  font-family: ui-monospace, monospace;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.nav-subgroup ul {
+  list-style: none;
+  margin: 0 0 4px;
+  padding: 0;
+}
+
+.nav-subgroup .nav-resource-link {
+  padding-left: 44px;
+}
+
 .pin-icon {
   width: 17px;
   height: 17px;
