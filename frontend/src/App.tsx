@@ -8,9 +8,16 @@ import type {
 import { FitAddon } from "@xterm/addon-fit";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
-import { basicSetup } from "codemirror";
 import { yaml as yamlLanguage } from "@codemirror/lang-yaml";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import {
+  bracketMatching,
+  defaultHighlightStyle,
+  foldGutter,
+  foldKeymap,
+  HighlightStyle,
+  indentOnInput,
+  syntaxHighlighting,
+} from "@codemirror/language";
 import {
   closeSearchPanel,
   findNext,
@@ -20,16 +27,39 @@ import {
   replaceAll,
   replaceNext,
   search,
+  highlightSelectionMatches,
   SearchQuery,
   searchKeymap,
   selectMatches,
   setSearchQuery,
 } from "@codemirror/search";
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+} from "@codemirror/autocomplete";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { lintKeymap } from "@codemirror/lint";
 import { tags } from "@lezer/highlight";
 import { Compartment, EditorState, Prec } from "@codemirror/state";
 import type { Range } from "@codemirror/state";
 import type { DecorationSet, Panel } from "@codemirror/view";
-import { Decoration, EditorView, keymap, ViewPlugin, ViewUpdate } from "@codemirror/view";
+import {
+  crosshairCursor,
+  Decoration,
+  drawSelection,
+  dropCursor,
+  EditorView,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  highlightSpecialChars,
+  keymap,
+  lineNumbers,
+  rectangularSelection,
+  ViewPlugin,
+  ViewUpdate,
+} from "@codemirror/view";
 import {
   IPC_VERSION,
   KubernetesEventItem,
@@ -755,6 +785,42 @@ class YamlSearchPanel implements Panel {
   }
 }
 
+const yamlCodeEditorSetup = [
+  lineNumbers(),
+  highlightActiveLineGutter(),
+  highlightSpecialChars(),
+  history(),
+  foldGutter({
+    markerDOM: (open) => {
+      const marker = document.createElement("span");
+      marker.className = `cm-yaml-fold-marker ${open ? "is-open" : "is-closed"}`;
+      marker.setAttribute("aria-hidden", "true");
+      return marker;
+    },
+  }),
+  drawSelection(),
+  dropCursor(),
+  EditorState.allowMultipleSelections.of(true),
+  indentOnInput(),
+  syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+  bracketMatching(),
+  closeBrackets(),
+  autocompletion(),
+  rectangularSelection(),
+  crosshairCursor(),
+  highlightActiveLine(),
+  highlightSelectionMatches(),
+  keymap.of([
+    ...closeBracketsKeymap,
+    ...defaultKeymap,
+    ...searchKeymap,
+    ...historyKeymap,
+    ...foldKeymap,
+    ...completionKeymap,
+    ...lintKeymap,
+  ]),
+];
+
 interface YamlCodeEditorHandle {
   focus: () => void;
   openSearch: () => void;
@@ -871,7 +937,7 @@ const YamlCodeEditor = forwardRef<YamlCodeEditorHandle, {
             },
             ...searchKeymap,
           ])),
-          basicSetup,
+          yamlCodeEditorSetup,
           search({ top: true, createPanel: (view) => new YamlSearchPanel(view) }),
           yamlLanguage(),
           selectedIndentMarkers,

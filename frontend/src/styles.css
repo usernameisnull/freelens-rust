@@ -2539,22 +2539,57 @@ body.resizing-panel .yaml-structure-resizer {
 }
 
 .yaml-code-editor .cm-foldGutter {
-  min-width: 38px;
+  min-width: 22px;
 }
 
 .yaml-code-editor .cm-foldGutter .cm-gutterElement {
-  width: 38px;
-  padding: 0 4px;
-  text-align: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  padding: 0;
+  line-height: inherit;
 }
 
-.yaml-code-editor .cm-foldGutter span {
+.yaml-code-editor .cm-yaml-fold-marker {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  font-size: 1.5rem;
-  color: #63717e;
+  width: 14px;
+  height: 14px;
+  border-radius: 2px;
+  color: #70808f;
+  opacity: 0.82;
+}
+
+.yaml-code-editor .cm-yaml-fold-marker::before {
+  content: "";
+  display: block;
+  width: 0;
+  height: 0;
+}
+
+.yaml-code-editor .cm-yaml-fold-marker.is-open::before {
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 5px solid currentColor;
+  transform: translateY(1px);
+}
+
+.yaml-code-editor .cm-yaml-fold-marker.is-closed::before {
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+  border-left: 5px solid currentColor;
+  transform: translateX(1px);
+}
+
+.yaml-code-editor .cm-yaml-fold-marker:hover,
+.yaml-code-editor .cm-foldGutter .cm-activeLineGutter .cm-yaml-fold-marker,
+.yaml-code-editor .cm-gutterElement:hover .cm-yaml-fold-marker {
+  background: rgba(121, 168, 255, 0.12);
+  color: #b8c7d6;
+  opacity: 1;
 }
 
 .yaml-code-editor .cm-panels {
