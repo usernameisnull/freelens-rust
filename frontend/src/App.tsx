@@ -1935,9 +1935,12 @@ export function App() {
       .map((column) => ({ key: column.name, label: column.name }));
 
   const [resources, setResources] = useState<ResourceItem[]>([]);
+  const resourcesRef = useRef<ResourceItem[]>([]);
   const [ownerLookupItems, setOwnerLookupItems] = useState<ResourceItem[]>([]);
   const [ownerChainOpenKey, setOwnerChainOpenKey] = useState<string | null>(null);
   const [resourcesLoading, setResourcesLoading] = useState(false);
+  const resourcesLoadingRef = useRef(false);
+  const resourceLoadingKeyRef = useRef<string | undefined>(undefined);
   const [resourcesError, setResourcesError] = useState<string>();
   const [overview, setOverview] = useState<KubernetesClusterOverviewResponse>();
   const [overviewLoading, setOverviewLoading] = useState(false);
@@ -1959,8 +1962,16 @@ export function App() {
   const [metricsError, setMetricsError] = useState<string>();
   const metricsRequestRef = useRef(0);
   const [continueToken, setContinueToken] = useState<string | null>(null);
+  const continueTokenRef = useRef<string | null>(null);
   const resourceRequestRef = useRef(0);
+  const pendingSearchRefreshRef = useRef<{
+    searchKey: string;
+    query: string;
+    items: ResourceItem[];
+  } | undefined>(undefined);
+  const queuedResourceRefreshRef = useRef(false);
   const [resourceSearch, setResourceSearch] = useState("");
+  const resourceSearchRef = useRef(resourceSearch);
   const searchPaginationRef = useRef<{ key: string; tokens: Set<string> }>({
     key: "",
     tokens: new Set(),
@@ -2061,6 +2072,11 @@ export function App() {
     || logResource || execResource
     || createOpen || localTerminalOpen || kubectlOpen || kubeconfigSettingsOpen
   );
+
+  resourcesRef.current = resources;
+  resourcesLoadingRef.current = resourcesLoading;
+  continueTokenRef.current = continueToken;
+  resourceSearchRef.current = resourceSearch;
 
   useLayoutEffect(() => {
     const container = resourceListRef.current;
@@ -2676,7 +2692,7 @@ export function App() {
 
   useEffect(() => {
     if (activeView !== "resources" || !selectedContext || !selectedKind) return;
-    watchRefreshActionRef.current = loadResources;
+    watchRefreshActionRef.current = () => loadResources(null, selectedResource, selectedNamespace, { background: true });
     loadResources();
   }, [activeView, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
@@ -2737,7 +2753,7 @@ export function App() {
         : activeView === "events" ? loadEvents()
           : activeView === "health" && healthTitle === "Abnormal Pods" ? openAbnormalPods()
             : activeView === "health" && healthTitle === "Unavailable Workloads" ? openUnavailableWorkloads()
-              : loadResources(),
+              : loadResources(null, selectedResource, selectedNamespace, { background: true }),
       refreshSeconds * 1000,
     );
     return () => window.clearInterval(interval);
@@ -2751,10 +2767,34 @@ export function App() {
     token: string | null = null,
     resource: ResourceKindItem = selectedResource,
     namespaceOverride: string = selectedNamespace,
+    options: { background?: boolean } = {},
   ) => {
     if (!selectedContext || !resource.kind) return;
+    const context = selectedContext;
+    const kind = resource.kind;
+    const namespace = namespaceOverride;
+    const query = resourceSearchRef.current.trim().toLowerCase();
+    const searchKey = [
+      context,
+      resourceKey(resource),
+      namespace,
+      query,
+    ].join("|");
+    const listBusy = (resourcesLoadingRef.current && resourceLoadingKeyRef.current === searchKey)
+      || pendingSearchRefreshRef.current?.searchKey === searchKey
+      || Boolean(continueTokenRef.current);
+    const shouldQueueRefresh = !token && (options.background || Boolean(query)) && listBusy;
+    if (shouldQueueRefresh) {
+      queuedResourceRefreshRef.current = true;
+      return;
+    }
     if (!token) {
-      searchPaginationRef.current = { key: "", tokens: new Set() };
+      searchPaginationRef.current = query ? { key: searchKey, tokens: new Set() } : { key: "", tokens: new Set() };
+      const hasCurrentSearchMatch = Boolean(query)
+        && resourcesRef.current.some((item) => item.name.toLowerCase().includes(query));
+      pendingSearchRefreshRef.current = hasCurrentSearchMatch
+        ? { searchKey, query, items: [] as ResourceItem[] }
+        : undefined;
       const metricsKind = resource.kind === "Pod" || resource.kind === "Node" ? resource.kind : undefined;
       const metricsRequest = ++metricsRequestRef.current;
       setMetrics({});
@@ -2762,9 +2802,9 @@ export function App() {
       if (metricsKind) {
         transport.kubernetesListMetrics({
           meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-          context: selectedContext,
+          context,
           kind: metricsKind,
-          namespace: metricsKind === "Pod" ? namespaceOverride || null : null,
+          namespace: metricsKind === "Pod" ? namespace || null : null,
         }).then((response: KubernetesListMetricsResponse) => {
           if (metricsRequest !== metricsRequestRef.current) return;
           setMetrics(Object.fromEntries(response.items.map((item) => [
@@ -2777,10 +2817,11 @@ export function App() {
       }
     }
     const requestNumber = ++resourceRequestRef.current;
-    const context = selectedContext;
-    const kind = resource.kind;
-    const namespace = namespaceOverride;
-    setResourcesLoading(true);
+    let nextContinueToken: string | null | undefined;
+    resourcesLoadingRef.current = true;
+    resourceLoadingKeyRef.current = searchKey;
+    const showResourceLoading = !options.background || resourcesRef.current.length === 0;
+    if (showResourceLoading) setResourcesLoading(true);
     setResourcesError(undefined);
     transport
       .kubernetesListResources({
@@ -2790,12 +2831,26 @@ export function App() {
         apiVersion: resourceApiVersion(resource),
         columns: resource.columns,
         namespace: namespace || null,
-        limit: 50,
+        limit: 500,
         continueToken: token,
       })
       .then((response: KubernetesListResourcesResponse) => {
         if (requestNumber !== resourceRequestRef.current) return;
-        if (token) {
+        nextContinueToken = response.continueToken;
+        continueTokenRef.current = response.continueToken;
+        const pendingSearchRefresh = pendingSearchRefreshRef.current;
+        if (pendingSearchRefresh?.searchKey === searchKey) {
+          pendingSearchRefresh.items = token
+            ? [...pendingSearchRefresh.items, ...response.items]
+            : response.items;
+          const hasNewSearchMatch = pendingSearchRefresh.items.some((item) =>
+            item.name.toLowerCase().includes(pendingSearchRefresh.query)
+          );
+          if (!response.continueToken || hasNewSearchMatch) {
+            setResources(pendingSearchRefresh.items);
+            pendingSearchRefreshRef.current = undefined;
+          }
+        } else if (token) {
           setResources((prev) => [...prev, ...response.items]);
         } else {
           setResources(response.items);
@@ -2804,16 +2859,22 @@ export function App() {
       })
       .catch((reason: unknown) => {
         if (requestNumber === resourceRequestRef.current) {
+          pendingSearchRefreshRef.current = undefined;
           setResourcesError(errorMessage(reason));
         }
       })
       .finally(() => {
         if (requestNumber === resourceRequestRef.current) {
-          setResourcesLoading(false);
+          resourcesLoadingRef.current = false;
+          resourceLoadingKeyRef.current = undefined;
+          if (showResourceLoading) setResourcesLoading(false);
+          if (!nextContinueToken && queuedResourceRefreshRef.current) {
+            queuedResourceRefreshRef.current = false;
+            window.setTimeout(() => loadResources(null, selectedResource, selectedNamespace, { background: true }), 0);
+          }
         }
       });
   };
-
   const loadOverview = () => {
     if (!selectedContext) return;
     const requestNumber = ++overviewRequestRef.current;
@@ -2980,7 +3041,7 @@ export function App() {
     }
     if (searchPaginationRef.current.tokens.has(continueToken)) return;
     searchPaginationRef.current.tokens.add(continueToken);
-    loadResources(continueToken);
+    loadResources(continueToken, selectedResource, selectedNamespace, { background: true });
   }, [
     continueToken,
     resourceSearch,
@@ -5141,7 +5202,7 @@ export function App() {
                 )}
                 {resourceSearch.trim() && continueToken && (
                   <p className="pagination-status">
-                    {resourcesLoading ? "Searching remaining pages..." : "Preparing next search page..."}
+                    Searching remaining pages...
                   </p>
                 )}
               </div>
