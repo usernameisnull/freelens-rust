@@ -1857,6 +1857,13 @@ button.dashboard-card:hover {
 .detail-panel.is-maximized {
   border-left: none;
 }
+.floating-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 110;
+}
 
 .panel-resizer {
   position: absolute;

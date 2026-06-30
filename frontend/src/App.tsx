@@ -2188,10 +2188,6 @@ export function App() {
     xtermRef.current?.write(data);
   }, []);
 
-  const focusTerminal = useCallback(() => {
-    if (!terminalReadyRef.current) return;
-    xtermRef.current?.focus();
-  }, []);
 
   const terminalSize = useCallback(() => {
     const terminal = xtermRef.current;
@@ -5155,7 +5151,7 @@ export function App() {
       </main>
 
       {(detail || detailLoading || detailError) && (
-        <div className="detail-panel-overlay" onClick={closeDetail}>
+        <div className="detail-panel-overlay">
           <div
             className={`detail-panel resizable-panel${maximizedPanels.detail ? " is-maximized" : ""}`}
             style={{ width: maximizedPanels.detail ? "100vw" : `min(${panelWidths.detail}px, 100vw)` }}
@@ -5299,7 +5295,7 @@ export function App() {
       )}
 
       {createOpen && (
-        <div className="detail-panel-overlay" onClick={() => !createLoading && setCreateOpen(false)}>
+        <div className="detail-panel-overlay">
           <div className="detail-panel create-panel" onClick={(event) => event.stopPropagation()}>
             <header>
               <h3>Apply</h3>
@@ -5327,7 +5323,7 @@ export function App() {
       )}
 
       {localTerminalOpen && (
-        <div className="detail-panel-overlay" onClick={closeLocalTerminal}>
+        <div className="detail-panel-overlay">
           <div className="detail-panel local-terminal-panel" onClick={(event) => event.stopPropagation()}>
             <header>
               <h3>PowerShell: {selectedContext}</h3>
@@ -5355,7 +5351,7 @@ export function App() {
       )}
 
       {kubectlOpen && (
-        <div className="detail-panel-overlay" onClick={closeKubectl}>
+        <div className="detail-panel-overlay">
           <div className="detail-panel kubectl-panel" onClick={(event) => event.stopPropagation()}>
             <header>
               <h3>Kubectl: {selectedContext}</h3>
@@ -5410,7 +5406,7 @@ export function App() {
       )}
 
       {logResource && (
-        <div className="detail-panel-overlay" onClick={closeLogs}>
+        <div className="detail-panel-overlay">
           <div
             className={`detail-panel log-panel resizable-panel${maximizedPanels.logs ? " is-maximized" : ""}`}
             style={{ width: maximizedPanels.logs ? "100vw" : `min(${panelWidths.logs}px, 100vw)` }}
@@ -5478,14 +5474,11 @@ export function App() {
           </div>
         </div>
       )}
-
       {execResource && (
-        <div className="detail-panel-overlay" onClick={closeTerminal}>
-          <div
-            className={`detail-panel exec-panel resizable-panel${maximizedPanels.terminal ? " is-maximized" : ""}`}
-            style={{ width: maximizedPanels.terminal ? "100vw" : `min(${panelWidths.terminal}px, 100vw)` }}
-            onClick={(event) => event.stopPropagation()}
-          >
+        <div
+          className={`detail-panel exec-panel floating-panel resizable-panel${maximizedPanels.terminal ? " is-maximized" : ""}`}
+          style={{ width: maximizedPanels.terminal ? "100vw" : `min(${panelWidths.terminal}px, 100vw)` }}
+        >
             <div
               className="panel-resizer"
               role="separator"
@@ -5523,15 +5516,12 @@ export function App() {
               role="application"
               aria-label="Pod terminal"
               tabIndex={0}
-              onClick={focusTerminal}
-              onDoubleClick={focusTerminal}
             />
-          </div>
         </div>
       )}
 
       {kubeconfigSettingsOpen && (
-        <div className="detail-panel-overlay" onClick={() => setKubeconfigSettingsOpen(false)}>
+        <div className="detail-panel-overlay">
           <div className="detail-panel kubeconfig-panel" onClick={(event) => event.stopPropagation()}>
             <header>
               <div>
