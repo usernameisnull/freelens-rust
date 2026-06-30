@@ -1808,6 +1808,14 @@ function formatMemory(value: number | null | undefined): string {
   return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
 }
 
+function formatItemCount(total: number, visible: number = total, hasMore = false): string {
+  const totalLabel = `${total}${hasMore ? "+" : ""}`;
+  const itemLabel = total === 1 && !hasMore ? "item" : "items";
+  return visible === total
+    ? `${totalLabel} ${itemLabel}`
+    : `${visible} of ${totalLabel} ${itemLabel}`;
+}
+
 function formatClusterEndpoint(server: string | null | undefined): string | null {
   if (!server) return null;
   try {
@@ -3924,6 +3932,14 @@ export function App() {
     });
   }, [events, eventTypeFilter, resourceSearch, eventSortKey, eventSortDirection]);
 
+  const topbarItemCount = activeView === "resources"
+    ? formatItemCount(resources.length, visibleResources.length, Boolean(continueToken))
+    : activeView === "events"
+      ? formatItemCount(events.length, visibleEvents.length)
+      : activeView === "health"
+        ? formatItemCount(healthItems.length, visibleHealthItems.length)
+        : undefined;
+
   const changeEventSort = (key: string) => {
     if (eventSortKey === key) {
       setEventSortDirection((current) => (current === "asc" ? "desc" : "asc"));
@@ -4821,6 +4837,11 @@ export function App() {
               </span>
             )}
           </div>
+          {topbarItemCount && (
+            <div className="topbar-item-count" aria-live="polite">
+              {topbarItemCount}
+            </div>
+          )}
           <div className="topbar-controls">
             {activeView === "resources" && <>
               <input
