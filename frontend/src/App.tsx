@@ -1808,6 +1808,24 @@ function formatMemory(value: number | null | undefined): string {
   return `${amount >= 10 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
 }
 
+function resourceMetricsEqual(
+  left: Record<string, ResourceMetricItem>,
+  right: Record<string, ResourceMetricItem>,
+): boolean {
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => {
+    const leftItem = left[key];
+    const rightItem = right[key];
+    return Boolean(rightItem)
+      && leftItem.name === rightItem.name
+      && leftItem.namespace === rightItem.namespace
+      && leftItem.cpuMillicores === rightItem.cpuMillicores
+      && leftItem.memoryBytes === rightItem.memoryBytes;
+  });
+}
+
 function formatItemCount(total: number, visible: number = total, hasMore = false): string {
   const totalLabel = `${total}${hasMore ? "+" : ""}`;
   const itemLabel = total === 1 && !hasMore ? "item" : "items";
@@ -2805,7 +2823,7 @@ export function App() {
         : undefined;
       const metricsKind = resource.kind === "Pod" || resource.kind === "Node" ? resource.kind : undefined;
       const metricsRequest = ++metricsRequestRef.current;
-      setMetrics({});
+      if (!metricsKind) setMetrics({});
       setMetricsError(undefined);
       if (metricsKind) {
         transport.kubernetesListMetrics({
@@ -2815,10 +2833,11 @@ export function App() {
           namespace: metricsKind === "Pod" ? namespace || null : null,
         }).then((response: KubernetesListMetricsResponse) => {
           if (metricsRequest !== metricsRequestRef.current) return;
-          setMetrics(Object.fromEntries(response.items.map((item) => [
+          const nextMetrics = Object.fromEntries(response.items.map((item) => [
             `${item.namespace ?? ""}/${item.name}`,
             item,
-          ])));
+          ]));
+          setMetrics((current) => resourceMetricsEqual(current, nextMetrics) ? current : nextMetrics);
         }).catch((reason: unknown) => {
           if (metricsRequest === metricsRequestRef.current) setMetricsError(errorMessage(reason));
         });
@@ -4311,15 +4330,15 @@ export function App() {
         {selectedColumns.slice(0, 2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
         {selectedColumns.slice(2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
-        <td>{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
-        <td>{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
+        <td className="metric-cell cpu-cell">{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
+        <td className="metric-cell memory-cell">{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
       </> : <>
         <td>{item.namespace ?? "-"}</td>
         {selectedColumns.map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
         {selectedKind === "Pod" && <td className="controlled-by-cell">{renderControlledBy(item)}</td>}
         {selectedKind === "Pod" && <>
-          <td>{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
-          <td>{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
+          <td className="metric-cell cpu-cell">{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
+          <td className="metric-cell memory-cell">{formatMemory(metrics[`${item.namespace ?? ""}/${item.name}`]?.memoryBytes)}</td>
         </>}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
       </>}
@@ -5182,13 +5201,13 @@ export function App() {
                       {selectedColumns.slice(2).map((column) => (
                         <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
                       ))}
-                      <th>CPU</th><th>Memory</th>
+                      <th className="metric-cell cpu-cell">CPU</th><th className="metric-cell memory-cell">Memory</th>
                     </> : <>
                       <th>{renderResourceSortButton("namespace", "Namespace")}</th>
                       {selectedColumns.map((column) => (
                         <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
                       ))}
-                      {selectedKind === "Pod" && <><th>{renderResourceSortButton("controlledBy", "Controlled By")}</th><th>CPU</th><th>Memory</th></>}
+                      {selectedKind === "Pod" && <><th className="controlled-by-cell">{renderResourceSortButton("controlledBy", "Controlled By")}</th><th className="metric-cell cpu-cell">CPU</th><th className="metric-cell memory-cell">Memory</th></>}
                       <th>{renderResourceSortButton("age", "Age")}</th>
                     </>}
                     <th className="actions">Actions</th>

@@ -1363,6 +1363,25 @@ button.dashboard-card:hover {
   width: 1%;
 }
 
+.resource-list table.resource-table .metric-cell {
+  box-sizing: border-box;
+  width: 88px;
+  min-width: 88px;
+  max-width: 88px;
+}
+
+.resource-list table.resource-table .cpu-cell {
+  width: 72px;
+  min-width: 72px;
+  max-width: 72px;
+}
+
+.resource-list table.resource-table .memory-cell {
+  width: 96px;
+  min-width: 96px;
+  max-width: 96px;
+}
+
 .resource-list:not(.events-list) tbody tr {
   height: 44px;
 }
@@ -3240,7 +3259,8 @@ body.resizing-panel .yaml-structure-resizer {
 }
 
 .controlled-by-cell {
-  min-width: 170px;
+  width: 260px;
+  min-width: 260px;
   max-width: 260px;
   overflow: visible !important;
   position: relative;
