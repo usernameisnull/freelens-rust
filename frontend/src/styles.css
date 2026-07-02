@@ -1367,6 +1367,14 @@ button.dashboard-card:hover {
   box-sizing: border-box;
 }
 
+.resource-reference-cell {
+  color: #00b8d4;
+}
+
+.resource-reference-cell .resource-status {
+  color: inherit;
+}
+
 .resource-list:not(.events-list) tbody tr {
   height: 44px;
 }

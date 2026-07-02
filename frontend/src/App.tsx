@@ -1642,6 +1642,13 @@ function renderResourceColumnValue(item: ResourceItem, columnKey: string) {
   return renderResourceStatusValue(item.kind, columnKey, item.columns);
 }
 
+function resourceColumnCellClassName(columnKey: string): string | undefined {
+  const classes: string[] = [];
+  if (columnKey === "containers") classes.push("containers-cell");
+  if (columnKey === "node") classes.push("resource-reference-cell");
+  return classes.length ? classes.join(" ") : undefined;
+}
+
 interface OwnerChainEntry {
   apiVersion: string;
   kind: string;
@@ -4595,14 +4602,14 @@ export function App() {
     >
       <td className="resource-name-cell" title={item.name}>{item.name}</td>
       {selectedKind === "Node" ? <>
-        {selectedColumns.slice(0, 2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
+        {selectedColumns.slice(0, 2).map((column) => <td key={column.key} className={resourceColumnCellClassName(column.key)}>{renderResourceColumnValue(item, column.key)}</td>)}
         <td title={item.created ? new Date(item.created).toLocaleString() : undefined}>{formatAge(item.created)}</td>
-        {selectedColumns.slice(2).map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
+        {selectedColumns.slice(2).map((column) => <td key={column.key} className={resourceColumnCellClassName(column.key)}>{renderResourceColumnValue(item, column.key)}</td>)}
         <td className="metric-cell cpu-cell">{formatCpu(metrics[`/${item.name}`]?.cpuMillicores)}</td>
         <td className="metric-cell memory-cell">{formatMemory(metrics[`/${item.name}`]?.memoryBytes)}</td>
       </> : <>
-        <td>{item.namespace ?? "-"}</td>
-        {selectedColumns.map((column) => <td key={column.key} className={column.key === "containers" ? "containers-cell" : undefined}>{renderResourceColumnValue(item, column.key)}</td>)}
+        <td className="resource-reference-cell">{item.namespace ?? "-"}</td>
+        {selectedColumns.map((column) => <td key={column.key} className={resourceColumnCellClassName(column.key)}>{renderResourceColumnValue(item, column.key)}</td>)}
         {selectedKind === "Pod" && <td className="controlled-by-cell">{renderControlledBy(item)}</td>}
         {selectedKind === "Pod" && <>
           <td className="metric-cell cpu-cell">{formatCpu(metrics[`${item.namespace ?? ""}/${item.name}`]?.cpuMillicores)}</td>
@@ -5405,7 +5412,7 @@ export function App() {
                       >
                         <td>{item.kind}</td>
                         <td className="resource-name-cell" title={item.name}>{item.name}</td>
-                        <td>{item.namespace ?? "-"}</td>
+                        <td className="resource-reference-cell">{item.namespace ?? "-"}</td>
                         <td>
                           {item.columns.status !== undefined
                             ? renderResourceStatusValue(item.kind, "status", item.columns)
@@ -5450,7 +5457,7 @@ export function App() {
                             </button>
                           ) : "-"}
                         </td>
-                        <td>{event.namespace ?? event.objectNamespace ?? "-"}</td>
+                        <td className="resource-reference-cell">{event.namespace ?? event.objectNamespace ?? "-"}</td>
                         <td className="event-message">{event.message ?? "-"}</td>
                         <td>{event.count ?? "-"}</td>
                       </tr>
