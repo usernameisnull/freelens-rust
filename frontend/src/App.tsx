@@ -1905,6 +1905,48 @@ function RefreshControl({
   );
 }
 
+type ResourceTableColumn = {
+  id: string;
+  className?: string;
+  defaultWidth: number;
+  minWidth: number;
+  maxWidth?: number;
+};
+
+const RESOURCE_COLUMN_MIN_WIDTH = 64;
+const RESOURCE_COLUMN_WIDTHS_STORAGE_KEY = "freelens.resourceColumnWidths";
+const DEFAULT_RESOURCE_COLUMN_WIDTHS: Record<string, number> = {
+  name: 360,
+  namespace: 160,
+  status: 120,
+  ready: 100,
+  containers: 150,
+  restarts: 110,
+  node: 150,
+  controlledBy: 260,
+  cpu: 72,
+  memory: 96,
+  age: 90,
+  actions: 92,
+  data: 110,
+  type: 220,
+};
+
+function resourceColumnDefaultWidth(columnId: string): number {
+  return DEFAULT_RESOURCE_COLUMN_WIDTHS[columnId] ?? 160;
+}
+
+function resourceColumnMinWidth(columnId: string): number {
+  if (columnId === "actions") return 72;
+  if (columnId === "cpu" || columnId === "memory" || columnId === "age") return 64;
+  return RESOURCE_COLUMN_MIN_WIDTH;
+}
+
+function clampResourceColumnWidth(column: ResourceTableColumn, width: number): number {
+  const minWidth = column.minWidth;
+  const maxWidth = column.maxWidth ?? 640;
+  return Math.min(maxWidth, Math.max(minWidth, Math.round(width)));
+}
 export function App() {
   const [sidebarWidth, setSidebarWidth] = useState(() => {
     const saved = Number(window.localStorage.getItem("freelens.sidebarWidth"));
@@ -1985,7 +2027,17 @@ export function App() {
     ?? selectedResource.columns
       .filter((column) => column.priority === 0)
       .map((column) => ({ key: column.name, label: column.name }));
-
+  const [resourceColumnWidths, setResourceColumnWidths] = useState<Record<string, number>>(() => {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(RESOURCE_COLUMN_WIDTHS_STORAGE_KEY) ?? "{}");
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+        ? Object.fromEntries(Object.entries(parsed).filter(([, value]) => Number.isFinite(value))) as Record<string, number>
+        : {};
+    } catch {
+      return {};
+    }
+  });
+  const [resourceColumnResizeGuide, setResourceColumnResizeGuide] = useState<{ left: number; top: number; height: number } | null>(null);
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const resourcesRef = useRef<ResourceItem[]>([]);
   const [ownerLookupItems, setOwnerLookupItems] = useState<ResourceItem[]>([]);
@@ -3984,9 +4036,128 @@ export function App() {
     setOwnerChainOpenKey(null);
   }, [activeView, resourceSearch, selectedKind, selectedNamespace, sortKey, sortDirection, resources.length, healthItems.length]);
 
-  const resourceColumnCount = selectedKind === "Node"
-    ? selectedColumns.length + 4
-    : selectedColumns.length + (selectedKind === "Pod" ? 7 : 4);
+  useEffect(() => {
+    window.localStorage.setItem(RESOURCE_COLUMN_WIDTHS_STORAGE_KEY, JSON.stringify(resourceColumnWidths));
+  }, [resourceColumnWidths]);
+
+  const resourceTableColumns = useMemo<ResourceTableColumn[]>(() => {
+    const column = (id: string, className?: string): ResourceTableColumn => ({
+      id,
+      className,
+      defaultWidth: resourceColumnDefaultWidth(id),
+      minWidth: resourceColumnMinWidth(id),
+    });
+    const dynamicColumn = (id: string): ResourceTableColumn => column(id);
+    const columns: ResourceTableColumn[] = [column("name", "resource-name-cell")];
+
+    if (selectedKind === "Node") {
+      columns.push(...selectedColumns.slice(0, 2).map((item) => dynamicColumn(item.key)));
+      columns.push(column("age"));
+      columns.push(...selectedColumns.slice(2).map((item) => dynamicColumn(item.key)));
+      columns.push(column("cpu", "metric-cell cpu-cell"), column("memory", "metric-cell memory-cell"));
+    } else {
+      columns.push(column("namespace"));
+      columns.push(...selectedColumns.map((item) => dynamicColumn(item.key)));
+      if (selectedKind === "Pod") {
+        columns.push(
+          column("controlledBy", "controlled-by-cell"),
+          column("cpu", "metric-cell cpu-cell"),
+          column("memory", "metric-cell memory-cell"),
+        );
+      }
+      columns.push(column("age"));
+    }
+
+    columns.push(column("actions", "actions"));
+    return columns;
+  }, [selectedColumns, selectedKind]);
+
+  const resourceColumnStoragePrefix = resourceKey(selectedResource);
+  const resourceColumnStorageKey = (columnId: string) => `${resourceColumnStoragePrefix}:${columnId}`;
+  const resourceColumnWidth = (column: ResourceTableColumn) =>
+    resourceColumnWidths[resourceColumnStorageKey(column.id)] ?? column.defaultWidth;
+  const resourceTableWidth = `max(100%, ${resourceTableColumns.reduce((total, column) => total + resourceColumnWidth(column), 0)}px)`;
+
+  const startResourceColumnResize = (event: ReactPointerEvent<HTMLButtonElement>, column: ResourceTableColumn) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const storageKey = resourceColumnStorageKey(column.id);
+    const startX = event.clientX;
+    const startWidth = resourceColumnWidth(column);
+    const container = resourceListRef.current;
+    const table = resourceTableRef.current;
+    const containerRect = container?.getBoundingClientRect();
+    const tableRect = table?.getBoundingClientRect();
+    const headerCellRect = event.currentTarget.closest("th")?.getBoundingClientRect();
+    const startGuideLeft = container && containerRect && headerCellRect
+      ? headerCellRect.right - containerRect.left + container.scrollLeft
+      : 0;
+    const guideTop = container && containerRect && tableRect
+      ? tableRect.top - containerRect.top + container.scrollTop
+      : 0;
+    const guideHeight = container
+      ? Math.max(
+        (table?.offsetHeight ?? 0),
+        container.scrollHeight - guideTop,
+        container.clientHeight - guideTop,
+      )
+      : table?.offsetHeight ?? 0;
+    const updateGuide = (width: number) => {
+      if (!containerRect || guideHeight <= 0) return;
+      setResourceColumnResizeGuide({
+        left: startGuideLeft + width - startWidth,
+        top: guideTop,
+        height: guideHeight,
+      });
+    };
+    updateGuide(startWidth);
+    document.body.classList.add("resizing-resource-column");
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const nextWidth = clampResourceColumnWidth(column, startWidth + moveEvent.clientX - startX);
+      updateGuide(nextWidth);
+      setResourceColumnWidths((current) => {
+        if (current[storageKey] === nextWidth) return current;
+        return { ...current, [storageKey]: nextWidth };
+      });
+    };
+    const handlePointerUp = () => {
+      document.body.classList.remove("resizing-resource-column");
+      setResourceColumnResizeGuide(null);
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp, { once: true });
+  };
+
+  const renderResourceHeaderCell = (column: ResourceTableColumn, content: ReactNode) => (
+    <th key={column.id} className={column.className}>
+      <div className="resource-column-header">
+        <span className="resource-column-header-content">{content}</span>
+        <button
+          type="button"
+          className="resource-column-resizer"
+          aria-label={`Resize ${column.id} column`}
+          onPointerDown={(event) => startResourceColumnResize(event, column)}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        />
+      </div>
+    </th>
+  );
+  const resourceHeaderColumn = (columnId: string) =>
+    resourceTableColumns.find((column) => column.id === columnId)
+      ?? {
+        id: columnId,
+        defaultWidth: resourceColumnDefaultWidth(columnId),
+        minWidth: resourceColumnMinWidth(columnId),
+      };
+
+  const resourceColumnCount = resourceTableColumns.length;
   const virtualizeResources = visibleResources.length > RESOURCE_VIRTUAL_THRESHOLD;
   const resourceScrollInsideTable = Math.max(0, resourceScrollTop - resourceTableTop);
   const virtualStartIndex = virtualizeResources
@@ -5306,34 +5477,55 @@ export function App() {
               </div>
             )}
             <div className="resource-list-scroll" ref={resourceListRef} onScroll={handleResourceListScroll}>
+              {resourceColumnResizeGuide && (
+                <div
+                  className="resource-column-resize-guide"
+                  style={{
+                    left: resourceColumnResizeGuide.left,
+                    top: resourceColumnResizeGuide.top,
+                    height: resourceColumnResizeGuide.height,
+                  }}
+                />
+              )}
               <table
                 ref={resourceTableRef}
                 className={[
                   "resource-table",
                   virtualizeResources ? "virtualized-table" : "",
                 ].filter(Boolean).join(" ")}
+                style={{ width: resourceTableWidth }}
               >
+                <colgroup>
+                  {resourceTableColumns.map((column) => (
+                    <col key={column.id} style={{ width: resourceColumnWidth(column) }} />
+                  ))}
+                </colgroup>
                 <thead>
                   <tr>
-                    <th className="resource-name-cell">{renderResourceSortButton("name", "Name")}</th>
+                    {renderResourceHeaderCell(resourceHeaderColumn("name"), renderResourceSortButton("name", "Name"))}
                     {selectedKind === "Node" ? <>
                       {selectedColumns.slice(0, 2).map((column) => (
-                        <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
+                        renderResourceHeaderCell(resourceHeaderColumn(column.key), renderResourceSortButton(column.key, column.label))
                       ))}
-                      <th>{renderResourceSortButton("age", "Age")}</th>
+                      {renderResourceHeaderCell(resourceHeaderColumn("age"), renderResourceSortButton("age", "Age"))}
                       {selectedColumns.slice(2).map((column) => (
-                        <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
+                        renderResourceHeaderCell(resourceHeaderColumn(column.key), renderResourceSortButton(column.key, column.label))
                       ))}
-                      <th className="metric-cell cpu-cell">CPU</th><th className="metric-cell memory-cell">Memory</th>
+                      {renderResourceHeaderCell(resourceHeaderColumn("cpu"), "CPU")}
+                      {renderResourceHeaderCell(resourceHeaderColumn("memory"), "Memory")}
                     </> : <>
-                      <th>{renderResourceSortButton("namespace", "Namespace")}</th>
+                      {renderResourceHeaderCell(resourceHeaderColumn("namespace"), renderResourceSortButton("namespace", "Namespace"))}
                       {selectedColumns.map((column) => (
-                        <th key={column.key}>{renderResourceSortButton(column.key, column.label)}</th>
+                        renderResourceHeaderCell(resourceHeaderColumn(column.key), renderResourceSortButton(column.key, column.label))
                       ))}
-                      {selectedKind === "Pod" && <><th className="controlled-by-cell">{renderResourceSortButton("controlledBy", "Controlled By")}</th><th className="metric-cell cpu-cell">CPU</th><th className="metric-cell memory-cell">Memory</th></>}
-                      <th>{renderResourceSortButton("age", "Age")}</th>
+                      {selectedKind === "Pod" && <>
+                        {renderResourceHeaderCell(resourceHeaderColumn("controlledBy"), renderResourceSortButton("controlledBy", "Controlled By"))}
+                        {renderResourceHeaderCell(resourceHeaderColumn("cpu"), "CPU")}
+                        {renderResourceHeaderCell(resourceHeaderColumn("memory"), "Memory")}
+                      </>}
+                      {renderResourceHeaderCell(resourceHeaderColumn("age"), renderResourceSortButton("age", "Age"))}
                     </>}
-                    <th className="actions">Actions</th>
+                    {renderResourceHeaderCell(resourceHeaderColumn("actions"), "Actions")}
                   </tr>
                 </thead>
                 <tbody>
