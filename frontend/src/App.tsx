@@ -2045,6 +2045,7 @@ export function App() {
     }
   });
   const [resourceColumnResizeGuide, setResourceColumnResizeGuide] = useState<{ left: number; top: number; height: number } | null>(null);
+  const resourceColumnResizeRafRef = useRef<number | undefined>(undefined);
   const [resources, setResources] = useState<ResourceItem[]>([]);
   const resourcesRef = useRef<ResourceItem[]>([]);
   const [ownerLookupItems, setOwnerLookupItems] = useState<ResourceItem[]>([]);
@@ -4091,46 +4092,48 @@ export function App() {
     const storageKey = resourceColumnStorageKey(column.id);
     const startX = event.clientX;
     const startWidth = resourceColumnWidth(column);
-    const container = resourceListRef.current;
-    const table = resourceTableRef.current;
-    const containerRect = container?.getBoundingClientRect();
-    const tableRect = table?.getBoundingClientRect();
-    const headerCellRect = event.currentTarget.closest("th")?.getBoundingClientRect();
-    const startGuideLeft = container && containerRect && headerCellRect
-      ? headerCellRect.right - containerRect.left + container.scrollLeft
-      : 0;
-    const guideTop = container && containerRect && tableRect
-      ? tableRect.top - containerRect.top + container.scrollTop
-      : 0;
-    const guideHeight = container
-      ? Math.max(
-        (table?.offsetHeight ?? 0),
-        container.scrollHeight - guideTop,
-        container.clientHeight - guideTop,
-      )
-      : table?.offsetHeight ?? 0;
-    const updateGuide = (width: number) => {
-      if (!containerRect || guideHeight <= 0) return;
-      setResourceColumnResizeGuide({
-        left: startGuideLeft + width - startWidth,
-        top: guideTop,
-        height: guideHeight,
+    const headerCell = event.currentTarget.closest("th");
+    const updateGuide = () => {
+      if (resourceColumnResizeRafRef.current !== undefined) {
+        window.cancelAnimationFrame(resourceColumnResizeRafRef.current);
+      }
+      resourceColumnResizeRafRef.current = window.requestAnimationFrame(() => {
+        const nextContainer = resourceListRef.current;
+        const nextTable = resourceTableRef.current;
+        const nextContainerRect = nextContainer?.getBoundingClientRect();
+        const nextTableRect = nextTable?.getBoundingClientRect();
+        const nextHeaderCellRect = headerCell?.getBoundingClientRect();
+        if (!nextContainer || !nextContainerRect || !nextTableRect || !nextHeaderCellRect) return;
+        const top = nextTableRect.top - nextContainerRect.top + nextContainer.scrollTop;
+        setResourceColumnResizeGuide({
+          left: nextHeaderCellRect.right - nextContainerRect.left + nextContainer.scrollLeft,
+          top,
+          height: Math.max(
+            nextTable?.offsetHeight ?? 0,
+            nextContainer.scrollHeight - top,
+            nextContainer.clientHeight - top,
+          ),
+        });
       });
     };
-    updateGuide(startWidth);
+    updateGuide();
     document.body.classList.add("resizing-resource-column");
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
       const nextWidth = clampResourceColumnWidth(column, startWidth + moveEvent.clientX - startX);
-      updateGuide(nextWidth);
       setResourceColumnWidths((current) => {
         if (current[storageKey] === nextWidth) return current;
         return { ...current, [storageKey]: nextWidth };
       });
+      updateGuide();
     };
     const handlePointerUp = () => {
       document.body.classList.remove("resizing-resource-column");
       setResourceColumnResizeGuide(null);
+      if (resourceColumnResizeRafRef.current !== undefined) {
+        window.cancelAnimationFrame(resourceColumnResizeRafRef.current);
+        resourceColumnResizeRafRef.current = undefined;
+      }
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
     };
