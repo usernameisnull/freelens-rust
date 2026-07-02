@@ -601,6 +601,32 @@ function optionButtonElement(
   return button;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function createLogSearchPattern(
+  search: string,
+  caseSensitive: boolean,
+  regexp: boolean,
+  wholeWord: boolean,
+): RegExp | undefined {
+  if (!search) return undefined;
+  const source = regexp ? search : escapeRegExp(search);
+  const wordSource = wholeWord ? `\\b(?:${source})\\b` : source;
+  try {
+    return new RegExp(wordSource, caseSensitive ? "g" : "gi");
+  } catch {
+    return undefined;
+  }
+}
+
+interface LogSearchMatch {
+  lineIndex: number;
+  start: number;
+  end: number;
+}
+
 class YamlSearchPanel implements Panel {
   readonly dom: HTMLDivElement;
   private readonly searchField: HTMLInputElement;
@@ -2054,8 +2080,16 @@ export function App() {
   const [selectedLogContainer, setSelectedLogContainer] = useState("");
   const [logPreparing, setLogPreparing] = useState(false);
   const [logError, setLogError] = useState<string>();
+  const [logSearchOpen, setLogSearchOpen] = useState(true);
+  const [logSearch, setLogSearch] = useState("");
+  const [logSearchCaseSensitive, setLogSearchCaseSensitive] = useState(false);
+  const [logSearchRegexp, setLogSearchRegexp] = useState(false);
+  const [logSearchWholeWord, setLogSearchWholeWord] = useState(false);
+  const [currentLogSearchIndex, setCurrentLogSearchIndex] = useState(0);
   const logPrepareRequestRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const logSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const logMatchRefs = useRef<Array<HTMLElement | null>>([]);
   const [execResource, setExecResource] = useState<ResourceItem>();
   const [execContainers, setExecContainers] = useState<string[]>([]);
   const [execContainer, setExecContainer] = useState("");
@@ -2785,9 +2819,69 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [activeView, refreshSeconds, selectedContext, selectedKind, selectedApiVersion, selectedNamespace]);
 
+  const logSearchPattern = useMemo(
+    () => createLogSearchPattern(logSearch, logSearchCaseSensitive, logSearchRegexp, logSearchWholeWord),
+    [logSearch, logSearchCaseSensitive, logSearchRegexp, logSearchWholeWord],
+  );
+  const logSearchValid = !logSearch || Boolean(logSearchPattern);
+  const logSearchMatches = useMemo<LogSearchMatch[]>(() => {
+    if (!logSearchPattern) return [];
+    const matches: LogSearchMatch[] = [];
+    logs.forEach((line, lineIndex) => {
+      logSearchPattern.lastIndex = 0;
+      for (let match = logSearchPattern.exec(line); match; match = logSearchPattern.exec(line)) {
+        if (match[0].length === 0) {
+          logSearchPattern.lastIndex += 1;
+          continue;
+        }
+        matches.push({ lineIndex, start: match.index, end: match.index + match[0].length });
+      }
+    });
+    return matches;
+  }, [logs, logSearchPattern]);
+  const visibleLogSearchIndex = Math.min(currentLogSearchIndex, Math.max(logSearchMatches.length - 1, 0));
+  const logSearchCountLabel = logSearch
+    ? logSearchValid && logSearchMatches.length > 0
+      ? `${visibleLogSearchIndex + 1}/${logSearchMatches.length}`
+      : "0/0"
+    : "0/0";
+  const moveLogSearchMatch = useCallback((direction: 1 | -1) => {
+    setCurrentLogSearchIndex((current) => {
+      if (logSearchMatches.length === 0) return 0;
+      return (current + direction + logSearchMatches.length) % logSearchMatches.length;
+    });
+  }, [logSearchMatches.length]);
+
   useEffect(() => {
+    setCurrentLogSearchIndex(0);
+  }, [logSearch, logSearchCaseSensitive, logSearchRegexp, logSearchWholeWord]);
+
+  useEffect(() => {
+    setCurrentLogSearchIndex((current) => Math.min(current, Math.max(logSearchMatches.length - 1, 0)));
+  }, [logSearchMatches.length]);
+
+  useEffect(() => {
+    if (!logSearch || logSearchMatches.length === 0) return;
+    logMatchRefs.current[visibleLogSearchIndex]?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+  }, [logSearch, logSearchMatches.length, visibleLogSearchIndex]);
+
+  useEffect(() => {
+    if (logSearch && logSearchMatches.length > 0) return;
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
+  }, [logs, logSearch, logSearchMatches.length]);
+
+  useEffect(() => {
+    if (!logResource) return;
+    const openLogSearch = (event: KeyboardEvent) => {
+      if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setLogSearchOpen(true);
+      requestAnimationFrame(() => logSearchInputRef.current?.select());
+    };
+    window.addEventListener("keydown", openLogSearch, { capture: true });
+    return () => window.removeEventListener("keydown", openLogSearch, { capture: true });
+  }, [logResource]);
 
   const loadResources = (
     token: string | null = null,
@@ -3157,6 +3251,7 @@ export function App() {
     void stopLogs();
     const resource = { namespace: item.namespace, name: item.name };
     setLogResource(resource);
+    setLogSearchOpen(true);
     setLogContainers([]);
     setSelectedLogContainer("");
     setLogs([]);
@@ -3211,6 +3306,8 @@ export function App() {
     setLogs([]);
     setLogError(undefined);
     setLogPreparing(false);
+    setLogSearch("");
+    setCurrentLogSearchIndex(0);
   };
 
   const closeDetail = () => {
@@ -4564,6 +4661,32 @@ export function App() {
       ])),
     }));
   };
+  const renderLogLine = useCallback((line: string, lineIndex: number) => {
+    if (!logSearch || logSearchMatches.length === 0) return line;
+    const lineMatches = logSearchMatches
+      .map((match, matchIndex) => ({ match, matchIndex }))
+      .filter(({ match }) => match.lineIndex === lineIndex);
+    if (lineMatches.length === 0) return line;
+
+    const parts: ReactNode[] = [];
+    let cursor = 0;
+    for (const { match, matchIndex } of lineMatches) {
+      if (match.start > cursor) parts.push(line.slice(cursor, match.start));
+      parts.push(
+        <mark
+          key={`${match.start}-${matchIndex}`}
+          ref={(element) => { logMatchRefs.current[matchIndex] = element; }}
+          className={`log-search-match${matchIndex === visibleLogSearchIndex ? " selected" : ""}`}
+        >
+          {line.slice(match.start, match.end)}
+        </mark>
+      );
+      cursor = match.end;
+    }
+    if (cursor < line.length) parts.push(line.slice(cursor));
+    return parts;
+  }, [logSearch, logSearchMatches, visibleLogSearchIndex]);
+
   const renderResourceNavigationItem = (resource: ResourceKindItem, groupLabel: string) => {
     const key = resourceKey(resource);
     const isFavorite = favoriteResourceKeys.includes(key);
@@ -5562,12 +5685,77 @@ export function App() {
             </div>
             {logError && <p className="error-message">{logError}</p>}
             <div className="log-content">
+              {logSearchOpen && (
+                <div className="log-search-panel" role="search" onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    moveLogSearchMatch(event.shiftKey ? -1 : 1);
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    setLogSearchOpen(false);
+                  }
+                }}>
+                  <div className="log-search-fields">
+                    <div className="log-search-row">
+                      <input
+                        ref={logSearchInputRef}
+                        name="log-find-query"
+                        value={logSearch}
+                        onChange={(event) => setLogSearch(event.target.value)}
+                        placeholder="Find"
+                        aria-label="Find"
+                        autoComplete="off"
+                        autoCapitalize="off"
+                        spellCheck={false}
+                        data-lpignore="true"
+                        data-form-type="other"
+                      />
+                    </div>
+                  </div>
+                  <div className="log-search-actions">
+                    <span className="log-search-count">{logSearchCountLabel}</span>
+                    <button type="button" name="prev" title="Previous match" aria-label="Previous match" onClick={() => moveLogSearchMatch(-1)}>↑</button>
+                    <button type="button" name="next" title="Next match" aria-label="Next match" onClick={() => moveLogSearchMatch(1)}>↓</button>
+                    <button
+                      type="button"
+                      name="option"
+                      title="Match case"
+                      aria-label="Match case"
+                      aria-pressed={logSearchCaseSensitive}
+                      onClick={() => setLogSearchCaseSensitive((current) => !current)}
+                    >
+                      Aa
+                    </button>
+                    <button
+                      type="button"
+                      name="option"
+                      title="Use regular expression"
+                      aria-label="Use regular expression"
+                      aria-pressed={logSearchRegexp}
+                      onClick={() => setLogSearchRegexp((current) => !current)}
+                    >
+                      .*
+                    </button>
+                    <button
+                      type="button"
+                      name="option"
+                      title="Match whole word"
+                      aria-label="Match whole word"
+                      aria-pressed={logSearchWholeWord}
+                      onClick={() => setLogSearchWholeWord((current) => !current)}
+                    >
+                      W
+                    </button>
+                    <button type="button" name="close" title="Close search" aria-label="Close search" onClick={() => setLogSearchOpen(false)}>×</button>
+                  </div>
+                </div>
+              )}
               {logOperationId && logs.length === 0 && (
                 <div className="log-empty">Waiting for log output…</div>
               )}
               {logs.map((line, index) => (
                 <div key={index} className="log-line">
-                  {line}
+                  {renderLogLine(line, index)}
                 </div>
               ))}
               <div ref={logEndRef} />
