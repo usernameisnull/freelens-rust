@@ -2161,7 +2161,7 @@ export function App() {
   const watchRefreshActionRef = useRef<() => void>(() => {});
 
   const [detail, setDetail] = useState<KubernetesGetResourceDetailResponse>();
-  const [detailTab, setDetailTab] = useState<"overview" | "yaml">("overview");
+  const [detailTab, setDetailTab] = useState<"overview" | "yaml" | "logs" | "terminal">("overview");
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string>();
   const [yamlDraft, setYamlDraft] = useState("");
@@ -2181,9 +2181,12 @@ export function App() {
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
   const [resourceActionKey, setResourceActionKey] = useState<string>();
+  const [deleteConfirmation, setDeleteConfirmation] = useState<ResourceItem>();
+  const [deleteError, setDeleteError] = useState<string>();
   const [openResourceActionMenu, setOpenResourceActionMenu] = useState<string>();
   const [logContainerMenu, setLogContainerMenu] = useState<{
     resourceKey: string;
+    action: "logs" | "terminal";
     containers: string[];
     loading: boolean;
     error?: string;
@@ -2216,7 +2219,7 @@ export function App() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const logSearchInputRef = useRef<HTMLInputElement | null>(null);
   const logMatchRefs = useRef<Array<HTMLElement | null>>([]);
-  const [execResource, setExecResource] = useState<ResourceItem>();
+  const [execResource, setExecResource] = useState<Pick<ResourceItem, "namespace" | "name">>();
   const [execContainers, setExecContainers] = useState<string[]>([]);
   const [execContainer, setExecContainer] = useState("");
   const [execLoading, setExecLoading] = useState(false);
@@ -2225,6 +2228,8 @@ export function App() {
   const terminalSessionIdRef = useRef<string | undefined>(undefined);
   const terminalReadyRef = useRef(false);
   const terminalInputQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const terminalAutoStartContainerRef = useRef<string | undefined>(undefined);
+  const startTerminalRef = useRef<((container?: string) => Promise<void>) | undefined>(undefined);
   const terminalHostRef = useRef<HTMLDivElement | null>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const xtermFitRef = useRef<FitAddon | null>(null);
@@ -2647,8 +2652,13 @@ export function App() {
     terminal.open(terminalElement);
     xtermRef.current = terminal;
     xtermFitRef.current = fit;
-    terminal.writeln("Select a container and start a terminal session.");
+    terminal.writeln("Connecting to terminal session…");
     window.setTimeout(() => terminalSize(), 0);
+    const autoStartContainer = terminalAutoStartContainerRef.current;
+    if (autoStartContainer) {
+      terminalAutoStartContainerRef.current = undefined;
+      void startTerminalRef.current?.(autoStartContainer);
+    }
     const dataDisposable = terminal.onData((data) => {
       const sessionId = terminalSessionIdRef.current;
       if (!sessionId) return;
@@ -2701,7 +2711,7 @@ export function App() {
       xtermRef.current = null;
       xtermFitRef.current = null;
     };
-  }, [execResource, syncTerminalSize, terminalSize]);
+  }, [detailLoading, detailTab, execResource, syncTerminalSize, terminalSize]);
 
   useEffect(() => {
     const terminalElement = localTerminalHostRef.current;
@@ -3043,8 +3053,10 @@ export function App() {
         : undefined;
       const metricsKind = resource.kind === "Pod" || resource.kind === "Node" ? resource.kind : undefined;
       const metricsRequest = ++metricsRequestRef.current;
-      if (!metricsKind) setMetrics({});
-      setMetricsError(undefined);
+      if (!metricsKind) {
+        setMetrics({});
+        setMetricsError(undefined);
+      }
       if (metricsKind) {
         transport.kubernetesListMetrics({
           meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -3053,6 +3065,7 @@ export function App() {
           namespace: metricsKind === "Pod" ? namespace || null : null,
         }).then((response: KubernetesListMetricsResponse) => {
           if (metricsRequest !== metricsRequestRef.current) return;
+          setMetricsError(undefined);
           const nextMetrics = Object.fromEntries(response.items.map((item) => [
             `${item.namespace ?? ""}/${item.name}`,
             item,
@@ -3299,13 +3312,16 @@ export function App() {
     selectedResource,
   ]);
 
-  const openDetail = (item: ResourceItem) => {
+  const openDetail = (
+    item: ResourceItem,
+    initialTab: "overview" | "yaml" | "logs" | "terminal" = "overview",
+  ) => {
     if (!selectedContext) return;
     const requestNumber = ++detailRequestRef.current;
     setDetail(undefined);
     setDetailLoading(true);
     setDetailError(undefined);
-    setDetailTab("overview");
+    setDetailTab(initialTab);
     setYamlEditing(false);
     setShowYamlManagedFields(false);
     setConfigMapDataDraft({});
@@ -3372,7 +3388,7 @@ export function App() {
       });
   };
 
-  const startLogs = (item: ResourceItem, container: string, containers: string[]) => {
+  const startLogs = (item: Pick<ResourceItem, "namespace" | "name">, container: string, containers: string[]) => {
     if (!selectedContext || !item.namespace || !container) return;
     void stopLogs();
     const resource = { namespace: item.namespace, name: item.name };
@@ -3387,12 +3403,12 @@ export function App() {
     beginLogStream(container, resource);
   };
 
-  const openLogContainerMenu = (item: ResourceItem) => {
+  const openPodContainerMenu = (item: ResourceItem, action: "logs" | "terminal") => {
     if (!selectedContext || !item.namespace) return;
     const resourceKey = resourceActionMenuKey(item);
-    if (logContainerMenu?.resourceKey === resourceKey) return;
+    if (logContainerMenu?.resourceKey === resourceKey && logContainerMenu.action === action) return;
     const requestNumber = ++logContainerMenuRequestRef.current;
-    setLogContainerMenu({ resourceKey, containers: [], loading: true });
+    setLogContainerMenu({ resourceKey, action, containers: [], loading: true });
     transport
       .kubernetesGetPodContainers({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -3402,12 +3418,12 @@ export function App() {
       })
       .then((response) => {
         if (requestNumber === logContainerMenuRequestRef.current) {
-          setLogContainerMenu({ resourceKey, containers: response.containers, loading: false });
+          setLogContainerMenu({ resourceKey, action, containers: response.containers, loading: false });
         }
       })
       .catch((reason: unknown) => {
         if (requestNumber === logContainerMenuRequestRef.current) {
-          setLogContainerMenu({ resourceKey, containers: [], loading: false, error: errorMessage(reason) });
+          setLogContainerMenu({ resourceKey, action, containers: [], loading: false, error: errorMessage(reason) });
         }
       });
   };
@@ -3460,6 +3476,23 @@ export function App() {
   };
 
   const closeDetail = () => {
+    const closingDetail = detail;
+    if (
+      closingDetail
+      && logResource
+      && closingDetail.namespace === logResource.namespace
+      && closingDetail.name === logResource.name
+    ) {
+      closeLogs();
+    }
+    if (
+      closingDetail
+      && execResource
+      && closingDetail.namespace === execResource.namespace
+      && closingDetail.name === execResource.name
+    ) {
+      closeTerminal();
+    }
     detailRequestRef.current += 1;
     setDetail(undefined);
     setDetailLoading(false);
@@ -3719,13 +3752,20 @@ export function App() {
     }
   };
 
-  const deleteResource = async (item: ResourceItem) => {
+  const deleteResource = (item: ResourceItem) => {
     if (!selectedContext) return;
-    if (!window.confirm(`Delete ${item.kind} ${item.namespace ? `${item.namespace}/` : ""}${item.name}?`)) return;
-    const actionKey = `${item.kind}/${item.namespace ?? ""}/${item.name}/delete`;
-    setResourceActionKey(actionKey);
     setActionError(undefined);
     setActionMessage(undefined);
+    setDeleteError(undefined);
+    setDeleteConfirmation(item);
+  };
+
+  const confirmDeleteResource = async () => {
+    const item = deleteConfirmation;
+    if (!selectedContext || !item) return;
+    const actionKey = `${item.kind}/${item.namespace ?? ""}/${item.name}/delete`;
+    setResourceActionKey(actionKey);
+    setDeleteError(undefined);
     try {
       await transport.kubernetesDeleteResource({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -3739,10 +3779,10 @@ export function App() {
         && detail.name === item.name && detail.namespace === item.namespace) {
         closeDetail();
       }
-      setActionMessage(`${item.kind} deletion requested`);
-      loadResources();
+      setDeleteConfirmation(undefined);
+      loadResources(null, selectedResource, selectedNamespace, { background: true });
     } catch (reason) {
-      setActionError(errorMessage(reason));
+      setDeleteError(errorMessage(reason));
     } finally {
       setResourceActionKey(undefined);
     }
@@ -3828,39 +3868,22 @@ export function App() {
     }
   };
 
-  const openExec = async (item: ResourceItem) => {
-    if (!selectedContext || !item.namespace) return;
+  const openExec = (item: Pick<ResourceItem, "namespace" | "name">, container: string, containers: string[]) => {
+    if (!item.namespace || !container) return;
     setExecResource(item);
-    setExecContainers([]);
-    setExecContainer("");
+    setExecContainers(containers);
+    setExecContainer(container);
     setExecError(undefined);
-    setExecLoading(true);
-    try {
-      const response = await transport.kubernetesGetPodContainers({
-        meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
-        context: selectedContext,
-        namespace: item.namespace,
-        pod: item.name,
-      });
-      setExecContainers(response.containers);
-      setExecContainer(response.defaultContainer ?? response.containers[0] ?? "");
-      if (response.containers.length === 0) {
-        setExecError("Pod has no containers available for terminal sessions");
-      }
-    } catch (reason) {
-      setExecError(errorMessage(reason));
-    } finally {
-      setExecLoading(false);
-    }
+    terminalAutoStartContainerRef.current = container;
   };
 
-  const startTerminal = async () => {
-    if (!selectedContext || !execResource?.namespace || !execContainer) return;
+  const startTerminal = async (container = execContainer) => {
+    if (!selectedContext || !execResource?.namespace || !container) return;
     setExecLoading(true);
     setExecError(undefined);
     const terminal = xtermRef.current;
     terminal?.clear();
-    terminal?.writeln(`Connecting to ${execResource.namespace}/${execResource.name} (${execContainer})...`);
+    terminal?.writeln(`Connecting to ${execResource.namespace}/${execResource.name} (${container})...`);
     const { cols, rows } = terminalSize();
     const sessionId = crypto.randomUUID();
     terminalReadyRef.current = false;
@@ -3872,7 +3895,7 @@ export function App() {
         context: selectedContext,
         namespace: execResource.namespace,
         pod: execResource.name,
-        container: execContainer,
+        container,
         rows,
         cols,
       });
@@ -3901,6 +3924,8 @@ export function App() {
     }
   };
 
+  startTerminalRef.current = startTerminal;
+
   const stopTerminal = async () => {
     const sessionId = terminalSessionIdRef.current;
     terminalReadyRef.current = false;
@@ -3914,8 +3939,22 @@ export function App() {
   };
 
   const closeTerminal = () => {
+    terminalAutoStartContainerRef.current = undefined;
     void stopTerminal();
     setExecResource(undefined);
+    setExecContainers([]);
+    setExecContainer("");
+    setExecError(undefined);
+    setExecLoading(false);
+  };
+
+  const selectDetailTab = (tab: "overview" | "yaml" | "logs" | "terminal") => {
+    if (tab === detailTab) return;
+    if (detailTab === "terminal") void stopTerminal();
+    if (tab === "terminal" && execResource && execContainer) {
+      terminalAutoStartContainerRef.current = execContainer;
+    }
+    setDetailTab(tab);
   };
 
   const portForwardKey = (item: ResourceItem) => `${item.namespace ?? ""}/${item.name}`;
@@ -4120,7 +4159,7 @@ export function App() {
     observer.observe(container);
     observer.observe(table);
     return () => observer.disconnect();
-  }, [activeView, selectedKind, selectedColumns.length, actionError, actionMessage, metricsError]);
+  }, [activeView, selectedKind, selectedColumns.length]);
 
   useEffect(() => {
     if (activeView !== "resources") return;
@@ -4556,22 +4595,22 @@ export function App() {
               <>
                 <div
                   className="log-menu-item"
-                  onMouseEnter={() => openLogContainerMenu(item)}
-                  onFocus={() => openLogContainerMenu(item)}
+                  onMouseEnter={() => openPodContainerMenu(item, "logs")}
+                  onFocus={() => openPodContainerMenu(item, "logs")}
                 >
                   <button
                     type="button"
                     role="menuitem"
                     aria-haspopup="menu"
-                    aria-expanded={logContainerMenu?.resourceKey === key}
+                    aria-expanded={logContainerMenu?.resourceKey === key && logContainerMenu.action === "logs"}
                     onClick={(event) => {
                       event.stopPropagation();
-                      openLogContainerMenu(item);
+                      openPodContainerMenu(item, "logs");
                     }}
                   >
                     Logs <span aria-hidden="true">›</span>
                   </button>
-                  {logContainerMenu?.resourceKey === key && (
+                  {logContainerMenu?.resourceKey === key && logContainerMenu.action === "logs" && (
                     <div className="log-container-submenu" role="menu">
                       {logContainerMenu.loading && <span>Loading containers…</span>}
                       {logContainerMenu.error && <span className="error-message">{logContainerMenu.error}</span>}
@@ -4583,7 +4622,10 @@ export function App() {
                           key={container}
                           type="button"
                           role="menuitem"
-                          onClick={(event) => runResourceMenuAction(event, () => startLogs(item, container, logContainerMenu.containers))}
+                          onClick={(event) => runResourceMenuAction(event, () => {
+                            openDetail(item, "logs");
+                            startLogs(item, container, logContainerMenu.containers);
+                          })}
                         >
                           {container}
                         </button>
@@ -4591,9 +4633,46 @@ export function App() {
                     </div>
                   )}
                 </div>
-                <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => void openExec(item))}>
-                  Terminal
-                </button>
+                <div
+                  className="log-menu-item"
+                  onMouseEnter={() => openPodContainerMenu(item, "terminal")}
+                  onFocus={() => openPodContainerMenu(item, "terminal")}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="menu"
+                    aria-expanded={logContainerMenu?.resourceKey === key && logContainerMenu.action === "terminal"}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openPodContainerMenu(item, "terminal");
+                    }}
+                  >
+                    Terminal <span aria-hidden="true">›</span>
+                  </button>
+                  {logContainerMenu?.resourceKey === key && logContainerMenu.action === "terminal" && (
+                    <div className="log-container-submenu" role="menu">
+                      {logContainerMenu.loading && <span>Loading containers…</span>}
+                      {logContainerMenu.error && <span className="error-message">{logContainerMenu.error}</span>}
+                      {!logContainerMenu.loading && !logContainerMenu.error && logContainerMenu.containers.length === 0 && (
+                        <span>No terminal containers</span>
+                      )}
+                      {logContainerMenu.containers.map((container) => (
+                        <button
+                          key={container}
+                          type="button"
+                          role="menuitem"
+                          onClick={(event) => runResourceMenuAction(event, () => {
+                            openDetail(item, "terminal");
+                            openExec(item, container, logContainerMenu.containers);
+                          })}
+                        >
+                          {container}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 {portForwards[portForwardKey(item)] ? (
                   <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => void stopPortForward(item))}>
                     Stop {portForwards[portForwardKey(item)].localPort}:{portForwards[portForwardKey(item)].remotePort}
@@ -5409,10 +5488,6 @@ export function App() {
                     value={kubeconfigSearch}
                     onChange={(event) => setKubeconfigSearch(event.target.value)}
                   />
-                  <label className="context-path-toggle">
-                    <input type="checkbox" checked={showFullKubeconfigPaths} onChange={(event) => setShowFullKubeconfigPaths(event.target.checked)} />
-                    <span>Full paths</span>
-                  </label>
                   <div className="context-view-toggle" role="group" aria-label="Context display mode">
                     <button
                       type="button"
@@ -5460,6 +5535,17 @@ export function App() {
                           <th key={column}>
                             <div className="context-column-header">
                               <span>{column === "name" ? "Context" : column === "cluster" ? "Cluster" : "Config file"}</span>
+                              {column === "source" && (
+                                <button
+                                  type="button"
+                                  className={"context-full-paths-toggle" + (showFullKubeconfigPaths ? " active" : "")}
+                                  aria-pressed={showFullKubeconfigPaths}
+                                  title="Show full config file paths"
+                                  onClick={() => setShowFullKubeconfigPaths((current) => !current)}
+                                >
+                                  Full paths
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 className="context-column-resizer"
@@ -5683,12 +5769,13 @@ export function App() {
               ) : null}
             </section>
           )
-        ) : resourcesError ? (
+        ) : resourcesError && resources.length === 0 ? (
           <p className="error-message">{resourcesError}</p>
         ) : (
           <section className="resource-list">
-            {(actionError || actionMessage) && (
-              <div className="resource-list-banner">
+            {(resourcesError || actionError || actionMessage) && (
+              <div className="resource-list-banner" role="status" aria-live="polite">
+                {resourcesError && <p className="inline-message error-message">{resourcesError}</p>}
                 {actionError && <p className="inline-message error-message">{actionError}</p>}
                 {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
               </div>
@@ -5826,10 +5913,16 @@ export function App() {
             ) : detailLoading ? (
               <p>Loading YAML…</p>
             ) : detail ? (
-              <>
+              <div className="detail-panel-body">
                 <div className="detail-tabs">
-                  <button className={detailTab === "overview" ? "active" : ""} onClick={() => setDetailTab("overview")}>Overview</button>
-                  <button className={detailTab === "yaml" ? "active" : ""} onClick={() => setDetailTab("yaml")}>YAML</button>
+                  <button className={detailTab === "overview" ? "active" : ""} onClick={() => selectDetailTab("overview")}>Overview</button>
+                  <button className={detailTab === "yaml" ? "active" : ""} onClick={() => selectDetailTab("yaml")}>YAML</button>
+                  {detail.kind === "Pod" && detail.apiVersion === "v1" && detail.namespace && (
+                    <>
+                      <button className={detailTab === "logs" ? "active" : ""} onClick={() => selectDetailTab("logs")}>Logs</button>
+                      <button className={detailTab === "terminal" ? "active" : ""} onClick={() => selectDetailTab("terminal")}>Terminal</button>
+                    </>
+                  )}
                 </div>
                 {actionError && <p className="inline-message error-message">{actionError}</p>}
                 {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
@@ -5910,6 +6003,76 @@ export function App() {
                       )}
                     </div>
                   </div>
+                ) : detailTab === "logs" || detailTab === "terminal" ? (
+                  <div className={`detail-overview${(detailTab === "logs" ? logResource : execResource) ? " embedded-output-overview" : ""}`}>
+                    {detailTab === "logs" && logResource ? (
+                      <div className="embedded-resource-output">
+                        <div className="log-controls">
+                          <select value={selectedLogContainer} onChange={(event) => {
+                            const container = event.target.value;
+                            if (!container) return;
+                            void stopLogs();
+                            setSelectedLogContainer(container);
+                            beginLogStream(container);
+                          }} disabled={logContainers.length === 0} aria-label="Container">
+                            {logContainers.map((container) => <option key={container} value={container}>{container}</option>)}
+                          </select>
+                          <button onClick={() => void copyLogs()} disabled={logs.length === 0}>Copy</button>
+                          <button onClick={logsCleared ? refreshLogs : clearLogs} disabled={!selectedLogContainer}>{logsCleared ? "Refresh" : "Clear"}</button>
+                        </div>
+                        {logError && <p className="error-message">{logError}</p>}
+                        <div className="log-content">
+                          {logOperationId && logs.length === 0 && <div className="log-empty">Waiting for log output…</div>}
+                          {logs.map((line, index) => <div key={index} className="log-line">{renderLogLine(line, index)}</div>)}
+                          <div ref={logEndRef} />
+                        </div>
+
+                      </div>
+                    ) : detailTab === "terminal" && execResource ? (
+                      <div className="embedded-resource-output">
+                        <div className="exec-controls">
+                          <select value={execContainer} onChange={(event) => {
+                            const container = event.target.value;
+                            if (!container || container === execContainer) return;
+                            void (async () => {
+                              await stopTerminal();
+                              setExecContainer(container);
+                              await startTerminal(container);
+                            })();
+                          }} disabled={execLoading} aria-label="Container">
+                            {execContainers.map((container) => <option key={container} value={container}>{container}</option>)}
+                          </select>
+                          <span className="terminal-hint">{execLoading ? "Connecting…" : "Connected. Type directly in the terminal."}</span>
+                        </div>
+                        {execError && <p className="error-message">{execError}</p>}
+                        <div ref={terminalHostRef} className="exec-output" role="application" aria-label="Pod terminal" tabIndex={0} />
+
+                      </div>
+                    ) : detail.containers.length === 0 ? (
+                      <p>No containers available.</p>
+                    ) : (
+                      <select
+                        aria-label="Container"
+                        defaultValue=""
+                        onChange={(event) => {
+                          const container = event.target.value;
+                          if (!container) return;
+                          const containers = detail.containers.map((item) => item.name);
+                          event.currentTarget.value = "";
+                          if (detailTab === "logs") {
+                            startLogs(detail, container, containers);
+                          } else {
+                            openExec(detail, container, containers);
+                          }
+                        }}
+                      >
+                        <option value="" disabled>Select a container…</option>
+                        {detail.containers.map((container) => (
+                          <option key={container.name} value={container.name}>{container.name}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
                 ) : (
                   <div className="detail-overview">
                     {detail.sections.map(renderDetailSection)}
@@ -5921,8 +6084,57 @@ export function App() {
                     <section className="detail-section"><h4>Events</h4>{detail.events.length === 0 ? <p>No events</p> : <table><thead><tr><th>Type</th><th>Reason</th><th>Message</th><th>Count</th><th>Last seen</th></tr></thead><tbody>{detail.events.map((event, index) => <tr key={`${event.reason}-${index}`}><td>{event.eventType ?? "-"}</td><td>{event.reason ?? "-"}</td><td>{event.message ?? "-"}</td><td>{event.count ?? "-"}</td><td>{event.timestamp ? new Date(event.timestamp).toLocaleString() : "-"}</td></tr>)}</tbody></table>}</section>
                   </div>
                 )}
-              </>
+              </div>
             ) : null}
+          </div>
+        </div>
+      )}
+
+      {deleteConfirmation && (
+        <div
+          className="delete-confirmation-overlay"
+          onClick={() => {
+            if (!resourceActionKey) setDeleteConfirmation(undefined);
+          }}
+        >
+          <div
+            className="delete-confirmation-dialog"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="delete-confirmation-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="delete-confirmation-content">
+              <svg className="delete-confirmation-icon" viewBox="0 0 24 24" aria-hidden="true">
+                <path className="delete-confirmation-icon-background" d="M12 2 1 22h22L12 2Z" />
+                <path className="delete-confirmation-icon-mark" d="M11 8h2v7h-2V8Zm0 9h2v2h-2v-2Z" />
+              </svg>
+              <p id="delete-confirmation-title">
+                Delete {deleteConfirmation.kind}{" "}
+                <strong>{deleteConfirmation.namespace ? `${deleteConfirmation.namespace}/` : ""}{deleteConfirmation.name}</strong>{" "}
+                from <strong>{selectedContext}</strong>?
+              </p>
+            </div>
+            {deleteError && <p className="delete-confirmation-error">{deleteError}</p>}
+            <div className="delete-confirmation-actions">
+              <button
+                type="button"
+                className="delete-cancel-button"
+                onClick={() => setDeleteConfirmation(undefined)}
+                disabled={Boolean(resourceActionKey)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="delete-confirm-button"
+                onClick={() => void confirmDeleteResource()}
+                disabled={Boolean(resourceActionKey)}
+                autoFocus
+              >
+                {resourceActionKey ? "Deleting…" : "Delete"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -6038,7 +6250,10 @@ export function App() {
         </div>
       )}
 
-      {logResource && (
+      {logResource
+        && !(detail && detail.namespace === logResource.namespace && detail.name === logResource.name)
+        && !(detailLoading && detailTab === "logs")
+        && (
         <div className="detail-panel-overlay">
           <div
             className={`detail-panel log-panel resizable-panel${maximizedPanels.logs ? " is-maximized" : ""}`}
@@ -6055,14 +6270,6 @@ export function App() {
             />
             <header>
               <h3>Logs: {logResource.namespace}/{logResource.name}</h3>
-              <div>
-                <button onClick={() => void copyLogs()} disabled={logs.length === 0}>Copy</button>
-                <button onClick={logsCleared ? refreshLogs : clearLogs} disabled={!selectedLogContainer}>{logsCleared ? "Refresh" : "Clear"}</button>
-                <button onClick={() => togglePanelMaximized("logs")}>
-                  {maximizedPanels.logs ? "Restore" : "Maximize"}
-                </button>
-                <button onClick={closeLogs}>Close</button>
-              </div>
             </header>
             <div className="log-controls">
               <label>
@@ -6161,10 +6368,21 @@ export function App() {
               ))}
               <div ref={logEndRef} />
             </div>
+            <div className="panel-actions">
+              <button onClick={() => void copyLogs()} disabled={logs.length === 0}>Copy</button>
+              <button onClick={logsCleared ? refreshLogs : clearLogs} disabled={!selectedLogContainer}>{logsCleared ? "Refresh" : "Clear"}</button>
+              <button onClick={() => togglePanelMaximized("logs")}>
+                {maximizedPanels.logs ? "Restore" : "Maximize"}
+              </button>
+              <button onClick={closeLogs}>Close</button>
+            </div>
           </div>
         </div>
       )}
-      {execResource && (
+      {execResource
+        && !(detail && detail.namespace === execResource.namespace && detail.name === execResource.name)
+        && !(detailLoading && detailTab === "terminal")
+        && (
         <div
           className={`detail-panel exec-panel floating-panel resizable-panel${maximizedPanels.terminal ? " is-maximized" : ""}`}
           style={{ width: maximizedPanels.terminal ? "100vw" : `min(${panelWidths.terminal}px, 100vw)` }}
@@ -6179,25 +6397,24 @@ export function App() {
             />
             <header>
               <h3>Terminal: {execResource.namespace}/{execResource.name}</h3>
-              <div>
-                {terminalSessionId && <button onClick={() => void stopTerminal()}>Stop</button>}
-                <button onClick={() => togglePanelMaximized("terminal")}>
-                  {maximizedPanels.terminal ? "Restore" : "Maximize"}
-                </button>
-                <button onClick={closeTerminal}>Close</button>
-              </div>
             </header>
             <div className="exec-controls">
-              <select value={execContainer} onChange={(event) => setExecContainer(event.target.value)} disabled={execLoading || Boolean(terminalSessionId)}>
+              <select
+                value={execContainer}
+                onChange={(event) => {
+                  const container = event.target.value;
+                  if (!container || container === execContainer) return;
+                  void (async () => {
+                    await stopTerminal();
+                    setExecContainer(container);
+                    await startTerminal(container);
+                  })();
+                }}
+                disabled={execLoading}
+              >
                 {execContainers.map((container) => <option key={container} value={container}>{container}</option>)}
               </select>
-              {terminalSessionId ? (
-                <span className="terminal-hint">Connected. Type directly in the terminal.</span>
-              ) : (
-                <button type="button" onClick={() => void startTerminal()} disabled={execLoading || !execContainer || execContainers.length === 0}>
-                  {execLoading ? "Starting..." : "Start Terminal"}
-                </button>
-              )}
+              <span className="terminal-hint">{execLoading ? "Connecting…" : "Connected. Type directly in the terminal."}</span>
             </div>
             {execError && <p className="error-message">{execError}</p>}
             <div
@@ -6207,6 +6424,12 @@ export function App() {
               aria-label="Pod terminal"
               tabIndex={0}
             />
+            <div className="panel-actions">
+              <button onClick={() => togglePanelMaximized("terminal")}>
+                {maximizedPanels.terminal ? "Restore" : "Maximize"}
+              </button>
+              <button onClick={closeTerminal}>Close</button>
+            </div>
         </div>
       )}
 
