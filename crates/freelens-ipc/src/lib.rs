@@ -100,6 +100,7 @@ pub struct KubeconfigContext {
     pub user: Option<String>,
     pub is_current: bool,
     pub source_path: Option<String>,
+    pub source_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

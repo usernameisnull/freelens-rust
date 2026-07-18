@@ -36,6 +36,7 @@ use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, Manager, State, path::BaseDirectory};
@@ -91,6 +92,34 @@ fn system_info(app: tauri::AppHandle) -> Result<SystemInfoResponse, IpcError> {
     })
 }
 
+#[tauri::command]
+fn open_kubeconfig_file(path: String) -> Result<(), IpcError> {
+    let file = PathBuf::from(&path);
+    if !file.is_file() {
+        return Err(IpcError {
+            code: "kubeconfig_file_not_found".into(),
+            message: format!("Kubeconfig file does not exist: {path}"),
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    let result = ProcessCommand::new("explorer")
+        .arg(format!("/select,{}", file.display()))
+        .spawn();
+    #[cfg(target_os = "macos")]
+    let result = ProcessCommand::new("open").args(["-R", &path]).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = ProcessCommand::new("xdg-open")
+        .arg(file.parent().unwrap_or_else(|| Path::new(".")))
+        .spawn();
+
+    result.map(|_| ()).map_err(|error| IpcError {
+        code: "kubeconfig_file_open_failed".into(),
+        message: error.to_string(),
+    })
+}
+
+#[tauri::command]
 fn path_error(error: tauri::Error) -> IpcError {
     IpcError {
         code: "path_discovery_failed".into(),
@@ -261,6 +290,7 @@ fn kubeconfig_list(
                 user: ctx.user,
                 is_current: ctx.is_current,
                 source_path: ctx.source_path,
+                source_paths: ctx.source_paths,
             })
             .collect(),
         sources: summary
@@ -2165,6 +2195,7 @@ fn main() {
             settings_load,
             settings_save,
             kubeconfig_list,
+            open_kubeconfig_file,
             kubernetes_version,
             kubernetes_list_namespaces,
             kubernetes_discover_resources,

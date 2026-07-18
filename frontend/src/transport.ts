@@ -82,6 +82,7 @@ export interface Transport {
   settingsLoad(request: SettingsLoadRequest): Promise<SettingsLoadResponse>;
   settingsSave(request: SettingsSaveRequest): Promise<void>;
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse>;
+  openKubeconfigFile(path: string): Promise<void>;
   kubectlInfo(request: KubectlInfoRequest): Promise<KubectlInfoResponse>;
   kubectlRun(request: KubectlRunRequest): Promise<KubectlRunResponse>;
   kubectlCancel(request: KubectlCancelRequest): Promise<void>;
@@ -164,6 +165,10 @@ class TauriTransport implements Transport {
 
   kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
     return invoke("kubeconfig_list", { request });
+  }
+
+  openKubeconfigFile(path: string): Promise<void> {
+    return invoke("open_kubeconfig_file", { path });
   }
 
   kubectlInfo(request: KubectlInfoRequest): Promise<KubectlInfoResponse> {
@@ -393,6 +398,8 @@ class MockTransport implements Transport {
     this.settings = request.settings;
   }
 
+  async openKubeconfigFile(_path: string): Promise<void> {}
+
   async kubeconfigList(request: KubeconfigListRequest): Promise<KubeconfigListResponse> {
     return {
       version: IPC_VERSION,
@@ -406,6 +413,7 @@ class MockTransport implements Transport {
           user: "mock-dev-user",
           isCurrent: true,
           sourcePath: "mock-kubeconfig",
+          sourcePaths: ["mock-kubeconfig"],
         },
         {
           name: "mock-prod",
@@ -414,6 +422,7 @@ class MockTransport implements Transport {
           user: "mock-prod-user",
           isCurrent: false,
           sourcePath: "mock-kubeconfig",
+          sourcePaths: ["mock-kubeconfig"],
         },
       ],
       sources: request.sources.length > 0

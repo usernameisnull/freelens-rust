@@ -105,6 +105,7 @@ pub struct ContextItem {
     pub user: Option<String>,
     pub is_current: bool,
     pub source_path: Option<String>,
+    pub source_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,7 +130,7 @@ pub fn load_kubeconfig(path_or_env: Option<String>) -> Result<Kubeconfig, Kubeco
 pub fn list_contexts(path_or_env: Option<String>) -> Result<KubeconfigSummary, KubeconfigError> {
     let paths = resolve_paths(path_or_env)?;
     let config = load_kubeconfig_files(&paths, default_kubeconfig_path())?;
-    let (context_sources, context_cluster_servers, duplicate_contexts) =
+    let (context_sources, context_source_paths, context_cluster_servers, duplicate_contexts) =
         context_source_paths_for_files(&paths)?;
     let sources = paths
         .iter()
@@ -139,6 +140,7 @@ pub fn list_contexts(path_or_env: Option<String>) -> Result<KubeconfigSummary, K
         config,
         sources,
         context_sources,
+        context_source_paths,
         context_cluster_servers,
         duplicate_contexts,
     )
@@ -155,6 +157,7 @@ pub fn list_contexts_from_sources(
     let mut merged = Kubeconfig::default();
     let mut summaries = Vec::new();
     let mut context_sources = HashMap::new();
+    let mut context_source_paths = HashMap::new();
     let mut context_cluster_servers = HashMap::new();
     let mut duplicate_contexts = Vec::new();
     let mut saw_file = false;
@@ -179,6 +182,7 @@ pub fn list_contexts_from_sources(
                 };
                 collect_context_source_paths(
                     &mut context_sources,
+                    &mut context_source_paths,
                     &mut context_cluster_servers,
                     &mut duplicate_contexts,
                     &file_path,
@@ -194,6 +198,7 @@ pub fn list_contexts_from_sources(
             let file = load_single_file(&path)?;
             collect_context_source_paths(
                 &mut context_sources,
+                &mut context_source_paths,
                 &mut context_cluster_servers,
                 &mut duplicate_contexts,
                 &path,
@@ -224,6 +229,7 @@ pub fn list_contexts_from_sources(
         merged,
         summaries,
         context_sources,
+        context_source_paths,
         context_cluster_servers,
         duplicate_contexts,
     )
@@ -300,6 +306,7 @@ fn summarize_contexts(
     config: Kubeconfig,
     sources: Vec<KubeconfigSourceSummary>,
     context_sources: HashMap<String, String>,
+    context_source_paths: HashMap<String, Vec<String>>,
     context_cluster_servers: HashMap<String, Option<String>>,
     duplicate_contexts: Vec<String>,
 ) -> Result<KubeconfigSummary, KubeconfigError> {
@@ -310,6 +317,10 @@ fn summarize_contexts(
         .into_iter()
         .map(|named| {
             let source_path = context_sources.get(&named.name).cloned();
+            let source_paths = context_source_paths
+                .get(&named.name)
+                .cloned()
+                .unwrap_or_default();
             let cluster_server = context_cluster_servers.get(&named.name).cloned().flatten();
             ContextItem {
                 is_current: current.as_ref() == Some(&named.name),
@@ -318,6 +329,7 @@ fn summarize_contexts(
                 cluster_server,
                 user: named.context.user,
                 source_path,
+                source_paths,
             }
         })
         .collect();
@@ -364,29 +376,38 @@ fn context_source_paths_for_files(
 ) -> Result<
     (
         HashMap<String, String>,
+        HashMap<String, Vec<String>>,
         HashMap<String, Option<String>>,
         Vec<String>,
     ),
     KubeconfigError,
 > {
     let mut context_sources = HashMap::new();
+    let mut context_source_paths = HashMap::new();
     let mut context_cluster_servers = HashMap::new();
     let mut duplicate_contexts = Vec::new();
     for path in paths {
         let file = load_single_file(path)?;
         collect_context_source_paths(
             &mut context_sources,
+            &mut context_source_paths,
             &mut context_cluster_servers,
             &mut duplicate_contexts,
             path,
             &file,
         );
     }
-    Ok((context_sources, context_cluster_servers, duplicate_contexts))
+    Ok((
+        context_sources,
+        context_source_paths,
+        context_cluster_servers,
+        duplicate_contexts,
+    ))
 }
 
 fn collect_context_source_paths(
     context_sources: &mut HashMap<String, String>,
+    context_source_paths: &mut HashMap<String, Vec<String>>,
     context_cluster_servers: &mut HashMap<String, Option<String>>,
     duplicate_contexts: &mut Vec<String>,
     path: &Path,
@@ -399,6 +420,10 @@ fn collect_context_source_paths(
         .map(|named| (named.name.as_str(), named.cluster.server.clone()))
         .collect::<HashMap<_, _>>();
     for named in &file.contexts {
+        context_source_paths
+            .entry(named.name.clone())
+            .or_default()
+            .push(source_path.clone());
         if context_sources.contains_key(&named.name) {
             duplicate_contexts.push(named.name.clone());
         } else {

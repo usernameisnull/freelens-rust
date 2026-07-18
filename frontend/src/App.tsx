@@ -2000,6 +2000,64 @@ export function App() {
   const [kubeconfigSettingsOpen, setKubeconfigSettingsOpen] = useState(false);
   const [kubeconfigSourceDraft, setKubeconfigSourceDraft] = useState("");
   const [contextDisplayMode, setContextDisplayMode] = useState<ContextDisplayMode>("list");
+  const [showFullKubeconfigPaths, setShowFullKubeconfigPaths] = useState(false);
+  const [contextColumnWidths, setContextColumnWidths] = useState({ name: 220, cluster: 240, source: 320 });
+  const contextColumnResizeRef = useRef<{ key: keyof typeof contextColumnWidths; startX: number; startWidth: number } | undefined>(undefined);
+  const contextResultsRef = useRef<HTMLDivElement>(null);
+  const contextTableRef = useRef<HTMLTableElement>(null);
+  const [contextColumnResizeGuide, setContextColumnResizeGuide] = useState<{ left: number; top: number; height: number } | null>(null);
+  const contextColumnResizeRafRef = useRef<number | undefined>(undefined);
+  const startContextColumnResize = (key: keyof typeof contextColumnWidths, event: ReactPointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    contextColumnResizeRef.current = { key, startX: event.clientX, startWidth: contextColumnWidths[key] };
+    const headerCell = event.currentTarget.closest("th");
+    const updateGuide = () => {
+      if (contextColumnResizeRafRef.current !== undefined) window.cancelAnimationFrame(contextColumnResizeRafRef.current);
+      contextColumnResizeRafRef.current = window.requestAnimationFrame(() => {
+        const container = contextResultsRef.current;
+        const table = contextTableRef.current;
+        const containerRect = container?.getBoundingClientRect();
+        const tableRect = table?.getBoundingClientRect();
+        const headerRect = headerCell?.getBoundingClientRect();
+        if (!container || !table || !containerRect || !tableRect || !headerRect) return;
+        const top = tableRect.top - containerRect.top + container.scrollTop;
+        setContextColumnResizeGuide({
+          left: headerRect.right - containerRect.left + container.scrollLeft,
+          top,
+          height: Math.max(table.offsetHeight, container.scrollHeight - top, container.clientHeight - top),
+        });
+      });
+    };
+    updateGuide();
+    document.body.classList.add("resizing-context-column");
+
+    const handleMove = (moveEvent: PointerEvent) => {
+      const resize = contextColumnResizeRef.current;
+      if (!resize) return;
+      setContextColumnWidths((current) => ({
+        ...current,
+        [key]: Math.max(140, resize.startWidth + moveEvent.clientX - resize.startX),
+      }));
+      updateGuide();
+    };
+    const handleUp = () => {
+      contextColumnResizeRef.current = undefined;
+      document.body.classList.remove("resizing-context-column");
+      setContextColumnResizeGuide(null);
+      if (contextColumnResizeRafRef.current !== undefined) {
+        window.cancelAnimationFrame(contextColumnResizeRafRef.current);
+        contextColumnResizeRafRef.current = undefined;
+      }
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleUp);
+    };
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleUp, { once: true });
+  };
+  const openSourceFile = (path: string) => {
+    void transport.openKubeconfigFile(path).catch((reason) => setKubeconfigError(errorMessage(reason)));
+  };
   const [pendingContext, setPendingContext] = useState("");
   const [selectedContext, setSelectedContext] = useState<string>("");
   const [sidebarContextOpen, setSidebarContextOpen] = useState(false);
@@ -2124,6 +2182,13 @@ export function App() {
   const [actionMessage, setActionMessage] = useState<string>();
   const [resourceActionKey, setResourceActionKey] = useState<string>();
   const [openResourceActionMenu, setOpenResourceActionMenu] = useState<string>();
+  const [logContainerMenu, setLogContainerMenu] = useState<{
+    resourceKey: string;
+    containers: string[];
+    loading: boolean;
+    error?: string;
+  }>();
+  const logContainerMenuRequestRef = useRef(0);
   const [topbarMenuOpen, setTopbarMenuOpen] = useState(false);
   const topbarMenuRef = useRef<HTMLDivElement>(null);
   const detailRequestRef = useRef(0);
@@ -2135,6 +2200,7 @@ export function App() {
   const [logOperationId, setLogOperationId] = useState<string>();
   const logOperationIdRef = useRef<string | undefined>(undefined);
   const [logs, setLogs] = useState<string[]>([]);
+  const [logsCleared, setLogsCleared] = useState(false);
   const [logResource, setLogResource] = useState<{ namespace: string; name: string }>();
   const [logContainers, setLogContainers] = useState<string[]>([]);
   const [selectedLogContainer, setSelectedLogContainer] = useState("");
@@ -3273,20 +3339,21 @@ export function App() {
       });
   };
 
-  const beginLogStream = (container: string) => {
-    if (!selectedContext || !logResource || !container) return;
+  const beginLogStream = (container: string, resource = logResource) => {
+    if (!selectedContext || !resource || !container) return;
     const operationId = crypto.randomUUID();
     logOperationIdRef.current = operationId;
     setLogOperationId(operationId);
     setLogs([]);
+    setLogsCleared(false);
     setLogError(undefined);
     transport
       .kubernetesStreamPodLogs({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
         operationId,
         context: selectedContext,
-        namespace: logResource.namespace,
-        pod: logResource.name,
+        namespace: resource.namespace,
+        pod: resource.name,
         container,
         follow: true,
         tailLines: null,
@@ -3305,18 +3372,27 @@ export function App() {
       });
   };
 
-  const startLogs = (item: ResourceItem) => {
-    if (!selectedContext || !item.namespace) return;
-    const requestNumber = ++logPrepareRequestRef.current;
+  const startLogs = (item: ResourceItem, container: string, containers: string[]) => {
+    if (!selectedContext || !item.namespace || !container) return;
     void stopLogs();
     const resource = { namespace: item.namespace, name: item.name };
     setLogResource(resource);
     setLogSearchOpen(true);
-    setLogContainers([]);
-    setSelectedLogContainer("");
+    setLogContainers(containers);
+    setSelectedLogContainer(container);
     setLogs([]);
+    setLogsCleared(false);
     setLogError(undefined);
-    setLogPreparing(true);
+    setLogPreparing(false);
+    beginLogStream(container, resource);
+  };
+
+  const openLogContainerMenu = (item: ResourceItem) => {
+    if (!selectedContext || !item.namespace) return;
+    const resourceKey = resourceActionMenuKey(item);
+    if (logContainerMenu?.resourceKey === resourceKey) return;
+    const requestNumber = ++logContainerMenuRequestRef.current;
+    setLogContainerMenu({ resourceKey, containers: [], loading: true });
     transport
       .kubernetesGetPodContainers({
         meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
@@ -3325,20 +3401,14 @@ export function App() {
         pod: item.name,
       })
       .then((response) => {
-        if (requestNumber !== logPrepareRequestRef.current) return;
-        setLogContainers(response.containers);
-        setSelectedLogContainer(response.defaultContainer ?? response.containers[0] ?? "");
-        if (response.containers.length === 0) {
-          setLogError("Pod has no loggable containers");
+        if (requestNumber === logContainerMenuRequestRef.current) {
+          setLogContainerMenu({ resourceKey, containers: response.containers, loading: false });
         }
       })
       .catch((reason: unknown) => {
-        if (requestNumber === logPrepareRequestRef.current) {
-          setLogError(errorMessage(reason));
+        if (requestNumber === logContainerMenuRequestRef.current) {
+          setLogContainerMenu({ resourceKey, containers: [], loading: false, error: errorMessage(reason) });
         }
-      })
-      .finally(() => {
-        if (requestNumber === logPrepareRequestRef.current) setLogPreparing(false);
       });
   };
 
@@ -3355,6 +3425,25 @@ export function App() {
       .catch((reason: unknown) => {
         setLogError(errorMessage(reason));
       });
+  };
+
+  const copyLogs = async () => {
+    try {
+      await navigator.clipboard.writeText(logs.join("\n"));
+    } catch (reason: unknown) {
+      setLogError(errorMessage(reason));
+    }
+  };
+
+  const clearLogs = () => {
+    void stopLogs();
+    setLogs([]);
+    setLogsCleared(true);
+  };
+
+  const refreshLogs = () => {
+    if (!selectedLogContainer) return;
+    beginLogStream(selectedLogContainer);
   };
 
   const closeLogs = () => {
@@ -4412,7 +4501,11 @@ export function App() {
   const resourceActionMenuKey = (item: ResourceItem) =>
     `${item.apiVersion}/${item.kind}/${item.namespace ?? ""}/${item.name}`;
 
-  const closeResourceActionMenu = () => setOpenResourceActionMenu(undefined);
+  const closeResourceActionMenu = () => {
+    logContainerMenuRequestRef.current += 1;
+    setLogContainerMenu(undefined);
+    setOpenResourceActionMenu(undefined);
+  };
 
   const runTopbarMenuAction = (action: () => void) => {
     setTopbarMenuOpen(false);
@@ -4461,9 +4554,43 @@ export function App() {
           <div className="action-menu" role="menu">
             {item.kind === "Pod" && item.apiVersion === "v1" && item.namespace && (
               <>
-                <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => startLogs(item))}>
-                  Logs
-                </button>
+                <div
+                  className="log-menu-item"
+                  onMouseEnter={() => openLogContainerMenu(item)}
+                  onFocus={() => openLogContainerMenu(item)}
+                >
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-haspopup="menu"
+                    aria-expanded={logContainerMenu?.resourceKey === key}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openLogContainerMenu(item);
+                    }}
+                  >
+                    Logs <span aria-hidden="true">›</span>
+                  </button>
+                  {logContainerMenu?.resourceKey === key && (
+                    <div className="log-container-submenu" role="menu">
+                      {logContainerMenu.loading && <span>Loading containers…</span>}
+                      {logContainerMenu.error && <span className="error-message">{logContainerMenu.error}</span>}
+                      {!logContainerMenu.loading && !logContainerMenu.error && logContainerMenu.containers.length === 0 && (
+                        <span>No loggable containers</span>
+                      )}
+                      {logContainerMenu.containers.map((container) => (
+                        <button
+                          key={container}
+                          type="button"
+                          role="menuitem"
+                          onClick={(event) => runResourceMenuAction(event, () => startLogs(item, container, logContainerMenu.containers))}
+                        >
+                          {container}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button type="button" role="menuitem" onClick={(event) => runResourceMenuAction(event, () => void openExec(item))}>
                   Terminal
                 </button>
@@ -5282,6 +5409,10 @@ export function App() {
                     value={kubeconfigSearch}
                     onChange={(event) => setKubeconfigSearch(event.target.value)}
                   />
+                  <label className="context-path-toggle">
+                    <input type="checkbox" checked={showFullKubeconfigPaths} onChange={(event) => setShowFullKubeconfigPaths(event.target.checked)} />
+                    <span>Full paths</span>
+                  </label>
                   <div className="context-view-toggle" role="group" aria-label="Context display mode">
                     <button
                       type="button"
@@ -5306,34 +5437,110 @@ export function App() {
                 </div>
               </div>
 
-              <div className={`context-results context-results-${contextDisplayMode}`}>
-                {filteredKubeconfigContexts.map((ctx) => {
+              <div ref={contextResultsRef} className={`context-results context-results-${contextDisplayMode}`}>
+                {contextDisplayMode === "list" && contextColumnResizeGuide && (
+                  <div className="context-column-resize-guide" style={{ left: contextColumnResizeGuide.left, top: contextColumnResizeGuide.top, height: contextColumnResizeGuide.height }} />
+                )}
+                {contextDisplayMode === "list" && (
+                  <table
+                    ref={contextTableRef}
+                    className="context-table"
+                    style={{ width: `max(100%, ${52 + contextColumnWidths.name + contextColumnWidths.cluster + contextColumnWidths.source}px)` }}
+                  >
+                    <colgroup>
+                      <col style={{ width: 52 }} />
+                      <col style={{ width: contextColumnWidths.name }} />
+                      <col style={{ width: contextColumnWidths.cluster }} />
+                      <col style={{ width: contextColumnWidths.source }} />
+                    </colgroup>
+                    <thead>
+                      <tr>
+                        <th aria-label="Type" />
+                        {(["name", "cluster", "source"] as const).map((column) => (
+                          <th key={column}>
+                            <div className="context-column-header">
+                              <span>{column === "name" ? "Context" : column === "cluster" ? "Cluster" : "Config file"}</span>
+                              <button
+                                type="button"
+                                className="context-column-resizer"
+                                aria-label={`Resize ${column} column`}
+                                onPointerDown={(event) => startContextColumnResize(column, event)}
+                                onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}
+                              />
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredKubeconfigContexts.map((ctx) => {
+                        const clusterEndpoint = formatClusterEndpoint(ctx.clusterServer);
+                        const sourcePaths = ctx.sourcePaths.length > 0 ? ctx.sourcePaths : (ctx.sourcePath ? [ctx.sourcePath] : []);
+                        const isConflict = sourcePaths.length > 1 || kubeconfig?.duplicateContexts.includes(ctx.name) === true;
+                        const conflictReason = `无法使用：context 名称“${ctx.name}”在多个 kubeconfig 文件中重复，系统无法确定应该连接哪个配置。请删除或重命名其中一个 context。`;
+                        return (
+                          <tr
+                            key={ctx.name}
+                            className={`${pendingContext === ctx.name ? "active" : ""} ${isConflict ? "conflict" : ""}`}
+                            title={isConflict ? conflictReason : undefined}
+                            onClick={() => { if (!isConflict) setPendingContext(ctx.name); }}
+                            onDoubleClick={() => { if (!isConflict) { switchContext(ctx.name); setActiveView("overview"); } }}
+                          >
+                            <td><span className="context-result-icon">K8s</span></td>
+                            <td className="context-name-cell" title={ctx.name}>
+                              {ctx.name}
+                              {isConflict && <span className="context-conflict-badge" title={conflictReason}>Conflict</span>}
+                            </td>
+                            <td title={ctx.clusterServer ? `${ctx.cluster} (${ctx.clusterServer})` : ctx.cluster}>{clusterEndpoint ?? ctx.cluster}</td>
+                            <td className="context-source-cell">
+                              {sourcePaths.length === 0 ? "Unknown" : sourcePaths.map((path) => (
+                                <span key={path} className="context-source-path" title={path} role="link" tabIndex={0}
+                                  onPointerDown={(event) => event.stopPropagation()}
+                                  onClick={(event) => { event.preventDefault(); event.stopPropagation(); openSourceFile(path); }}
+                                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSourceFile(path); } }}
+                                >
+                                  {showFullKubeconfigPaths ? path : (path.split(/[\\/]/).pop() || path)}
+                                </span>
+                              ))}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+                {contextDisplayMode === "grid" && filteredKubeconfigContexts.map((ctx) => {
                   const clusterEndpoint = formatClusterEndpoint(ctx.clusterServer);
+                  const sourcePaths = ctx.sourcePaths.length > 0 ? ctx.sourcePaths : (ctx.sourcePath ? [ctx.sourcePath] : []);
+                  const isConflict = sourcePaths.length > 1 || kubeconfig?.duplicateContexts.includes(ctx.name) === true;
+                  const conflictReason = `无法使用：context 名称“${ctx.name}”在多个 kubeconfig 文件中重复，系统无法确定应该连接哪个配置。请删除或重命名其中一个 context。`;
                   return (
-                    <button
-                      key={ctx.name}
-                      type="button"
-                      className={`context-result ${pendingContext === ctx.name ? "active" : ""}`}
-                      onClick={() => setPendingContext(ctx.name)}
-                      onDoubleClick={() => {
-                        switchContext(ctx.name);
-                        setActiveView("overview");
-                      }}
-                    >
+                    <button key={ctx.name} type="button" aria-disabled={isConflict}
+                      className={`context-result ${pendingContext === ctx.name ? "active" : ""} ${isConflict ? "conflict" : ""}`}
+                      title={isConflict ? conflictReason : undefined}
+                      onClick={() => { if (!isConflict) setPendingContext(ctx.name); }}
+                      onDoubleClick={() => { if (!isConflict) { switchContext(ctx.name); setActiveView("overview"); } }}>
                       <span className="context-result-icon">K8s</span>
-                      <span className="context-result-name">{ctx.name}</span>
-                      <span
-                        className="context-result-cluster"
-                        title={ctx.clusterServer ? `${ctx.cluster} (${ctx.clusterServer})` : ctx.cluster}
-                      >
-                        {clusterEndpoint ?? ctx.cluster}
+                      <span className="context-result-name" title={ctx.name}>
+                        {ctx.name}
+                        {isConflict && <span className="context-conflict-badge" title={conflictReason} aria-label={conflictReason}>Conflict</span>}
+                      </span>
+                      <span className="context-result-cluster" title={ctx.clusterServer ? `${ctx.cluster} (${ctx.clusterServer})` : ctx.cluster}>{clusterEndpoint ?? ctx.cluster}</span>
+                      <span className="context-result-source">
+                        {sourcePaths.length === 0 ? "Unknown" : sourcePaths.map((path) => (
+                          <span key={path} className="context-source-path" title={path} role="link" tabIndex={0}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation(); openSourceFile(path); }}
+                            onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openSourceFile(path); } }}
+                          >
+                            {showFullKubeconfigPaths ? path : (path.split(/[\\/]/).pop() || path)}
+                          </span>
+                        ))}
                       </span>
                     </button>
                   );
                 })}
-                {kubeconfig && filteredKubeconfigContexts.length === 0 && (
-                  <p className="empty-state">No matching contexts.</p>
-                )}
+                {kubeconfig && filteredKubeconfigContexts.length === 0 && <p className="empty-state">No matching contexts.</p>}
                 {!kubeconfig && <p>Loading contexts...</p>}
               </div>
 
@@ -5849,11 +6056,8 @@ export function App() {
             <header>
               <h3>Logs: {logResource.namespace}/{logResource.name}</h3>
               <div>
-                {logOperationId ? (
-                  <button onClick={() => void stopLogs()}>Stop</button>
-                ) : (
-                  <button onClick={() => logResource && setLogs([])}>Clear</button>
-                )}
+                <button onClick={() => void copyLogs()} disabled={logs.length === 0}>Copy</button>
+                <button onClick={logsCleared ? refreshLogs : clearLogs} disabled={!selectedLogContainer}>{logsCleared ? "Refresh" : "Clear"}</button>
                 <button onClick={() => togglePanelMaximized("logs")}>
                   {maximizedPanels.logs ? "Restore" : "Maximize"}
                 </button>
@@ -5861,29 +6065,24 @@ export function App() {
               </div>
             </header>
             <div className="log-controls">
-              {logPreparing ? (
-                <span>Loading containers…</span>
-              ) : (
-                <>
-                  <select
-                    value={selectedLogContainer}
-                    onChange={(event) => setSelectedLogContainer(event.target.value)}
-                    disabled={logContainers.length === 0 || Boolean(logOperationId)}
-                  >
-                    {logContainers.map((container) => (
-                      <option key={container} value={container}>
-                        {container}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    onClick={() => beginLogStream(selectedLogContainer)}
-                    disabled={!selectedLogContainer || Boolean(logOperationId)}
-                  >
-                    {logOperationId ? "Streaming" : "Start logs"}
-                  </button>
-                </>
-              )}
+              <label>
+                Container
+                <select
+                  value={selectedLogContainer}
+                  onChange={(event) => {
+                    const container = event.target.value;
+                    if (!container) return;
+                    void stopLogs();
+                    setSelectedLogContainer(container);
+                    beginLogStream(container);
+                  }}
+                  disabled={logContainers.length === 0}
+                >
+                  {logContainers.map((container) => (
+                    <option key={container} value={container}>{container}</option>
+                  ))}
+                </select>
+              </label>
             </div>
             {logError && <p className="error-message">{logError}</p>}
             <div className="log-content">

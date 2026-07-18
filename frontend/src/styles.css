@@ -1111,7 +1111,7 @@ body.resizing-panel {
   flex: 0 0 auto;
 }
 
-.context-home-tools input {
+.context-home-tools input[type="search"] {
   width: min(320px, 30vw);
   padding: 8px 10px;
   border: 1px solid #26313a;
@@ -1836,6 +1836,44 @@ body.resizing-resource-column * {
 .resource-list .action-menu button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
+}
+
+.resource-list .log-menu-item {
+  position: relative;
+}
+
+.resource-list .log-menu-item > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.resource-list .log-container-submenu {
+  position: absolute;
+  top: -6px;
+  right: calc(100% + 6px);
+  z-index: 31;
+  min-width: 160px;
+  padding: 6px;
+  border: 1px solid #26313a;
+  border-radius: 6px;
+  background: #151c23;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+.resource-list .log-container-submenu > span {
+  display: block;
+  padding: 7px 10px;
+  color: #8a99a7;
+  font-size: 0.84rem;
+  white-space: nowrap;
+}
+
+.resource-list .log-container-submenu .error-message {
+  max-width: 260px;
+  color: #ff8a8a;
+  white-space: normal;
 }
 
 .resource-list .action-menu .danger-button,
@@ -3246,6 +3284,12 @@ body.resizing-panel .yaml-structure-resizer {
   min-width: 180px;
 }
 
+.log-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 16px;
+}
+
 .log-content {
   position: relative;
   flex: 1;
@@ -3433,7 +3477,7 @@ body.resizing-panel .yaml-structure-resizer {
     flex-wrap: wrap;
   }
 
-  .context-home-tools input {
+  .context-home-tools input[type="search"] {
     width: 100%;
   }
 
@@ -3573,3 +3617,73 @@ body.resizing-panel .yaml-structure-resizer {
   background: #27313a;
   text-decoration: none;
 }
+
+/* Context table columns stay aligned in list view and remain readable in cards. */
+.context-results-list { gap: 0; min-width: 760px; }
+.context-results-list .context-result { grid-template-areas: "icon name cluster source"; min-width: 0; border-radius: 0; }
+.context-result-header { position: sticky; top: 0; z-index: 1; padding-top: 8px; padding-bottom: 8px; border-bottom: 1px solid #26313a; color: #8a99a7; cursor: default; font-size: 0.78rem; font-weight: 600; text-transform: uppercase; }
+.context-result-header:hover { border-color: #26313a; background: transparent; }
+.context-result-header > span:not(:first-child) { position: relative; min-width: 0; }
+.context-column-resizer { position: absolute; top: -8px; right: 0; bottom: -8px; width: 8px; cursor: col-resize; }
+.context-column-resizer:hover { background: rgba(88, 209, 181, 0.45); }
+.context-result-name, .context-result-cluster, .context-result-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-result-source { grid-area: source; display: flex; min-width: 0; gap: 6px; color: #8a99a7; }
+.context-source-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.context-source-path:hover, .context-source-path:focus-visible { color: #58d1b5; text-decoration: underline; }
+.context-result.conflict { cursor: not-allowed; opacity: 0.72; border-color: rgba(255, 126, 86, 0.35); }
+.context-results-grid .context-result { grid-template-areas: "icon name" "icon cluster" "icon source"; }
+.context-results-grid .context-result-source { display: flex; flex-direction: column; align-items: flex-start; }
+.context-results-grid .context-source-path { max-width: 100%; }
+
+.context-results-list .context-result-source { flex-direction: column; align-items: flex-start; gap: 2px; }
+.context-results-list .context-source-path { width: 100%; }
+
+.context-path-toggle { display: inline-flex; align-items: center; gap: 6px; color: #8a99a7; font-size: 0.78rem; white-space: nowrap; cursor: pointer; }
+.context-path-toggle input { width: auto; accent-color: #58d1b5; }
+.context-result-name { display: inline-flex; align-items: center; gap: 8px; }
+.context-conflict-badge { padding: 2px 6px; border: 1px solid rgba(255, 126, 86, 0.65); border-radius: 999px; color: #ff9b7a; font-size: 0.68rem; font-weight: 700; cursor: help; }
+.context-result-header { background: #0f1419; box-shadow: 0 3px 8px rgba(0, 0, 0, 0.45); isolation: isolate; }
+.context-result-header:hover { background: #0f1419; }
+.context-results-list .context-result-header { z-index: 5; }
+
+/* Context list uses the same scrollable table structure as resource views. */
+.context-results-list { display: block; min-width: 0; overflow: auto; padding-right: 0; }
+.context-table { border-collapse: collapse; table-layout: fixed; font-size: 0.92rem; }
+.context-table th,
+.context-table td { box-sizing: border-box; padding: 10px 12px; text-align: left; border-bottom: 1px solid #26313a; }
+.context-table thead { background: #1c242d; }
+.context-table th { position: sticky; top: 0; z-index: 10; padding-top: 15px; padding-bottom: 15px; color: #9eabb8; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; background: #1c242d; }
+.context-table th::after { content: ""; position: absolute; right: 0; bottom: 0; left: 0; height: 1px; background: #26313a; }
+.context-table td { overflow: hidden; color: #8a99a7; text-overflow: ellipsis; white-space: nowrap; }
+.context-table tbody tr { height: 52px; cursor: pointer; }
+.context-table tbody tr:hover,
+.context-table tbody tr.active { background: rgba(232, 237, 242, 0.06); }
+.context-table tbody tr.active { box-shadow: inset 3px 0 0 #58d1b5; }
+.context-table tbody tr.conflict { cursor: not-allowed; opacity: 0.72; }
+.context-table .context-result-icon { width: 30px; height: 30px; }
+.context-name-cell { color: #e8edf2 !important; font-weight: 600; }
+.context-name-cell .context-conflict-badge { margin-left: 8px; }
+.context-source-cell { padding-top: 6px !important; padding-bottom: 6px !important; }
+.context-table .context-source-path { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-column-header { position: relative; display: flex; align-items: center; min-width: 0; height: 100%; }
+.context-column-header > span { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; }
+.context-table .context-column-resizer { position: absolute; top: -15px; right: -12px; bottom: -15px; width: 9px; padding: 0; border: 0; border-radius: 0; background: transparent; cursor: col-resize; z-index: 2; }
+.context-table .context-column-resizer:focus-visible { outline: none; }
+
+/* The contexts result panel is the only scroll container, matching resource-list-scroll. */
+.context-results { position: relative; overflow: auto; scrollbar-gutter: stable; }
+.context-results-list { overflow: visible; }
+.context-column-resize-guide { position: absolute; width: 3px; background: #00b8d4; border-radius: 2px; pointer-events: none; transform: translateX(-1px); z-index: 70; }
+body.resizing-context-column,
+body.resizing-context-column * { cursor: col-resize !important; user-select: none; }
+
+/* Keep the middle grid row constrained: it owns scrolling and never covers the footer. */
+.context-home-inner { min-height: 0; overflow: hidden; }
+.context-results { height: 100%; min-height: 0; max-height: 100%; overflow-x: auto !important; overflow-y: scroll !important; }
+.context-home-footer { position: relative; z-index: 2; background: #0f1419; }
+.context-results::-webkit-scrollbar { width: 12px; height: 12px; }
+.context-results::-webkit-scrollbar-track { background: transparent; }
+.context-results::-webkit-scrollbar-thumb { border: 3px solid transparent; border-radius: 999px; background: #45525e; background-clip: content-box; }
+.context-results::-webkit-scrollbar-thumb:hover { background: #65727f; background-clip: content-box; }
+
+.context-results-list { padding-top: 0; }

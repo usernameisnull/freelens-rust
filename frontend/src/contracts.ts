@@ -61,6 +61,7 @@ export interface KubeconfigContext {
   user: string | null;
   isCurrent: boolean;
   sourcePath: string | null;
+  sourcePaths: string[];
 }
 
 export interface KubeconfigListResponse {
