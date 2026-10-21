@@ -1649,6 +1649,10 @@ function resourceColumnCellClassName(columnKey: string): string | undefined {
   return classes.length ? classes.join(" ") : undefined;
 }
 
+function resourceSelectionKey(item: ResourceItem): string {
+  return `${item.apiVersion}/${item.kind}/${item.namespace ?? ""}/${item.name}`;
+}
+
 interface OwnerChainEntry {
   apiVersion: string;
   kind: string;
@@ -1924,6 +1928,7 @@ const RESOURCE_COLUMN_MIN_WIDTH = 64;
 const RESOURCE_COLUMN_WIDTHS_STORAGE_KEY = "freelens.resourceColumnWidths";
 const DEFAULT_RESOURCE_COLUMN_WIDTHS: Record<string, number> = {
   name: 360,
+  selection: 40,
   namespace: 160,
   status: 120,
   ready: 100,
@@ -1944,6 +1949,7 @@ function resourceColumnDefaultWidth(columnId: string): number {
 }
 
 function resourceColumnMinWidth(columnId: string): number {
+  if (columnId === "selection") return 40;
   if (columnId === "actions") return 72;
   if (columnId === "cpu" || columnId === "memory" || columnId === "age") return 64;
   return RESOURCE_COLUMN_MIN_WIDTH;
@@ -2181,7 +2187,9 @@ export function App() {
   const [actionError, setActionError] = useState<string>();
   const [actionMessage, setActionMessage] = useState<string>();
   const [resourceActionKey, setResourceActionKey] = useState<string>();
-  const [deleteConfirmation, setDeleteConfirmation] = useState<ResourceItem>();
+  const [deleteConfirmation, setDeleteConfirmation] = useState<ResourceItem[]>();
+  const [selectedResourceKeys, setSelectedResourceKeys] = useState<Set<string>>(() => new Set());
+  const [selectionAnchorKey, setSelectionAnchorKey] = useState<string>();
   const [deleteError, setDeleteError] = useState<string>();
   const [openResourceActionMenu, setOpenResourceActionMenu] = useState<string>();
   const [logContainerMenu, setLogContainerMenu] = useState<{
@@ -2199,6 +2207,15 @@ export function App() {
   const [createYaml, setCreateYaml] = useState("");
   const [createLoading, setCreateLoading] = useState(false);
   const [createError, setCreateError] = useState<string>();
+  useEffect(() => {
+    const message = actionError ?? actionMessage;
+    if (!message) return;
+    const timer = window.setTimeout(() => {
+      if (actionError) setActionError(undefined);
+      else setActionMessage(undefined);
+    }, actionError ? 6000 : 4000);
+    return () => window.clearTimeout(timer);
+  }, [actionError, actionMessage]);
 
   const [logOperationId, setLogOperationId] = useState<string>();
   const logOperationIdRef = useRef<string | undefined>(undefined);
@@ -2209,7 +2226,7 @@ export function App() {
   const [selectedLogContainer, setSelectedLogContainer] = useState("");
   const [logPreparing, setLogPreparing] = useState(false);
   const [logError, setLogError] = useState<string>();
-  const [logSearchOpen, setLogSearchOpen] = useState(true);
+  const [logSearchOpen, setLogSearchOpen] = useState(false);
   const [logSearch, setLogSearch] = useState("");
   const [logSearchCaseSensitive, setLogSearchCaseSensitive] = useState(false);
   const [logSearchRegexp, setLogSearchRegexp] = useState(false);
@@ -2217,6 +2234,7 @@ export function App() {
   const [currentLogSearchIndex, setCurrentLogSearchIndex] = useState(0);
   const logPrepareRequestRef = useRef(0);
   const logEndRef = useRef<HTMLDivElement>(null);
+  const logOutputRef = useRef<HTMLDivElement>(null);
   const logSearchInputRef = useRef<HTMLInputElement | null>(null);
   const logMatchRefs = useRef<Array<HTMLElement | null>>([]);
   const [execResource, setExecResource] = useState<Pick<ResourceItem, "namespace" | "name">>();
@@ -2961,7 +2979,7 @@ export function App() {
   );
   const logSearchValid = !logSearch || Boolean(logSearchPattern);
   const logSearchMatches = useMemo<LogSearchMatch[]>(() => {
-    if (!logSearchPattern) return [];
+    if (!logSearchOpen || !logSearchPattern) return [];
     const matches: LogSearchMatch[] = [];
     logs.forEach((line, lineIndex) => {
       logSearchPattern.lastIndex = 0;
@@ -2974,7 +2992,16 @@ export function App() {
       }
     });
     return matches;
-  }, [logs, logSearchPattern]);
+  }, [logs, logSearchOpen, logSearchPattern]);
+  const logSearchMatchesByLine = useMemo(() => {
+    const byLine = new Map<number, Array<LogSearchMatch & { matchIndex: number }>>();
+    logSearchMatches.forEach((match, matchIndex) => {
+      const matches = byLine.get(match.lineIndex) ?? [];
+      matches.push({ ...match, matchIndex });
+      byLine.set(match.lineIndex, matches);
+    });
+    return byLine;
+  }, [logSearchMatches]);
   const visibleLogSearchIndex = Math.min(currentLogSearchIndex, Math.max(logSearchMatches.length - 1, 0));
   const logSearchCountLabel = logSearch
     ? logSearchValid && logSearchMatches.length > 0
@@ -2999,16 +3026,17 @@ export function App() {
   useEffect(() => {
     if (!logSearch || logSearchMatches.length === 0) return;
     logMatchRefs.current[visibleLogSearchIndex]?.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
-  }, [logSearch, logSearchMatches.length, visibleLogSearchIndex]);
+  }, [logSearch, logSearchOpen, logSearchMatches.length, visibleLogSearchIndex, detailTab]);
 
   useEffect(() => {
     if (logSearch && logSearchMatches.length > 0) return;
     logEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs, logSearch, logSearchMatches.length]);
+  }, [logs, logSearch, logSearchMatches.length, detailTab]);
 
   useEffect(() => {
     if (!logResource) return;
     const openLogSearch = (event: KeyboardEvent) => {
+      if (!logOutputRef.current) return;
       if (!(event.ctrlKey || event.metaKey) || event.altKey || event.key.toLowerCase() !== "f") return;
       event.preventDefault();
       event.stopPropagation();
@@ -3393,7 +3421,7 @@ export function App() {
     void stopLogs();
     const resource = { namespace: item.namespace, name: item.name };
     setLogResource(resource);
-    setLogSearchOpen(true);
+    setLogSearchOpen(false);
     setLogContainers(containers);
     setSelectedLogContainer(container);
     setLogs([]);
@@ -3757,11 +3785,11 @@ export function App() {
     setActionError(undefined);
     setActionMessage(undefined);
     setDeleteError(undefined);
-    setDeleteConfirmation(item);
+    setDeleteConfirmation([item]);
   };
 
   const confirmDeleteResource = async () => {
-    const item = deleteConfirmation;
+    const item = deleteConfirmation?.[0];
     if (!selectedContext || !item) return;
     const actionKey = `${item.kind}/${item.namespace ?? ""}/${item.name}/delete`;
     setResourceActionKey(actionKey);
@@ -3780,12 +3808,40 @@ export function App() {
         closeDetail();
       }
       setDeleteConfirmation(undefined);
+      setSelectedResourceKeys((current) => { const next = new Set(current); next.delete(resourceSelectionKey(item)); return next; });
       loadResources(null, selectedResource, selectedNamespace, { background: true });
     } catch (reason) {
       setDeleteError(errorMessage(reason));
     } finally {
       setResourceActionKey(undefined);
     }
+  };
+
+  const confirmDeleteSelectedResources = async () => {
+    const items = deleteConfirmation;
+    if (!selectedContext || !items?.length) return;
+    setResourceActionKey("resources/batch-delete");
+    setDeleteError(undefined);
+    const removed = new Set<string>();
+    const failures: string[] = [];
+    for (const item of items) {
+      try {
+        await transport.kubernetesDeleteResource({
+          meta: { version: IPC_VERSION, requestId: crypto.randomUUID() },
+          context: selectedContext, kind: item.kind, apiVersion: item.apiVersion,
+          namespace: item.namespace, name: item.name,
+        });
+        removed.add(resourceSelectionKey(item));
+      } catch (reason) {
+        failures.push(`${item.namespace ? `${item.namespace}/` : ""}${item.name}: ${errorMessage(reason)}`);
+      }
+    }
+    setResourceActionKey(undefined);
+    setDeleteConfirmation(undefined);
+    setSelectedResourceKeys((current) => new Set([...current].filter((key) => !removed.has(key))));
+    loadResources(null, selectedResource, selectedNamespace, { background: true });
+    if (failures.length) setActionError(`Could not remove ${failures.length} item${failures.length === 1 ? "" : "s"}: ${failures.join("; ")}`);
+    else setActionMessage(`Removed ${removed.size} item${removed.size === 1 ? "" : "s"}`);
   };
 
   const scaleWorkload = async (item: ResourceItem) => {
@@ -4134,6 +4190,41 @@ export function App() {
     });
   }, [resources, resourceSearch, sortKey, sortDirection, ownerLookup]);
 
+  const selectedResources = useMemo(
+    () => resources.filter((item) => selectedResourceKeys.has(resourceSelectionKey(item))),
+    [resources, selectedResourceKeys],
+  );
+  const allVisibleResourcesSelected = visibleResources.length > 0
+    && visibleResources.every((item) => selectedResourceKeys.has(resourceSelectionKey(item)));
+  const someVisibleResourcesSelected = visibleResources.some((item) => selectedResourceKeys.has(resourceSelectionKey(item)));
+  const toggleResourceSelection = (item: ResourceItem, selectRange = false) => {
+    const key = resourceSelectionKey(item);
+    setSelectedResourceKeys((current) => {
+      const next = new Set(current);
+      const anchorIndex = selectionAnchorKey
+        ? visibleResources.findIndex((candidate) => resourceSelectionKey(candidate) === selectionAnchorKey)
+        : -1;
+      const targetIndex = visibleResources.findIndex((candidate) => resourceSelectionKey(candidate) === key);
+      if (selectRange && anchorIndex >= 0 && targetIndex >= 0) {
+        const shouldSelect = !current.has(key);
+        const [start, end] = anchorIndex < targetIndex ? [anchorIndex, targetIndex] : [targetIndex, anchorIndex];
+        for (const candidate of visibleResources.slice(start, end + 1)) {
+          const candidateKey = resourceSelectionKey(candidate);
+          if (shouldSelect) next.add(candidateKey); else next.delete(candidateKey);
+        }
+      } else if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+    setSelectionAnchorKey(key);
+  };
+  const toggleVisibleResourceSelection = () => setSelectedResourceKeys((current) => {
+    const next = new Set(current);
+    for (const item of visibleResources) {
+      const key = resourceSelectionKey(item);
+      if (allVisibleResourcesSelected) next.delete(key); else next.add(key);
+    }
+    return next;
+  });
   const visibleHealthItems = useMemo(() => {
     const query = resourceSearch.trim().toLowerCase();
     if (!query) return healthItems;
@@ -4184,7 +4275,7 @@ export function App() {
       minWidth: resourceColumnMinWidth(id),
     });
     const dynamicColumn = (id: string): ResourceTableColumn => column(id);
-    const columns: ResourceTableColumn[] = [column("name", "resource-name-cell")];
+    const columns: ResourceTableColumn[] = [column("selection", "resource-selection-cell"), column("name", "resource-name-cell")];
 
     if (selectedKind === "Node") {
       columns.push(...selectedColumns.slice(0, 2).map((item) => dynamicColumn(item.key)));
@@ -4809,6 +4900,19 @@ export function App() {
         openDetail(item);
       }}
     >
+      <td className="resource-selection-cell" onClick={(event) => event.stopPropagation()}>
+        <input
+          type="checkbox"
+          aria-label={`Select ${item.name}`}
+          checked={selectedResourceKeys.has(resourceSelectionKey(item))}
+          onClick={(event) => {
+            event.stopPropagation();
+            toggleResourceSelection(item, event.shiftKey);
+          }}
+          onChange={() => undefined}
+          onKeyDown={(event) => event.stopPropagation()}
+        />
+      </td>
       <td className="resource-name-cell" title={item.name}>{item.name}</td>
       {selectedKind === "Node" ? <>
         {selectedColumns.slice(0, 2).map((column) => <td key={column.key} className={resourceColumnCellClassName(column.key)}>{renderResourceColumnValue(item, column.key)}</td>)}
@@ -5049,15 +5153,13 @@ export function App() {
     }));
   };
   const renderLogLine = useCallback((line: string, lineIndex: number) => {
-    if (!logSearch || logSearchMatches.length === 0) return line;
-    const lineMatches = logSearchMatches
-      .map((match, matchIndex) => ({ match, matchIndex }))
-      .filter(({ match }) => match.lineIndex === lineIndex);
-    if (lineMatches.length === 0) return line;
+    const lineMatches = logSearchMatchesByLine.get(lineIndex);
+    if (!lineMatches) return line;
 
     const parts: ReactNode[] = [];
     let cursor = 0;
-    for (const { match, matchIndex } of lineMatches) {
+    for (const match of lineMatches) {
+      const { matchIndex } = match;
       if (match.start > cursor) parts.push(line.slice(cursor, match.start));
       parts.push(
         <mark
@@ -5072,7 +5174,92 @@ export function App() {
     }
     if (cursor < line.length) parts.push(line.slice(cursor));
     return parts;
-  }, [logSearch, logSearchMatches, visibleLogSearchIndex]);
+  }, [logSearchMatchesByLine, visibleLogSearchIndex]);
+
+  const closeLogSearch = () => {
+    setLogSearchOpen(false);
+    logOutputRef.current?.focus({ preventScroll: true });
+  };
+  const logOutput = (
+    <div ref={logOutputRef} className="log-output" tabIndex={-1} onKeyDown={(event) => {
+      if (event.key === "Escape" && logSearchOpen) {
+        event.preventDefault();
+        event.stopPropagation();
+        closeLogSearch();
+      }
+    }}>
+      {logSearchOpen && (
+        <div className="log-search-panel" role="search" aria-label="Search logs">
+          <div className="log-search-fields">
+            <div className="log-search-row">
+              <input
+                ref={logSearchInputRef}
+                name="log-find-query"
+                value={logSearch}
+                onChange={(event) => setLogSearch(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    moveLogSearchMatch(event.shiftKey ? -1 : 1);
+                  }
+                }}
+                placeholder="Find"
+                aria-label="Find in logs"
+                aria-invalid={!logSearchValid}
+                title={logSearchValid ? undefined : "Invalid regular expression"}
+                autoComplete="off"
+                autoCapitalize="off"
+                spellCheck={false}
+                data-lpignore="true"
+                data-form-type="other"
+              />
+            </div>
+          </div>
+          <div className="log-search-actions">
+            <span className="log-search-count" role="status" title={logSearchValid ? "Current match / total matches" : "Invalid regular expression"}>{logSearchCountLabel}</span>
+            <button type="button" name="prev" title="Previous match (Shift+Enter)" aria-label="Previous match" disabled={logSearchMatches.length === 0} onClick={() => moveLogSearchMatch(-1)}>↑</button>
+            <button type="button" name="next" title="Next match (Enter)" aria-label="Next match" disabled={logSearchMatches.length === 0} onClick={() => moveLogSearchMatch(1)}>↓</button>
+            <button
+              type="button"
+              name="option"
+              title="Match case"
+              aria-label="Match case"
+              aria-pressed={logSearchCaseSensitive}
+              onClick={() => setLogSearchCaseSensitive((current) => !current)}
+            >
+              Aa
+            </button>
+            <button
+              type="button"
+              name="option"
+              title="Use regular expression"
+              aria-label="Use regular expression"
+              aria-pressed={logSearchRegexp}
+              onClick={() => setLogSearchRegexp((current) => !current)}
+            >
+              .*
+            </button>
+            <button
+              type="button"
+              name="option"
+              title="Match whole word"
+              aria-label="Match whole word"
+              aria-pressed={logSearchWholeWord}
+              onClick={() => setLogSearchWholeWord((current) => !current)}
+            >
+              W
+            </button>
+            <button type="button" name="close" title="Close search (Escape)" aria-label="Close search" onClick={closeLogSearch}>×</button>
+          </div>
+        </div>
+      )}
+      <div className="log-content">
+        {logOperationId && logs.length === 0 && <div className="log-empty">Waiting for log output…</div>}
+        {logs.map((line, index) => <div key={index} className="log-line">{renderLogLine(line, index)}</div>)}
+        <div ref={logEndRef} />
+      </div>
+    </div>
+  );
 
   const renderResourceNavigationItem = (resource: ResourceKindItem, groupLabel: string) => {
     const key = resourceKey(resource);
@@ -5773,11 +5960,9 @@ export function App() {
           <p className="error-message">{resourcesError}</p>
         ) : (
           <section className="resource-list">
-            {(resourcesError || actionError || actionMessage) && (
+            {resourcesError && (
               <div className="resource-list-banner" role="status" aria-live="polite">
-                {resourcesError && <p className="inline-message error-message">{resourcesError}</p>}
-                {actionError && <p className="inline-message error-message">{actionError}</p>}
-                {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
+                <p className="inline-message error-message">{resourcesError}</p>
               </div>
             )}
             <div className="resource-list-scroll" ref={resourceListRef} onScroll={handleResourceListScroll}>
@@ -5806,6 +5991,15 @@ export function App() {
                 </colgroup>
                 <thead>
                   <tr>
+                    <th className="resource-selection-cell">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all visible items"
+                        checked={allVisibleResourcesSelected}
+                        ref={(input) => { if (input) input.indeterminate = someVisibleResourcesSelected && !allVisibleResourcesSelected; }}
+                        onChange={toggleVisibleResourceSelection}
+                      />
+                    </th>
                     {renderResourceHeaderCell(resourceHeaderColumn("name"), renderResourceSortButton("name", "Name"))}
                     {selectedKind === "Node" ? <>
                       {selectedColumns.slice(0, 2).map((column) => (
@@ -5868,8 +6062,35 @@ export function App() {
             )}
           </section>
         )}
+      {selectedResources.length > 0 && (
+        <button
+          type="button"
+          className="bulk-remove-button"
+          aria-label={`Remove selected items (${selectedResources.length})`}
+          onClick={() => { setDeleteError(undefined); setDeleteConfirmation(selectedResources); }}
+        >
+          <span className="bulk-remove-tooltip">Remove selected items ({selectedResources.length})</span>
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 12h12" /></svg>
+        </button>
+      )}
       </main>
 
+      {(actionError || actionMessage) && (
+        <div
+          className={`action-toast ${actionError ? "error" : "success"}`}
+          role={actionError ? "alert" : "status"}
+          aria-live="polite"
+        >
+          <span>{actionError ?? actionMessage}</span>
+          <button
+            type="button"
+            aria-label="Dismiss notification"
+            onClick={() => { setActionError(undefined); setActionMessage(undefined); }}
+          >
+            ×
+          </button>
+        </div>
+      )}
       {(detail || detailLoading || detailError) && (
         <div className="detail-panel-overlay">
           <div
@@ -5924,8 +6145,6 @@ export function App() {
                     </>
                   )}
                 </div>
-                {actionError && <p className="inline-message error-message">{actionError}</p>}
-                {actionMessage && <p className="inline-message success-message">{actionMessage}</p>}
                 {detailTab === "yaml" ? (
                   <div className="yaml-editor">
                     <div className="yaml-mode-bar">
@@ -6021,12 +6240,7 @@ export function App() {
                           <button onClick={logsCleared ? refreshLogs : clearLogs} disabled={!selectedLogContainer}>{logsCleared ? "Refresh" : "Clear"}</button>
                         </div>
                         {logError && <p className="error-message">{logError}</p>}
-                        <div className="log-content">
-                          {logOperationId && logs.length === 0 && <div className="log-empty">Waiting for log output…</div>}
-                          {logs.map((line, index) => <div key={index} className="log-line">{renderLogLine(line, index)}</div>)}
-                          <div ref={logEndRef} />
-                        </div>
-
+                        {logOutput}
                       </div>
                     ) : detailTab === "terminal" && execResource ? (
                       <div className="embedded-resource-output">
@@ -6110,9 +6324,7 @@ export function App() {
                 <path className="delete-confirmation-icon-mark" d="M11 8h2v7h-2V8Zm0 9h2v2h-2v-2Z" />
               </svg>
               <p id="delete-confirmation-title">
-                Delete {deleteConfirmation.kind}{" "}
-                <strong>{deleteConfirmation.namespace ? `${deleteConfirmation.namespace}/` : ""}{deleteConfirmation.name}</strong>{" "}
-                from <strong>{selectedContext}</strong>?
+                Remove {deleteConfirmation.length} selected item{deleteConfirmation.length === 1 ? "" : "s"} from <strong>{selectedContext}</strong>?
               </p>
             </div>
             {deleteError && <p className="delete-confirmation-error">{deleteError}</p>}
@@ -6128,7 +6340,7 @@ export function App() {
               <button
                 type="button"
                 className="delete-confirm-button"
-                onClick={() => void confirmDeleteResource()}
+                onClick={() => void (deleteConfirmation.length === 1 ? confirmDeleteResource() : confirmDeleteSelectedResources())}
                 disabled={Boolean(resourceActionKey)}
                 autoFocus
               >
@@ -6292,82 +6504,7 @@ export function App() {
               </label>
             </div>
             {logError && <p className="error-message">{logError}</p>}
-            <div className="log-content">
-              {logSearchOpen && (
-                <div className="log-search-panel" role="search" onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    moveLogSearchMatch(event.shiftKey ? -1 : 1);
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    setLogSearchOpen(false);
-                  }
-                }}>
-                  <div className="log-search-fields">
-                    <div className="log-search-row">
-                      <input
-                        ref={logSearchInputRef}
-                        name="log-find-query"
-                        value={logSearch}
-                        onChange={(event) => setLogSearch(event.target.value)}
-                        placeholder="Find"
-                        aria-label="Find"
-                        autoComplete="off"
-                        autoCapitalize="off"
-                        spellCheck={false}
-                        data-lpignore="true"
-                        data-form-type="other"
-                      />
-                    </div>
-                  </div>
-                  <div className="log-search-actions">
-                    <span className="log-search-count">{logSearchCountLabel}</span>
-                    <button type="button" name="prev" title="Previous match" aria-label="Previous match" onClick={() => moveLogSearchMatch(-1)}>↑</button>
-                    <button type="button" name="next" title="Next match" aria-label="Next match" onClick={() => moveLogSearchMatch(1)}>↓</button>
-                    <button
-                      type="button"
-                      name="option"
-                      title="Match case"
-                      aria-label="Match case"
-                      aria-pressed={logSearchCaseSensitive}
-                      onClick={() => setLogSearchCaseSensitive((current) => !current)}
-                    >
-                      Aa
-                    </button>
-                    <button
-                      type="button"
-                      name="option"
-                      title="Use regular expression"
-                      aria-label="Use regular expression"
-                      aria-pressed={logSearchRegexp}
-                      onClick={() => setLogSearchRegexp((current) => !current)}
-                    >
-                      .*
-                    </button>
-                    <button
-                      type="button"
-                      name="option"
-                      title="Match whole word"
-                      aria-label="Match whole word"
-                      aria-pressed={logSearchWholeWord}
-                      onClick={() => setLogSearchWholeWord((current) => !current)}
-                    >
-                      W
-                    </button>
-                    <button type="button" name="close" title="Close search" aria-label="Close search" onClick={() => setLogSearchOpen(false)}>×</button>
-                  </div>
-                </div>
-              )}
-              {logOperationId && logs.length === 0 && (
-                <div className="log-empty">Waiting for log output…</div>
-              )}
-              {logs.map((line, index) => (
-                <div key={index} className="log-line">
-                  {renderLogLine(line, index)}
-                </div>
-              ))}
-              <div ref={logEndRef} />
-            </div>
+            {logOutput}
             <div className="panel-actions">
               <button onClick={() => void copyLogs()} disabled={logs.length === 0}>Copy</button>
               <button onClick={logsCleared ? refreshLogs : clearLogs} disabled={!selectedLogContainer}>{logsCleared ? "Refresh" : "Clear"}</button>

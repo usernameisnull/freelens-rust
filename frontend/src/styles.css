@@ -3517,9 +3517,20 @@ body.resizing-panel .yaml-structure-resizer {
   gap: 16px;
 }
 
+.log-output {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #0f1419;
+  outline: none;
+}
+
 .log-content {
   position: relative;
   flex: 1;
+  min-height: 0;
   overflow: auto;
   padding: 12px 18px;
   background: #0f1419;
@@ -3530,18 +3541,16 @@ body.resizing-panel .yaml-structure-resizer {
 }
 
 .log-search-panel {
-  position: sticky;
-  top: 8px;
-  right: 0;
+  position: relative;
+  flex-shrink: 0;
   z-index: 4;
   display: grid;
-  grid-template-columns: minmax(170px, 230px) auto;
+  grid-template-columns: minmax(0, 230px) auto;
   align-items: start;
   gap: 2px;
   width: fit-content;
-  max-width: min(420px, calc(100vw - 56px));
-  margin-left: auto;
-  margin-bottom: 6px;
+  max-width: calc(100% - 16px);
+  margin: 8px 8px 0;
   padding: 2px 32px 2px 4px;
   border: 1px solid #343c45;
   border-radius: 4px;
@@ -3598,6 +3607,11 @@ body.resizing-panel .yaml-structure-resizer {
   box-shadow: 0 0 0 1px rgba(61, 134, 217, 0.35);
 }
 
+.log-search-panel input[aria-invalid="true"] {
+  border-color: #e87575;
+  box-shadow: none;
+}
+
 .log-search-panel button {
   min-width: 0;
   width: 18px;
@@ -3617,6 +3631,11 @@ body.resizing-panel .yaml-structure-resizer {
   border-color: #4a5562;
   background: #333941;
   color: #ffffff;
+}
+
+.log-search-panel button:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .log-search-panel button[aria-pressed="true"],
@@ -3932,3 +3951,74 @@ body.resizing-context-column * { cursor: col-resize !important; user-select: non
 .context-results::-webkit-scrollbar-thumb:hover { background: #65727f; background-clip: content-box; }
 
 .context-results-list { padding-top: 0; }
+
+.resource-selection-cell {
+  width: 40px;
+  padding-right: 8px !important;
+  padding-left: 12px !important;
+  text-align: center !important;
+}
+
+.resource-selection-cell input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #00b8d4;
+  cursor: pointer;
+}
+
+.bulk-remove-button {
+  position: fixed;
+  right: 12px;
+  bottom: 10px;
+  z-index: 90;
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: #39424d;
+  color: #aeb9c5;
+  cursor: pointer;
+}
+
+.bulk-remove-button:hover { background: #46515d; color: #e8edf2; }
+.bulk-remove-button svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.bulk-remove-tooltip { position: absolute; right: 56px; padding: 8px 10px; border-radius: 3px; background: #151b22; color: #eef3f7; font-size: 0.78rem; font-weight: 600; white-space: nowrap; opacity: 0; pointer-events: none; transform: translateX(4px); transition: opacity 120ms ease, transform 120ms ease; }
+.bulk-remove-button:hover .bulk-remove-tooltip, .bulk-remove-button:focus-visible .bulk-remove-tooltip { opacity: 1; transform: translateX(0); }
+
+.action-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  z-index: 160;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(560px, calc(100vw - 32px));
+  padding: 10px 12px 10px 16px;
+  border: 1px solid #315f58;
+  border-radius: 6px;
+  background: #1d3634;
+  color: #8de0c5;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  transform: translateX(-50%);
+}
+
+.action-toast.error {
+  border-color: #7d4449;
+  background: #3b2529;
+  color: #ffadad;
+}
+
+.action-toast button {
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: currentColor;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
